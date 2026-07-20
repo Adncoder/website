@@ -1,10 +1,12 @@
-// Import KSHSAA parsed questions into a self-hosted QBReader database.  (v3)
+// Import KSHSAA parsed questions into a self-hosted QBReader database.  (v4)
+//
+// v4: every tossup gets a VALID subcategory from the site's SUBCATEGORIES list
+// (subcategory:null is silently excluded by the default random-question query),
+// and math questions get alternate_subcategory "Math" per the site's convention.
 //
 // Place in the root of your qbreader/website clone, then run:
 //   node import-kshsaa.js "C:/path/to/parsed/all_questions.json"
-//
-// Safe to re-run: deletes ALL previously imported KSHSAA data first,
-// including old fallback-named sets like "11-12 Reg Questions".
+// Safe to re-run: wipes all previously imported KSHSAA data first.
 
 import 'dotenv/config';
 import { readFileSync } from 'fs';
@@ -31,7 +33,6 @@ const setsCol = db.collection('sets');
 const packetsCol = db.collection('packets');
 const tossupsCol = db.collection('tossups');
 
-// wipe previous imports (marker field, KSHSAA names, and old fallback names)
 const oldSetMatch = {
   $or: [
     { kshsaaImport: true },
@@ -58,25 +59,30 @@ const sanitize = s => (s || '')
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .trim();
 
-const DIFFICULTY = 2; // 2 = "regular high school" on qbreader's scale
+const DIFFICULTY = 2; // 2 = "regular high school"
 
-// final category/subcategory by ORIGINAL KSHSAA category
+// KSHSAA category -> [category, subcategory, alternate_subcategory]
+// subcategory MUST be from the site's SUBCATEGORIES list (never null).
 const REMAP = {
-  'language arts':      ['Literature', null],
-  'science & health':   ['Science', null],
-  'science and health': ['Science', null],
-  'mathematics':        ['Science', 'Math'],
-  'math':               ['Science', 'Math'],
-  'social science':     ['Social Science', null],
-  'fine arts':          ['Fine Arts', null],
-  'year in review':     ['Current Events', null],
-  'current events':     ['Current Events', null],
-  'foreign language':   ['Other Academic', null],
-  'geography':          ['Geography', null]
+  'language arts':      ['Literature', 'Other Literature', null],
+  'science & health':   ['Science', 'Other Science', null],
+  'science and health': ['Science', 'Other Science', null],
+  'science':            ['Science', 'Other Science', null],
+  'mathematics':        ['Science', 'Other Science', 'Math'],
+  'math':               ['Science', 'Other Science', 'Math'],
+  'social science':     ['Social Science', 'Social Science', null],
+  'fine arts':          ['Fine Arts', 'Other Fine Arts', null],
+  'year in review':     ['Current Events', 'Current Events', null],
+  'current events':     ['Current Events', 'Current Events', null],
+  'foreign language':   ['Other Academic', 'Other Academic', null],
+  'world language':     ['Other Academic', 'Other Academic', null],
+  'geography':          ['Geography', 'Geography', null],
+  'history':            ['History', 'Other History', null]
 };
+const FALLBACK = ['Other Academic', 'Other Academic', null];
 function finalCat (q) {
   const k = (q.kshsaa_category || '').toLowerCase().trim();
-  return REMAP[k] || [q.category || 'Other Academic', q.subcategory || null];
+  return REMAP[k] || FALLBACK;
 }
 
 // group: set name -> packet number -> [questions]
@@ -106,7 +112,9 @@ for (const [setName, packets] of bySet) {
 
   for (const [pktNum, qs] of [...packets.entries()].sort((a, b) => a[0] - b[0])) {
     const packetId = new ObjectId();
-    const packetName = `Round ${String(pktNum).padStart(2, '0')}`;
+    const packetName = (qs[0] && qs[0].packet_name)
+      ? qs[0].packet_name
+      : `Round ${String(pktNum).padStart(2, '0')}`;
     await packetsCol.insertOne({
       _id: packetId,
       name: packetName,
@@ -115,22 +123,26 @@ for (const [setName, packets] of bySet) {
       kshsaaImport: true
     });
 
-    const docs = qs.map((q, i) => ({
-      _id: new ObjectId(),
-      question: q.question,
-      question_sanitized: sanitize(q.question),
-      answer: q.answer,
-      answer_sanitized: sanitize(q.answer),
-      category: finalCat(q)[0],
-      subcategory: finalCat(q)[1],
-      number: i + 1,
-      difficulty: DIFFICULTY,
-      set: { _id: setId, name: setName, year, standard: true },
-      packet: { _id: packetId, name: packetName, number: pktNum },
-      kshsaaImport: true,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    }));
+    const docs = qs.map((q, i) => {
+      const [cat, sub, alt] = finalCat(q);
+      return {
+        _id: new ObjectId(),
+        question: q.question,
+        question_sanitized: sanitize(q.question),
+        answer: q.answer,
+        answer_sanitized: sanitize(q.answer),
+        category: cat,
+        subcategory: sub,
+        alternate_subcategory: alt,
+        number: i + 1,
+        difficulty: DIFFICULTY,
+        set: { _id: setId, name: setName, year, standard: true },
+        packet: { _id: packetId, name: packetName, number: pktNum },
+        kshsaaImport: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+    });
     await tossupsCol.insertMany(docs);
     totalT += docs.length;
   }
@@ -138,5 +150,6 @@ for (const [setName, packets] of bySet) {
 }
 
 console.log(`Done: ${bySet.size} sets, ${totalT} tossups imported.`);
-console.log('Refresh the site and test singleplayer with all difficulties enabled.');
+console.log('IMPORTANT: in site settings, drag the minimum set year down to 2000 -');
+console.log('the site default of 2010 hides your 2003-2009 sets.');
 await client.close();
