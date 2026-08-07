@@ -6,6 +6,8 @@ import { ipFilterMiddleware } from './server/moderation/ip-filter.js';
 import { COOKIE_MAX_AGE } from './server/constants.js';
 import hostnameRedirection from './server/hostname-redirection.js';
 import httpsEnforcement from './server/https-enforcement.js';
+import kshsaaRoundRouter from './routes/kshsaa-round.js'
+import kshsaaPlayRouter from './routes/kshsaa-play.js';
 
 import cookieSession from 'cookie-session';
 import express from 'express';
@@ -35,6 +37,8 @@ app.set('query parser', 'simple');
 
 app.use('/api/webhook', express.raw({ type: '*/*' }), webhookRouter);
 app.use(express.json());
+app.use('/kshsaa-round', kshsaaRoundRouter);
+app.use('/kshsaa-play', kshsaaPlayRouter);
 
 app.use(cookieSession({
   name: 'session',
