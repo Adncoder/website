@@ -12,9 +12,10 @@ import 'dotenv/config';
 import { readFileSync } from 'fs';
 import { MongoClient, ObjectId } from 'mongodb';
 
-const file = process.argv[2];
-if (!file) {
-  console.error('Usage: node import-kshsaa.js path/to/all_questions.json');
+const files = process.argv.slice(2);
+if (files.length === 0) {
+  console.error('Usage: node import-kshsaa.js file1.json [file2.json ...]');
+  console.error('Pass ALL question files in ONE run (the wipe removes everything first).');
   process.exit(1);
 }
 const uri = process.env.MONGODB_URI;
@@ -23,8 +24,12 @@ if (!uri) {
   process.exit(1);
 }
 
-const questions = JSON.parse(readFileSync(file, 'utf8'));
-console.log(`Loaded ${questions.length} questions from ${file}`);
+const questions = [];
+for (const file of files) {
+  const part = JSON.parse(readFileSync(file, 'utf8'));
+  console.log(`Loaded ${part.length} questions from ${file}`);
+  questions.push(...part);
+}
 
 const client = new MongoClient(uri);
 await client.connect();
@@ -59,7 +64,12 @@ const sanitize = s => (s || '')
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .trim();
 
-const DIFFICULTY = 2; // 2 = "regular high school"
+// Difficulty doubles as the source toggle in the site's UI:
+//   2 = real KSHSAA questions      3 = converted quizbowl questions
+// So in singleplayer: check 2 only = KSHSAA, 3 only = converted, both = mixed.
+const DIFF_KSHSAA = 2;
+const DIFF_CONVERTED = 3;
+const difficultyFor = name => name.startsWith('QB Converted') ? DIFF_CONVERTED : DIFF_KSHSAA;
 
 // KSHSAA category -> [category, subcategory, alternate_subcategory]
 // subcategory MUST be from the site's SUBCATEGORIES list (never null).
@@ -99,13 +109,15 @@ for (const q of questions) {
 let totalT = 0;
 for (const [setName, packets] of bySet) {
   const yearMatch = setName.match(/(20\d{2})/);
-  const year = yearMatch ? parseInt(yearMatch[1]) : 2000;
+  // converted sets get 2015 so they're visible at the site's default year filter
+  const year = yearMatch ? parseInt(yearMatch[1]) : (setName.startsWith('QB Converted') ? 2015 : 2000);
   const setId = new ObjectId();
+  const difficulty = difficultyFor(setName);
   await setsCol.insertOne({
     _id: setId,
     name: setName,
     year,
-    difficulty: DIFFICULTY,
+    difficulty,
     standard: true,
     kshsaaImport: true
   });
@@ -134,8 +146,10 @@ for (const [setName, packets] of bySet) {
         category: cat,
         subcategory: sub,
         alternate_subcategory: alt,
+        kshsaa_category: q.kshsaa_category || null,
+        timed_seconds: q.timed_seconds || null,
         number: i + 1,
-        difficulty: DIFFICULTY,
+        difficulty,
         set: { _id: setId, name: setName, year, standard: true },
         packet: { _id: packetId, name: packetName, number: pktNum },
         kshsaaImport: true,
