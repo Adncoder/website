@@ -8,6 +8,7 @@ import hostnameRedirection from './server/hostname-redirection.js';
 import httpsEnforcement from './server/https-enforcement.js';
 import kshsaaRoundRouter from './routes/kshsaa-round.js'
 import kshsaaPlayRouter from './routes/kshsaa-play.js';
+import kshsaaStatsRouter from './routes/kshsaa-stats.js';
 
 import cookieSession from 'cookie-session';
 import express from 'express';
@@ -50,6 +51,7 @@ app.use(cookieSession({
 }));
 
 app.use(ipFilterMiddleware);
+app.use('/kshsaa-stats', kshsaaStatsRouter);
 app.use(indexRouter);
 
 export default app;

@@ -19,10 +19,7 @@ const router = Router();
 
 // [label, count, filter] - official KSHSAA round shape, 16 questions
 const DISTRIBUTION = [
-  ['Foreign Language', 1, { $or: [
-    { kshsaa_category: { $regex: 'foreign language|world language', $options: 'i' } },
-    { question: { $regex: '\\b(FRENCH|GERMAN|SPANISH|LATIN)\\b' } }
-  ] }],
+  ['Foreign Language', 1, { kshsaa_category: { $regex: 'foreign language|world language', $options: 'i' } }],
   ['Language Arts', 3, { category: 'Literature' }],
   ['Science & Health', 3, { category: 'Science', alternate_subcategory: { $ne: 'Math' } }],
   ['Social Science', 3, { category: 'Social Science' }],
@@ -68,11 +65,26 @@ router.get('/generate', async (req, res) => {
 
 const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KSHSAA Round Generator</title>
+<title>Download a packet - SJA Scholars Bowl</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<style>
+ .kshsaa-bar{background:#eef1f7;border-bottom:1px solid #d9e0ec}
+ .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
+ .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
+ .kshsaa-bar a.active{color:#1f3864;font-weight:600}
+ @media print{.kshsaa-bar,.card-body .btn,.form-check{display:none}}
+</style>
 </head><body class="bg-light">
-<div class="container py-4" style="max-width:900px">
-  <h1 class="h3">KSHSAA round generator</h1>
+<div class="kshsaa-bar py-2 mb-3">
+  <div class="container text-center" style="max-width:900px">
+    <a href="/kshsaa-play">Read a round</a>
+    <a href="/kshsaa-round" class="active">Download packet</a>
+    <a href="/kshsaa-stats">Practice stats</a>
+  </div>
+</div>
+<div class="container pb-4" style="max-width:900px">
+  <h1 class="h4">Download a packet</h1>
   <p class="text-secondary">Builds a fresh, randomized 16-question round in official KSHSAA order
   (1 foreign language, 3 language arts, 3 science &amp; health, 3 social science, 3 math, 2 fine arts,
   1 year in review) drawn from the full question archive.</p>
@@ -85,8 +97,10 @@ const PAGE = `<!DOCTYPE html>
       </label>
     </div>
     <button class="btn btn-primary" id="go">Generate a round</button>
+    <button class="btn btn-outline-secondary" id="pdf" disabled>Download PDF</button>
+    <button class="btn btn-outline-secondary" id="txt" disabled>Download text</button>
     <button class="btn btn-outline-secondary" id="dl" disabled>Download for MODAQ</button>
-    <button class="btn btn-outline-secondary" id="pr" disabled>Print answer key</button>
+    <button class="btn btn-outline-secondary" id="pr" disabled>Print</button>
     <span class="ms-2 text-secondary" id="status"></span>
   </div></div>
 
@@ -94,15 +108,25 @@ const PAGE = `<!DOCTYPE html>
 
   <hr>
   <p class="small text-secondary mb-1"><strong>How to run the round:</strong> download the MODAQ file, open
-  <a href="https://www.quizbowlreader.com/demo.html" target="_blank" rel="noopener">quizbowlreader.com</a>, start a new game,
+  <a href="https://www.quizbowlreader.com" target="_blank" rel="noopener">quizbowlreader.com</a>, start a new game,
   and load the file as the packet. Scoring per the KSHSAA manual: 10 points for a correct answer, no bonuses;
   &minus;5 only for the first team's wrong answer on an interruption (a second-team interruption miss carries no penalty).
   Teams get 10 seconds to buzz, 30&ndash;120 on computation questions as marked.</p>
 </div>
 
 <script>
+// surface any script error on the page itself, so problems are visible
+// without opening the browser console
+window.onerror = function (msg, src, line) {
+  var s = document.getElementById('status');
+  if (s) s.innerHTML = '<span class="text-danger">script error: ' + msg + ' (line ' + line + ')</span>';
+  return false;
+};
+</script>
+<script>
 let current = null;
 const $ = id => document.getElementById(id);
+document.getElementById('status').textContent = 'ready';
 
 $('go').onclick = async () => {
   $('status').textContent = 'building...';
@@ -115,6 +139,8 @@ $('go').onclick = async () => {
     render(current);
     $('dl').disabled = false;
     $('pr').disabled = false;
+    $('pdf').disabled = false;
+    $('txt').disabled = false;
     $('status').textContent = current.length + ' questions';
   } catch (e) {
     $('status').textContent = 'error: ' + e.message;
@@ -130,9 +156,10 @@ function render (round) {
     '<div class="small text-success mt-1">ANSWER: ' + escapeHtml(q.answer) + '</div>' +
     '<div class="small text-secondary">' + escapeHtml(q.source) + '</div></td></tr>').join('');
   $('out').innerHTML =
-    '<div class="card"><div class="card-body p-0"><table class="table table-sm mb-0 align-top">' +
+    '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
+    '<table class="table table-sm mb-0 align-top">' +
     '<thead><tr><th>#</th><th>Category</th><th>Question &amp; answer</th></tr></thead>' +
-    '<tbody>' + rows + '</tbody></table></div></div>';
+    '<tbody>' + rows + '</tbody></table></div></div></div>';
 }
 
 function escapeHtml (s) {
@@ -150,10 +177,63 @@ $('dl').onclick = () => {
 };
 
 $('pr').onclick = () => window.print();
+
+function stamp () { return new Date().toISOString().slice(0, 10); }
+
+$('txt').onclick = () => {
+  const NL = String.fromCharCode(13, 10);
+  let out = 'KSHSAA PRACTICE ROUND - ' + stamp() + NL + NL;
+  current.forEach((q, i) => {
+    out += (i + 1) + '. [' + q.category + '] ' + q.question + NL;
+    out += '   ANSWER: ' + q.answer + NL + NL;
+  });
+  const blob = new Blob([out], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'KSHSAA round ' + stamp() + '.txt';
+  a.click();
+};
+
+$('pdf').onclick = () => {
+  if (!window.jspdf) { alert('PDF library did not load - use Print and choose "Save as PDF" instead.'); return; }
+  const doc = new window.jspdf.jsPDF({ unit: 'pt', format: 'letter' });
+  const M = 54;
+  const W = doc.internal.pageSize.getWidth() - M * 2;
+  const H = doc.internal.pageSize.getHeight();
+  let y = M;
+
+  doc.setFont('helvetica', 'bold').setFontSize(14);
+  doc.text('KSHSAA practice round', M, y);
+  doc.setFont('helvetica', 'normal').setFontSize(9);
+  doc.text(stamp() + '   -   10 points per correct answer, -5 on a wrong interruption', M, y + 14);
+  y += 36;
+
+  current.forEach((q, i) => {
+    const qLines = doc.splitTextToSize((i + 1) + '. ' + q.question, W - 10);
+    const aLines = doc.splitTextToSize('ANSWER: ' + q.answer, W - 24);
+    const needed = 12 + qLines.length * 13 + aLines.length * 12 + 12;
+    if (y + needed > H - M) { doc.addPage(); y = M; }
+
+    doc.setFont('helvetica', 'bold').setFontSize(8).setTextColor(110);
+    doc.text(q.category.toUpperCase(), M, y);
+    y += 12;
+
+    doc.setFont('helvetica', 'normal').setFontSize(11).setTextColor(0);
+    doc.text(qLines, M, y);
+    y += qLines.length * 13 + 3;
+
+    doc.setFont('helvetica', 'bold').setFontSize(10);
+    doc.text(aLines, M + 14, y);
+    y += aLines.length * 12 + 14;
+  });
+
+  doc.save('KSHSAA round ' + stamp() + '.pdf');
+};
 </script>
 </body></html>`;
 
 router.get('/', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.type('html').send(PAGE);
 });
 
