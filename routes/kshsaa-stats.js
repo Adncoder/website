@@ -30,7 +30,7 @@ const CATEGORIES = [...new Set(CATEGORY_BY_QUESTION)];
 const categoryFor = n => CATEGORY_BY_QUESTION[n - 1] || 'Other';
 
 // squads a rostered player can belong to (edit this list to match your season)
-const SQUADS = ['Varsity 1', 'Varsity 2', 'JV 1', 'JV 2', 'JV 3', 'Rotating / sub'];
+const SQUADS = ['Varsity Blue', 'Varsity Crimson', 'JV Blue', 'JV Crimson', 'JV Silver', 'Rotating / sub'];
 
 // ---------- auth ----------
 
