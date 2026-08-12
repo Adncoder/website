@@ -82,7 +82,7 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="form-check mt-3">
       <input class="form-check-input" type="checkbox" id="conv">
-      <label class="form-check-label small" for="conv">Include converted quizbowl questions (bigger pool)</label>
+      <label class="form-check-label small" for="conv">Include converted quizbowl questions (~Varsity difficulty)</label>
     </div>
 
     <div id="nameCheck" class="alert alert-warning mt-3 d-none"></div>
