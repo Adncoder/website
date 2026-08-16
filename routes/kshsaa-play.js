@@ -110,14 +110,12 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="row g-4">
       <div class="col-md-6">
-        <label class="form-label fw-semibold">Team 1</label>
-        <input class="form-control mb-2" id="t1" value="Team 1">
+        <input class="form-control mb-2 fw-semibold" id="t1" placeholder="Team 1" aria-label="Team 1 name">
         <div id="p1"></div>
         <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p1">+ Add player</button>
       </div>
       <div class="col-md-6">
-        <label class="form-label fw-semibold">Team 2</label>
-        <input class="form-control mb-2" id="t2" value="Team 2">
+        <input class="form-control mb-2 fw-semibold" id="t2" placeholder="Team 2" aria-label="Team 2 name">
         <div id="p2"></div>
         <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p2">+ Add player</button>
       </div>
