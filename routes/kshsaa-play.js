@@ -24,33 +24,36 @@ const PAGE = `<!DOCTYPE html>
  .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
  .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
  .kshsaa-bar a.active{color:#1f3864;font-weight:600}
- /* The clock is its own sticky strip above the reader rather than an element
-    positioned against MODAQ's nav row: MODAQ re-renders that row on every buzz
-    and question change, which left the clock sitting wherever the row used to be.
-    Controls are still matched to MODAQ's Fluent UI: 32px tall, 2px corners, #8a8886 border. */
- #timerBar{position:sticky;top:0;z-index:30;display:flex;flex-wrap:wrap;align-items:center;
-   justify-content:flex-end;gap:.4rem;background:#faf9f8;border-bottom:1px solid #e1dfdd;
-   padding:.45rem .75rem;margin-bottom:.5rem;user-select:none;
-   font-family:'Segoe UI',system-ui,sans-serif}
+ /* The clock rides inside MODAQ's own "Previous / Question # / Next" row so the
+    moderator's pointer never leaves that cluster. React rebuilds that row on
+    every question change, so the bar is inserted into it and re-inserted when
+    dropped, rather than positioned against coordinates that go stale.
+    Controls match MODAQ's Fluent UI: 32px tall, 2px corners, #8a8886 border. */
+ #timerBar{display:inline-flex;align-items:center;flex-wrap:nowrap;gap:.35rem;
+   user-select:none;font-family:'Segoe UI',system-ui,sans-serif}
  .tb-clock{font-size:1.35rem;font-weight:600;font-variant-numeric:tabular-nums;color:#201f1e;
    min-width:3.4rem;text-align:right;line-height:32px}
  .tb-clock.low{color:#a4500f}
  .tb-clock.done{color:#a4262c}
  .tb-clock.flash{animation:tpflash .45s ease-in-out 3}
  @keyframes tpflash{0%,100%{opacity:1}50%{opacity:.25}}
- .tb-durations{display:inline-flex;gap:4px}
- .tb-durations button,.tb-btn{box-sizing:border-box;height:32px;border:1px solid #8a8886;
+ .tb-btn{box-sizing:border-box;height:32px;border:1px solid #8a8886;
    background:#fff;color:#323130;border-radius:2px;font-size:14px;font-weight:600;
-   font-family:inherit;padding:0 16px;display:inline-flex;align-items:center;
-   justify-content:center;-webkit-font-smoothing:antialiased}
- .tb-durations button{padding:0 10px;min-width:46px}
- .tb-durations button:hover,.tb-btn:hover{background:#f3f2f1}
- .tb-durations button.active{background:#edebe9;border-color:#323130}
+   font-family:inherit;padding:0 12px;display:inline-flex;align-items:center;
+   justify-content:center;-webkit-font-smoothing:antialiased;white-space:nowrap}
+ .tb-btn:hover{background:#f3f2f1}
  .tb-btn:active{background:#edebe9}
- .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:80px}
+ .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:72px}
  .tb-btn-primary:hover{background:#106ebe;border-color:#106ebe;color:#fff}
- /* pushed hard left so the controls stay right-aligned whether or not it has text */
- .tb-note{margin-right:auto;font-size:.85rem;color:#605e5c;line-height:32px}
+ /* a select rather than a row of chips: the limit is set automatically per
+    question now, so this is a rarely used override and should not eat the width
+    that keeps the whole cluster on one line */
+ .tb-secs{box-sizing:border-box;height:32px;border:1px solid #8a8886;background:#fff;
+   color:#323130;border-radius:2px;font-size:13px;font-family:inherit;padding:0 2px}
+ .tb-note{font-size:.78rem;color:#605e5c;line-height:32px;white-space:nowrap}
+ /* the row we inject into is MODAQ's; let it wrap instead of overflowing */
+ .kshsaa-cycle-row{display:flex;align-items:center;justify-content:center;
+   gap:8px;flex-wrap:wrap}
 </style>
 </head><body>
 
@@ -124,16 +127,16 @@ const PAGE = `<!DOCTYPE html>
   </div>
 
   <div id="timerBar" class="d-none">
-    <span class="tb-note" id="tpNote"></span>
     <span id="tpClock" class="tb-clock">10.0</span>
-    <span class="tb-durations" id="tpDurations"></span>
-    <span class="tb-buttons">
-      <button type="button" class="tb-btn tb-btn-primary" id="tpToggle"
-        title="Start or stop the clock (spacebar)">Start</button>
-      <button type="button" class="tb-btn" id="tpOther"
-        title="Wrong answer with no interruption: the other team gets the time left plus five seconds">+5s</button>
-      <button type="button" class="tb-btn" id="tpReset">Reset</button>
-    </span>
+    <button type="button" class="tb-btn tb-btn-primary" id="tpToggle"
+      title="Start or stop the clock (spacebar)">Start</button>
+    <button type="button" class="tb-btn" id="tpOther"
+      title="Wrong answer with no interruption: the other team gets the time left plus five seconds">+5s</button>
+    <button type="button" class="tb-btn" id="tpReset"
+      title="Put the clock back to this question's full limit">Reset</button>
+    <select class="tb-secs" id="tpDurations"
+      title="Time limit for this question - set automatically, override here"></select>
+    <span class="tb-note" id="tpNote"></span>
   </div>
 
   <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
@@ -416,10 +419,33 @@ function tpForQuestion (n) {
 // The clock lives outside #modaq, so updating it cannot retrigger the observer.
 function watchReader (teamNames) {
   const root = $('modaq');
+  const bar = $('timerBar');
   let scoreEl = null;
   let lastScores = null;
   let lastQuestion = null;
   let queued = false;
+
+  // MODAQ's nav row: the nearest common ancestor of the Previous and Next
+  // buttons. Found by role rather than by generated class name, which changes
+  // between MODAQ builds.
+  const findCycleRow = () => {
+    const buttons = [...root.querySelectorAll('button')];
+    const prev = buttons.find(b => (b.textContent || '').indexOf('Previous') !== -1);
+    const next = buttons.find(b => (b.textContent || '').indexOf('Next') !== -1);
+    if (!prev || !next) return null;
+    let row = prev.parentElement;
+    while (row && row !== root && !row.contains(next)) row = row.parentElement;
+    return row && row !== root ? row : null;
+  };
+
+  // React owns that row and rebuilds it, so treat placement as something to
+  // restore continuously rather than to do once
+  const anchor = () => {
+    const row = findCycleRow();
+    if (!row || bar.parentElement === row) return;
+    row.classList.add('kshsaa-cycle-row');
+    row.appendChild(bar);
+  };
 
   // matching on the real team names rather than the literal word "Team" keeps
   // this working once the moderator renames the teams
@@ -429,7 +455,7 @@ function watchReader (teamNames) {
   const findScoreEl = () => {
     let best = null;
     root.querySelectorAll('*').forEach(node => {
-      if (node.children.length > 3) return;
+      if (node.children.length > 3 || bar.contains(node)) return;
       const t = (node.textContent || '').trim();
       if (looksLikeScoreboard(t) && (!best || t.length < best.textContent.trim().length)) best = node;
     });
@@ -445,8 +471,14 @@ function watchReader (teamNames) {
 
   const scan = () => {
     queued = false;
+    anchor();
 
-    const qm = (root.textContent || '').match(/Question\\s*#\\s*(\\d+)/i);
+    // read the number off the nav row once anchored: it is a few dozen
+    // characters rather than the whole reader, and cannot pick up a
+    // "Question #" that belongs to some other part of MODAQ's UI
+    const row = bar.parentElement;
+    const navText = (row && row !== root ? row.textContent : root.textContent) || '';
+    const qm = navText.match(/Question\\s*#\\s*(\\d+)/i);
     const q = qm ? Number(qm[1]) : null;
     if (q && q !== lastQuestion) {
       lastQuestion = q;
@@ -467,8 +499,11 @@ function watchReader (teamNames) {
     lastScores = now;
   };
 
-  // React re-renders in bursts; one debounced pass per burst beats polling
-  new MutationObserver(() => {
+  // React re-renders in bursts; one debounced pass per burst beats polling.
+  // The bar now lives inside root, so its own ticking clock would otherwise
+  // wake this ten times a second - ignore bursts that are entirely our own.
+  new MutationObserver(records => {
+    if (records.every(r => bar.contains(r.target))) return;
     if (queued) return;
     queued = true;
     setTimeout(scan, 150);
@@ -481,24 +516,24 @@ function tpSet (seconds, alsoStart) {
   TIMER.duration = seconds;
   TIMER.remaining = seconds;
   tpRender();
-  Array.from($('tpDurations').children).forEach(b => {
-    b.classList.toggle('active', Number(b.dataset.secs) === seconds);
-  });
+  $('tpDurations').value = String(seconds);
   if (alsoStart) tpStart();
 }
 
 function setupTimer (round, teamNames) {
-  $('tpDurations').innerHTML = DURATIONS
-    .map(s => '<button type="button" data-secs="' + s + '">' + s + 's</button>').join('');
-  Array.from($('tpDurations').children).forEach(b => {
-    b.onclick = () => tpSet(Number(b.dataset.secs), false);
-  });
-
   // KSHSAA gives longer limits on computation questions; the generator tags them
   LIMITS = round.map(q => {
     const m = q.question.match(/^\\[(\\d+)\\s*sec\\]/i);
     return m ? Number(m[1]) : DEFAULT_SECONDS;
   });
+
+  // the override list has to include any limit this round actually uses, or
+  // tpSet could not show the value it just applied
+  const choices = [...new Set(DURATIONS.concat(LIMITS))].sort((a, b) => a - b);
+  $('tpDurations').innerHTML = choices
+    .map(s => '<option value="' + s + '">' + s + 's</option>').join('');
+  $('tpDurations').onchange = () => tpSet(Number($('tpDurations').value), false);
+
   const timed = LIMITS
     .map((s, i) => s === DEFAULT_SECONDS ? null : 'Q' + (i + 1) + ': ' + s + 's')
     .filter(Boolean);
