@@ -55,11 +55,13 @@ const PAGE = `<!DOCTYPE html>
  .tb-btn:active{background:#edebe9}
  .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:66px}
  .tb-btn-primary:hover{background:#106ebe;border-color:#106ebe;color:#fff}
- /* a select rather than a row of chips: the limit is set automatically per
-    question now, so this is a rarely used override and should not eat the width
-    that keeps the whole cluster on one line */
- .tb-secs{box-sizing:border-box;height:32px;border:1px solid #8a8886;background:#fff;
-   color:#323130;border-radius:2px;font-size:13px;font-family:inherit;padding:0 2px}
+ .tb-durations{display:inline-flex;gap:4px}
+ .tb-durations button{box-sizing:border-box;height:32px;border:1px solid #8a8886;
+   background:#fff;color:#323130;border-radius:2px;font-size:14px;font-weight:600;
+   font-family:inherit;padding:0 8px;min-width:42px;display:inline-flex;align-items:center;
+   justify-content:center;-webkit-font-smoothing:antialiased}
+ .tb-durations button:hover{background:#f3f2f1}
+ .tb-durations button.active{background:#edebe9;border-color:#323130}
  /* the only thing we impose on MODAQ's row: a positioning context for the clock */
  .kshsaa-cycle-row{position:relative}
  /* Fallback for windows too narrow to hold the clock beside a centred nav row:
@@ -147,8 +149,8 @@ const PAGE = `<!DOCTYPE html>
       title="Wrong answer with no interruption: the other team gets the time left plus five seconds">+5s</button>
     <button type="button" class="tb-btn" id="tpReset"
       title="Put the clock back to this question's full limit">Reset</button>
-    <select class="tb-secs" id="tpDurations"
-      title="Time limit for this question - set automatically, override here"></select>
+    <span class="tb-durations" id="tpDurations"
+      title="Time limit for this question - set automatically, override here"></span>
   </div>
 
   <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
@@ -552,7 +554,9 @@ function tpSet (seconds, alsoStart) {
   TIMER.duration = seconds;
   TIMER.remaining = seconds;
   tpRender();
-  $('tpDurations').value = String(seconds);
+  Array.from($('tpDurations').children).forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.secs) === seconds);
+  });
   if (alsoStart) tpStart();
 }
 
@@ -564,11 +568,13 @@ function setupTimer (round, teamNames) {
   });
 
   // the override list has to include any limit this round actually uses, or
-  // tpSet could not show the value it just applied
+  // tpSet could not highlight the value it just applied
   const choices = [...new Set(DURATIONS.concat(LIMITS))].sort((a, b) => a - b);
   $('tpDurations').innerHTML = choices
-    .map(s => '<option value="' + s + '">' + s + 's</option>').join('');
-  $('tpDurations').onchange = () => tpSet(Number($('tpDurations').value), false);
+    .map(s => '<button type="button" data-secs="' + s + '">' + s + 's</button>').join('');
+  Array.from($('tpDurations').children).forEach(b => {
+    b.onclick = () => tpSet(Number(b.dataset.secs), false);
+  });
 
   const timed = LIMITS
     .map((s, i) => s === DEFAULT_SECONDS ? null : 'Q' + (i + 1) + ': ' + s + 's')
