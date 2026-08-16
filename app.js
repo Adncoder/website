@@ -6,7 +6,7 @@ import { ipFilterMiddleware } from './server/moderation/ip-filter.js';
 import { COOKIE_MAX_AGE } from './server/constants.js';
 import hostnameRedirection from './server/hostname-redirection.js';
 import httpsEnforcement from './server/https-enforcement.js';
-import kshsaaRoundRouter from './routes/kshsaa-round.js'
+import kshsaaRoundRouter from './routes/kshsaa-round.js';
 import kshsaaPlayRouter from './routes/kshsaa-play.js';
 import kshsaaStatsRouter from './routes/kshsaa-stats.js';
 

@@ -11,23 +11,19 @@
 //        STATS_PASSWORD=somethingYourTeamKnows
 
 import { Router } from 'express';
+import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION } from './kshsaa-round.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
 const roster = qbreader.collection('kshsaa_roster');
 
-const CATEGORY_BY_QUESTION = [
-  'Foreign Language',
-  'Language Arts', 'Language Arts', 'Language Arts',
-  'Science & Health', 'Science & Health', 'Science & Health',
-  'Social Science', 'Social Science', 'Social Science',
-  'Mathematics', 'Mathematics', 'Mathematics',
-  'Fine Arts', 'Fine Arts',
-  'Year in Review'
-];
-const CATEGORIES = [...new Set(CATEGORY_BY_QUESTION)];
-const categoryFor = n => CATEGORY_BY_QUESTION[n - 1] || 'Other';
+// Games read on this site send their own category list. Older games, and files
+// exported from MODAQ elsewhere, fall back to the slot number - which is only
+// right when the round came out at its full 16 questions.
+const categoryFor = (n, explicit) =>
+  (explicit && explicit[n - 1]) || CATEGORY_BY_QUESTION[n - 1] || 'Other';
 
 // squads a rostered player can belong to (edit this list to match your season)
 const SQUADS = ['Varsity Blue', 'Varsity Crimson', 'JV Blue', 'JV Crimson', 'JV Silver', 'Rotating / sub'];
@@ -38,10 +34,35 @@ const authed = req => Boolean(req.session && req.session.kshsaaStats);
 const requireAuth = (req, res, next) =>
   authed(req) ? next() : res.status(401).json({ error: 'not logged in' });
 
+// one shared password that never rotates is worth a guessing cap
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX = 10;
+const loginAttempts = new Map();
+
+function tooManyAttempts (ip) {
+  const now = Date.now();
+  if (loginAttempts.size > 1000) {
+    for (const [key, entry] of loginAttempts) {
+      if (now - entry.start > LOGIN_WINDOW_MS) loginAttempts.delete(key);
+    }
+  }
+  const entry = loginAttempts.get(ip);
+  if (!entry || now - entry.start > LOGIN_WINDOW_MS) {
+    loginAttempts.set(ip, { start: now, count: 1 });
+    return false;
+  }
+  entry.count++;
+  return entry.count > LOGIN_MAX;
+}
+
 router.post('/login', (req, res) => {
   const expected = process.env.STATS_PASSWORD;
   if (!expected) return res.status(500).json({ error: 'STATS_PASSWORD is not set on the server' });
+  if (tooManyAttempts(req.ip)) {
+    return res.status(429).json({ error: 'too many attempts - wait fifteen minutes' });
+  }
   if (!req.body || req.body.password !== expected) return res.status(403).json({ error: 'wrong password' });
+  loginAttempts.delete(req.ip);
   req.session.kshsaaStats = true;
   res.json({ ok: true });
 });
@@ -93,6 +114,8 @@ router.post('/roster/add', requireAuth, async (req, res) => {
     const byKey = {};
     existing.forEach(r => { byKey[r.name.trim().toLowerCase()] = r; });
 
+    // one round trip for the whole paste rather than one per line
+    const ops = [];
     let added = 0; let updated = 0;
     for (const rawLine of text.split('\n')) {
       const line = rawLine.trim();
@@ -100,7 +123,7 @@ router.post('/roster/add', requireAuth, async (req, res) => {
 
       // "Name", "Name, 11", "Name, 11, JV 2", "Name, JV 2" all work
       const parts = line.split(',').map(s => s.trim()).filter(Boolean);
-      const name = (parts.shift() || '').replace(/[,\-]+$/, '').trim();
+      const name = (parts.shift() || '').replace(/[,-]+$/, '').trim();
       if (!name) continue;
       let grade = null; let squad = null;
       for (const part of parts) {
@@ -118,15 +141,17 @@ router.post('/roster/add', requireAuth, async (req, res) => {
         if (grade != null && byKey[key].grade !== grade) set.grade = grade;
         if (squad && byKey[key].squad !== squad) set.squad = squad;
         if (Object.keys(set).length) {
-          await roster.updateOne({ _id: byKey[key]._id }, { $set: set });
+          ops.push({ updateOne: { filter: { _id: byKey[key]._id }, update: { $set: set } } });
+          Object.assign(byKey[key], set);
           updated++;
         }
       } else {
-        await roster.insertOne({ name, grade, squad, createdAt: new Date() });
+        ops.push({ insertOne: { document: { name, grade, squad, createdAt: new Date() } } });
         byKey[key] = { name, grade, squad };
         added++;
       }
     }
+    if (ops.length) await roster.bulkWrite(ops);
     res.json({ ok: true, added, updated });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
@@ -135,7 +160,6 @@ router.post('/roster/add', requireAuth, async (req, res) => {
 
 router.post('/roster/update', requireAuth, async (req, res) => {
   try {
-    const { ObjectId } = await import('mongodb');
     const grade = req.body.grade === '' || req.body.grade == null ? null : Number(req.body.grade);
     const squad = SQUADS.includes(req.body.squad) ? req.body.squad : null;
     await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad } });
@@ -149,7 +173,6 @@ router.post('/roster/update', requireAuth, async (req, res) => {
 // history can never be reassigned to a different person by accident
 router.post('/roster/rename', requireAuth, async (req, res) => {
   try {
-    const { ObjectId } = await import('mongodb');
     const id = new ObjectId(String(req.body.id));
     const doc = await roster.findOne({ _id: id });
     if (!doc) return res.status(404).json({ error: 'not on the roster' });
@@ -180,7 +203,6 @@ router.post('/roster/rename', requireAuth, async (req, res) => {
 
 router.post('/roster/remove', requireAuth, async (req, res) => {
   try {
-    const { ObjectId } = await import('mongodb');
     await roster.deleteOne({ _id: new ObjectId(String(req.body.id)) });
     res.json({ ok: true });
   } catch (e) {
@@ -190,7 +212,7 @@ router.post('/roster/remove', requireAuth, async (req, res) => {
 
 // ---------- parsing MODAQ exports ----------
 
-function parseQbj (m) {
+function parseQbj (m, cats) {
   const teams = [];
   const heardByPlayer = {};
   for (const mt of m.match_teams || []) {
@@ -211,7 +233,7 @@ function parseQbj (m) {
         player: b.player?.name || 'Unknown player',
         team: b.team?.name || 'Unknown team',
         questionNumber: num,
-        category: categoryFor(num),
+        category: categoryFor(num, cats),
         value: b.result?.value ?? 0,
         wordIndex: b.buzz_position?.word_index ?? null
       });
@@ -220,7 +242,7 @@ function parseQbj (m) {
   return { teams, buzzes, heardByPlayer, tossupsRead: m.tossups_read || (m.match_questions || []).length };
 }
 
-function parseRaw (o) {
+function parseRaw (o, cats) {
   const teams = {};
   for (const p of o.players || []) {
     const t = p.teamName || 'Unknown team';
@@ -237,7 +259,7 @@ function parseRaw (o) {
         player: pl.name || 'Unknown player',
         team: pl.teamName || 'Unknown team',
         questionNumber: num,
-        category: categoryFor(num),
+        category: categoryFor(num, cats),
         value: typeof marker.points === 'number' ? marker.points : fallback,
         wordIndex: typeof marker.position === 'number' ? marker.position : null
       });
@@ -248,10 +270,10 @@ function parseRaw (o) {
   return { teams: Object.values(teams), buzzes, heardByPlayer: {}, tossupsRead: (o.cycles || []).length };
 }
 
-function normalize (raw, label) {
+function normalize (raw, label, cats) {
   let parsed;
-  if (raw && (raw.match_teams || raw.match_questions)) parsed = parseQbj(raw);
-  else if (raw && raw.cycles) parsed = parseRaw(raw);
+  if (raw && (raw.match_teams || raw.match_questions)) parsed = parseQbj(raw, cats);
+  else if (raw && raw.cycles) parsed = parseRaw(raw, cats);
   else throw new Error('unrecognized export format - use MODAQ\'s QBJ or JSON export');
 
   const byTeam = {};
@@ -266,6 +288,7 @@ function normalize (raw, label) {
     label: label || 'Practice',
     playedAt: new Date(),
     tossupsRead: parsed.tossupsRead,
+    categories: cats || null,
     teams: parsed.teams,
     heardByPlayer: parsed.heardByPlayer,
     buzzes: parsed.buzzes
@@ -276,9 +299,12 @@ function normalize (raw, label) {
 
 router.post('/upload', requireAuth, async (req, res) => {
   try {
-    const { game, label } = req.body || {};
+    const { game, label, categories } = req.body || {};
     if (!game) return res.status(400).json({ error: 'no game data' });
-    const doc = normalize(game, label);
+    const cats = Array.isArray(categories)
+      ? categories.map(c => String(c == null ? '' : c).trim().slice(0, 60)).filter(Boolean)
+      : null;
+    const doc = normalize(game, label, cats && cats.length ? cats : null);
 
     // backstop against duplicate players: if a name already exists with different
     // capitalization or stray spaces, store it under the existing spelling
@@ -299,7 +325,6 @@ router.post('/upload', requireAuth, async (req, res) => {
 // full record of one game, for download/backup
 router.get('/game/:id', requireAuth, async (req, res) => {
   try {
-    const { ObjectId } = await import('mongodb');
     const g = await games.findOne({ _id: new ObjectId(String(req.params.id)) });
     if (!g) return res.status(404).json({ error: 'game not found' });
     res.json(g);
@@ -310,7 +335,6 @@ router.get('/game/:id', requireAuth, async (req, res) => {
 
 router.post('/delete', requireAuth, async (req, res) => {
   try {
-    const { ObjectId } = await import('mongodb');
     await games.deleteOne({ _id: new ObjectId(String(req.body.id)) });
     res.json({ ok: true });
   } catch (e) {
@@ -321,7 +345,6 @@ router.post('/delete', requireAuth, async (req, res) => {
 router.get('/data', requireAuth, async (req, res) => {
   const all = await games.find({}).sort({ playedAt: 1 }).toArray();
   const players = {};
-  const catTotals = {};
 
   // squad assignment comes from the roster, not from whatever the moderator
   // typed as a team name in a given game
@@ -335,19 +358,22 @@ router.get('/data', requireAuth, async (req, res) => {
     const gLabel = g.label + ' (' + new Date(g.playedAt).toLocaleDateString() + ')';
     for (const b of g.buzzes) {
       const p = players[b.player] || (players[b.player] = {
-        name: b.player, team: b.team, games: new Set(), correct: 0, neg: 0,
-        points: 0, positions: [], byCategory: {}, perGame: {}
+        name: b.player,
+        games: new Set(),
+        correct: 0,
+        neg: 0,
+        points: 0,
+        positions: [],
+        byCategory: {},
+        perGame: {}
       });
       p.games.add(gid);
-      p.team = b.team;
       const pg = p.perGame[gid] || (p.perGame[gid] = { id: gid, label: gLabel, points: 0, correct: 0, neg: 0 });
       const pc = p.byCategory[b.category] || (p.byCategory[b.category] = { correct: 0, neg: 0 });
-      const ct = catTotals[b.category] || (catTotals[b.category] = { correct: 0, neg: 0, buzzes: 0 });
-      ct.buzzes++;
       if (b.value > 0) {
-        p.correct++; pc.correct++; ct.correct++; pg.correct++;
+        p.correct++; pc.correct++; pg.correct++;
         if (b.wordIndex != null) p.positions.push(b.wordIndex);
-      } else if (b.value < 0) { p.neg++; pc.neg++; ct.neg++; pg.neg++; }
+      } else if (b.value < 0) { p.neg++; pc.neg++; pg.neg++; }
       p.points += b.value || 0;
       pg.points += b.value || 0;
     }
@@ -356,7 +382,8 @@ router.get('/data', requireAuth, async (req, res) => {
   const playerRows = Object.values(players).map(p => {
     const buzzes = p.correct + p.neg;
     const avgPos = p.positions.length
-      ? Math.round(p.positions.reduce((a, b) => a + b, 0) / p.positions.length) : null;
+      ? Math.round(p.positions.reduce((a, b) => a + b, 0) / p.positions.length)
+      : null;
     const squad = squadByName[p.name.trim().toLowerCase()];
     return {
       name: p.name,

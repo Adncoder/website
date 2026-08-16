@@ -28,19 +28,41 @@ const DISTRIBUTION = [
   ['Year in Review', 1, { category: 'Current Events' }]
 ];
 
+/** Category label of every slot in a full round, in reading order. */
+export const CATEGORY_BY_QUESTION = DISTRIBUTION.flatMap(([label, count]) => Array(count).fill(label));
+/** Category labels in reading order, deduplicated. */
+export const CATEGORIES = DISTRIBUTION.map(([label]) => label);
+
+// The filters can overlap (a foreign-language question may also be tagged
+// Literature), so oversample every category, run them together, and drop
+// collisions afterwards. Chaining a growing $nin through seven awaits gave the
+// same result one round trip at a time.
+const HEADROOM = 3;
+
+/**
+ * @param {boolean} includeConverted whether to draw on the converted-quizbowl sets too
+ * @returns {Promise<{round: object[], short: string[]}>} the round, plus a label
+ * for each category the archive could not fill
+ */
 async function buildRound (includeConverted) {
-  const picked = [];
+  const setFilter = includeConverted
+    ? {}
+    : { 'set.name': { $not: { $regex: '^QB Converted' } } };
+
+  const samples = await Promise.all(DISTRIBUTION.map(([, count, filter]) => tossups
+    .aggregate([
+      { $match: { kshsaaImport: true, ...filter, ...setFilter } },
+      { $sample: { size: count + HEADROOM } }
+    ])
+    .toArray()));
+
+  const picked = new Set();
   const round = [];
-  for (const [label, count, filter] of DISTRIBUTION) {
-    const match = { kshsaaImport: true, ...filter, _id: { $nin: picked } };
-    if (!includeConverted) {
-      match['set.name'] = { $not: { $regex: '^QB Converted' } };
-    }
-    const docs = await tossups
-      .aggregate([{ $match: match }, { $sample: { size: count } }])
-      .toArray();
+  const short = [];
+  DISTRIBUTION.forEach(([label, count], i) => {
+    const docs = samples[i].filter(d => !picked.has(String(d._id))).slice(0, count);
     for (const d of docs) {
-      picked.push(d._id);
+      picked.add(String(d._id));
       const secs = d.timed_seconds || (label === 'Mathematics' ? 30 : null);
       round.push({
         category: label,
@@ -49,14 +71,15 @@ async function buildRound (includeConverted) {
         source: `${d.set?.name ?? '?'} ${d.packet?.name ?? ''}`.trim()
       });
     }
-  }
-  return round;
+    if (docs.length < count) short.push(`${label} (${docs.length} of ${count})`);
+  });
+  return { round, short };
 }
 
 router.get('/generate', async (req, res) => {
   try {
-    const round = await buildRound(req.query.converted === '1');
-    res.json({ round });
+    const { round, short } = await buildRound(req.query.converted === '1');
+    res.json({ round, short });
   } catch (e) {
     console.error('kshsaa-round error', e);
     res.status(500).json({ error: String(e) });
@@ -141,7 +164,12 @@ $('go').onclick = async () => {
     $('pr').disabled = false;
     $('pdf').disabled = false;
     $('txt').disabled = false;
-    $('status').textContent = current.length + ' questions';
+    if (data.short && data.short.length) {
+      $('status').innerHTML = '<span class="text-warning-emphasis">' + current.length +
+        ' questions - the archive ran short on ' + escapeHtml(data.short.join(', ')) + '</span>';
+    } else {
+      $('status').textContent = current.length + ' questions';
+    }
   } catch (e) {
     $('status').textContent = 'error: ' + e.message;
   }

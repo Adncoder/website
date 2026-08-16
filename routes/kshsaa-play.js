@@ -24,6 +24,33 @@ const PAGE = `<!DOCTYPE html>
  .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
  .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
  .kshsaa-bar a.active{color:#1f3864;font-weight:600}
+ /* The clock is its own sticky strip above the reader rather than an element
+    positioned against MODAQ's nav row: MODAQ re-renders that row on every buzz
+    and question change, which left the clock sitting wherever the row used to be.
+    Controls are still matched to MODAQ's Fluent UI: 32px tall, 2px corners, #8a8886 border. */
+ #timerBar{position:sticky;top:0;z-index:30;display:flex;flex-wrap:wrap;align-items:center;
+   justify-content:flex-end;gap:.4rem;background:#faf9f8;border-bottom:1px solid #e1dfdd;
+   padding:.45rem .75rem;margin-bottom:.5rem;user-select:none;
+   font-family:'Segoe UI',system-ui,sans-serif}
+ .tb-clock{font-size:1.35rem;font-weight:600;font-variant-numeric:tabular-nums;color:#201f1e;
+   min-width:3.4rem;text-align:right;line-height:32px}
+ .tb-clock.low{color:#a4500f}
+ .tb-clock.done{color:#a4262c}
+ .tb-clock.flash{animation:tpflash .45s ease-in-out 3}
+ @keyframes tpflash{0%,100%{opacity:1}50%{opacity:.25}}
+ .tb-durations{display:inline-flex;gap:4px}
+ .tb-durations button,.tb-btn{box-sizing:border-box;height:32px;border:1px solid #8a8886;
+   background:#fff;color:#323130;border-radius:2px;font-size:14px;font-weight:600;
+   font-family:inherit;padding:0 16px;display:inline-flex;align-items:center;
+   justify-content:center;-webkit-font-smoothing:antialiased}
+ .tb-durations button{padding:0 10px;min-width:46px}
+ .tb-durations button:hover,.tb-btn:hover{background:#f3f2f1}
+ .tb-durations button.active{background:#edebe9;border-color:#323130}
+ .tb-btn:active{background:#edebe9}
+ .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:80px}
+ .tb-btn-primary:hover{background:#106ebe;border-color:#106ebe;color:#fff}
+ /* pushed hard left so the controls stay right-aligned whether or not it has text */
+ .tb-note{margin-right:auto;font-size:.85rem;color:#605e5c;line-height:32px}
 </style>
 </head><body>
 
@@ -82,7 +109,7 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="form-check mt-3">
       <input class="form-check-input" type="checkbox" id="conv">
-      <label class="form-check-label small" for="conv">Include converted quizbowl questions (~Varsity difficulty)</label>
+      <label class="form-check-label small" for="conv">Include converted quizbowl questions (bigger pool)</label>
     </div>
 
     <div id="nameCheck" class="alert alert-warning mt-3 d-none"></div>
@@ -96,14 +123,34 @@ const PAGE = `<!DOCTYPE html>
     <p class="small mt-2"><a href="/kshsaa-round">Prefer a file to download instead?</a></p>
   </div>
 
+  <div id="timerBar" class="d-none">
+    <span class="tb-note" id="tpNote"></span>
+    <span id="tpClock" class="tb-clock">10.0</span>
+    <span class="tb-durations" id="tpDurations"></span>
+    <span class="tb-buttons">
+      <button type="button" class="tb-btn tb-btn-primary" id="tpToggle"
+        title="Start or stop the clock (spacebar)">Start</button>
+      <button type="button" class="tb-btn" id="tpOther"
+        title="Wrong answer with no interruption: the other team gets the time left plus five seconds">+5s</button>
+      <button type="button" class="tb-btn" id="tpReset">Reset</button>
+    </span>
+  </div>
+
+  <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
+
   <div id="modaq"></div>
 </div>
 
 <script type="module">
 const $ = id => document.getElementById(id);
+// player names reach innerHTML in several places below, and a name is free text
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const REACT = 'https://esm.sh/react@18.3.1';
 const REACTDOM = 'https://esm.sh/react-dom@18.3.1/client';
-const MODAQ = 'https://esm.sh/modaq@1.41.1?deps=react@18.3.1,react-dom@18.3.1';
+// mobx is pinned to 6 as well: modaq asks for ^6.5.0, but left unpinned esm.sh
+// resolves the "latest" tag and hands it mobx 7, which throws during a round
+const MODAQ = 'https://esm.sh/modaq@1.41.1?deps=react@18.3.1,react-dom@18.3.1,mobx@6.16.1';
 
 const KSHSAA_FORMAT = {
   displayName: 'KSHSAA Scholars Bowl',
@@ -164,17 +211,24 @@ function startApp () {
       for (let i = 0; i < 5; i++) addPlayerBox(box);
     }
   }
+  // a round started before the roster arrives would flag every player as new,
+  // so hold the button until the fetch settles either way
+  $('go').disabled = true;
+  $('status').textContent = 'loading player names...';
   fetch('/kshsaa-stats/names').then(r => r.ok ? r.json() : null).then(d => {
     if (!d || !d.names) return;
     KNOWN = d.names;
-    $('knownPlayers').innerHTML = KNOWN.map(n => '<option value="' + n.replace(/"/g, '&quot;') + '">').join('');
-  }).catch(() => {});
+    $('knownPlayers').innerHTML = KNOWN.map(n => '<option value="' + esc(n) + '">').join('');
+  }).catch(() => {}).finally(() => {
+    $('go').disabled = false;
+    $('status').textContent = '';
+  });
 }
 
 fetch('/kshsaa-stats/me').then(r => r.json()).then(d => {
   if (d.authed) startApp();
   else $('gate').classList.remove('d-none');
-});
+}).catch(() => $('gate').classList.remove('d-none'));
 
 $('gateBtn').onclick = async () => {
   const r = await fetch('/kshsaa-stats/login', {
@@ -209,7 +263,10 @@ function suggestionsFor (name) {
   return KNOWN.filter(k => {
     const kk = k.toLowerCase();
     if (kk === n) return false;
-    return lev(kk, n) <= 2 || kk.startsWith(n) || n.startsWith(kk);
+    if (kk.startsWith(n) || n.startsWith(kk)) return true;
+    // edit distance is never smaller than the length gap, so this skips the
+    // quadratic work for names that cannot possibly be within two edits
+    return Math.abs(kk.length - n.length) <= 2 && lev(kk, n) <= 2;
   }).slice(0, 4);
 }
 
@@ -237,7 +294,7 @@ function validatedPlayers () {
     const v = e.input.value.trim().toLowerCase();
     if (seen[v]) {
       warn.className = 'alert alert-danger mt-3';
-      warn.innerHTML = '<strong>' + e.input.value + '</strong> is entered twice. Each player can only be on one team, once.';
+      warn.innerHTML = '<strong>' + esc(e.input.value) + '</strong> is entered twice. Each player can only be on one team, once.';
       return null;
     }
     seen[v] = true;
@@ -250,10 +307,10 @@ function validatedPlayers () {
     unknown.forEach((e, idx) => {
       const typed = e.input.value.trim();
       const sugg = suggestionsFor(typed);
-      h += '<div class="row g-2 align-items-center mb-1"><div class="col-sm-4"><code>' + typed + '</code></div>' +
+      h += '<div class="row g-2 align-items-center mb-1"><div class="col-sm-4"><code>' + esc(typed) + '</code></div>' +
         '<div class="col-sm-8"><select class="form-select form-select-sm resolve" data-idx="' + idx + '">';
-      sugg.forEach(s => { h += '<option value="' + s.replace(/"/g, '&quot;') + '">use existing: ' + s + '</option>'; });
-      h += '<option value="__new__">add "' + typed + '" as a new player</option></select></div></div>';
+      sugg.forEach(s => { h += '<option value="' + esc(s) + '">use existing: ' + esc(s) + '</option>'; });
+      h += '<option value="__new__">add "' + esc(typed) + '" as a new player</option></select></div></div>';
     });
     h += '</div><button class="btn btn-sm btn-primary mt-2" id="resolveBtn">Confirm names</button>';
     warn.className = 'alert alert-warning mt-3';
@@ -271,7 +328,7 @@ function validatedPlayers () {
   }
 
   warn.classList.add('d-none');
-  const players = entries.map((e, i) => ({ name: e.input.value.trim(), teamName: e.team, isStarter: true }));
+  const players = entries.map(e => ({ name: e.input.value.trim(), teamName: e.team, isStarter: true }));
   // starters: first four listed per team
   const perTeam = {};
   players.forEach(p => {
@@ -279,6 +336,195 @@ function validatedPlayers () {
     p.isStarter = perTeam[p.teamName] <= 4;
   });
   return players;
+}
+
+// ---------- answer clock (KSHSAA timing) ----------
+const TIMER = { duration: 10, remaining: 10, running: false, handle: null, last: 0 };
+const DURATIONS = [10, 30, 45, 60, 120];
+const DEFAULT_SECONDS = 10;
+// seconds allowed on each question of this round, read off the [30 sec] markers
+let LIMITS = [];
+
+function tpRender () {
+  const el = $('tpClock');
+  el.textContent = TIMER.remaining.toFixed(1);
+  el.classList.toggle('low', TIMER.remaining <= 3 && TIMER.remaining > 0);
+  el.classList.toggle('done', TIMER.remaining <= 0);
+}
+
+function tpTick () {
+  const now = performance.now();
+  TIMER.remaining = Math.max(0, TIMER.remaining - (now - TIMER.last) / 1000);
+  TIMER.last = now;
+  tpRender();
+  if (TIMER.remaining <= 0) {
+    tpStop();
+    const el = $('tpClock');
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1500);
+  }
+}
+
+function tpSyncToggle () {
+  const b = $('tpToggle');
+  if (b) b.textContent = TIMER.running ? 'Stop' : 'Start';
+}
+
+function tpStart () {
+  if (TIMER.running) return;
+  if (TIMER.remaining <= 0) TIMER.remaining = TIMER.duration;
+  TIMER.running = true;
+  TIMER.last = performance.now();
+  TIMER.handle = setInterval(tpTick, 100);
+  tpSyncToggle();
+}
+
+function tpStop () {
+  TIMER.running = false;
+  if (TIMER.handle) clearInterval(TIMER.handle);
+  TIMER.handle = null;
+  tpSyncToggle();
+}
+
+// no interruption, wrong answer: opponents get the time left plus five seconds
+function tpAddFive () {
+  tpStop();
+  TIMER.remaining = TIMER.remaining + 5;
+  tpRender();
+  tpStart();
+}
+
+// interruption, wrong answer (-5): the question is reread in full, so the
+// other team starts again from the whole time limit
+function tpRereadReset () {
+  tpStop();
+  TIMER.remaining = TIMER.duration;
+  tpRender();
+}
+
+// a new question means a fresh clock, at whatever limit that question carries
+function tpForQuestion (n) {
+  const secs = LIMITS[n - 1] || DEFAULT_SECONDS;
+  $('tpNote').textContent = 'Q' + n + (secs === DEFAULT_SECONDS ? '' : ' \\u00b7 ' + secs + 's limit');
+  tpSet(secs, false);
+}
+
+// MODAQ exposes no callbacks, so read its DOM instead. Two things matter: the
+// question number (which limit applies) and a team score going down, meaning a
+// neg was scored - under KSHSAA the question is then reread in full, so the
+// clock goes back to the top rather than carrying the remainder over.
+// The clock lives outside #modaq, so updating it cannot retrigger the observer.
+function watchReader (teamNames) {
+  const root = $('modaq');
+  let scoreEl = null;
+  let lastScores = null;
+  let lastQuestion = null;
+  let queued = false;
+
+  // matching on the real team names rather than the literal word "Team" keeps
+  // this working once the moderator renames the teams
+  const looksLikeScoreboard = t =>
+    t.length < 200 && /\\d/.test(t) && teamNames.every(n => t.indexOf(n) !== -1);
+
+  const findScoreEl = () => {
+    let best = null;
+    root.querySelectorAll('*').forEach(node => {
+      if (node.children.length > 3) return;
+      const t = (node.textContent || '').trim();
+      if (looksLikeScoreboard(t) && (!best || t.length < best.textContent.trim().length)) best = node;
+    });
+    return best;
+  };
+
+  const scoresFrom = text => teamNames.map(n => {
+    const at = text.indexOf(n);
+    if (at === -1) return null;
+    const m = text.slice(at + n.length).match(/-?\\d+/);
+    return m ? Number(m[0]) : null;
+  });
+
+  const scan = () => {
+    queued = false;
+
+    const qm = (root.textContent || '').match(/Question\\s*#\\s*(\\d+)/i);
+    const q = qm ? Number(qm[1]) : null;
+    if (q && q !== lastQuestion) {
+      lastQuestion = q;
+      tpForQuestion(q);
+    }
+
+    if (!scoreEl || !root.contains(scoreEl)) {
+      scoreEl = findScoreEl();
+      lastScores = scoreEl ? scoresFrom(scoreEl.textContent) : null;
+      return;
+    }
+    const now = scoresFrom(scoreEl.textContent);
+    if (lastScores) {
+      for (let i = 0; i < now.length; i++) {
+        if (now[i] != null && lastScores[i] != null && now[i] < lastScores[i]) { tpRereadReset(); break; }
+      }
+    }
+    lastScores = now;
+  };
+
+  // React re-renders in bursts; one debounced pass per burst beats polling
+  new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    setTimeout(scan, 150);
+  }).observe(root, { childList: true, subtree: true, characterData: true });
+  scan();
+}
+
+function tpSet (seconds, alsoStart) {
+  tpStop();
+  TIMER.duration = seconds;
+  TIMER.remaining = seconds;
+  tpRender();
+  Array.from($('tpDurations').children).forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.secs) === seconds);
+  });
+  if (alsoStart) tpStart();
+}
+
+function setupTimer (round, teamNames) {
+  $('tpDurations').innerHTML = DURATIONS
+    .map(s => '<button type="button" data-secs="' + s + '">' + s + 's</button>').join('');
+  Array.from($('tpDurations').children).forEach(b => {
+    b.onclick = () => tpSet(Number(b.dataset.secs), false);
+  });
+
+  // KSHSAA gives longer limits on computation questions; the generator tags them
+  LIMITS = round.map(q => {
+    const m = q.question.match(/^\\[(\\d+)\\s*sec\\]/i);
+    return m ? Number(m[1]) : DEFAULT_SECONDS;
+  });
+  const timed = LIMITS
+    .map((s, i) => s === DEFAULT_SECONDS ? null : 'Q' + (i + 1) + ': ' + s + 's')
+    .filter(Boolean);
+  // explanation lives in a tooltip so the bar stays compact inside the reader
+  $('timerBar').title = '10s to buzz by default, set automatically per question. ' +
+    '"+5s" gives the opponents the time left plus five seconds after a wrong answer with no ' +
+    'interruption; on an interruption the question is reread and the clock resets on its own.' +
+    (timed.length ? ' Longer limits this round: ' + timed.join(', ') + '.' : '');
+
+  $('tpToggle').onclick = () => { TIMER.running ? tpStop() : tpStart(); };
+  $('tpReset').onclick = () => tpSet(TIMER.duration, false);
+  $('tpOther').onclick = tpAddFive;
+
+  // spacebar starts/stops the clock, unless the moderator is typing somewhere
+  document.addEventListener('keydown', e => {
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    const t = e.target;
+    const tag = (t && t.tagName ? t.tagName : '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable)) return;
+    if (tag === 'button') t.blur();   // stop space from re-firing the focused button
+    e.preventDefault();
+    TIMER.running ? tpStop() : tpStart();
+  });
+  tpForQuestion(1);
+  $('timerBar').classList.remove('d-none');
+  watchReader(teamNames);
 }
 
 $('go').onclick = async () => {
@@ -298,6 +544,10 @@ $('go').onclick = async () => {
       bonuses: []
     };
     const label = $('label').value.trim() || 'Practice';
+    // sent with the game so stats read the real category of each question
+    // instead of inferring it from the slot number
+    const categories = data.round.map(q => q.category);
+    const teamNames = [...new Set(players.map(p => p.teamName))];
 
     $('status').textContent = 'loading reader...';
     const [React, ReactDOM, Modaq] = await Promise.all([
@@ -305,6 +555,12 @@ $('go').onclick = async () => {
     ]);
 
     $('setup').style.display = 'none';
+    if (data.short && data.short.length) {
+      $('roundWarn').textContent = 'This round is ' + data.round.length + ' questions, not 16 - ' +
+        'the archive ran short on ' + data.short.join(', ') + '.';
+      $('roundWarn').classList.remove('d-none');
+    }
+    setupTimer(data.round, teamNames);
     ReactDOM.createRoot($('modaq')).render(
       React.createElement(Modaq.ModaqControl, {
         packet,
@@ -320,7 +576,7 @@ $('go').onclick = async () => {
             const post = () => fetch('/kshsaa-stats/upload', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ game: match, label })
+              body: JSON.stringify({ game: match, label, categories })
             });
             try {
               let r = await post();
@@ -352,7 +608,7 @@ $('go').onclick = async () => {
       })
     );
   } catch (e) {
-    $('status').innerHTML = '<span class="text-danger">error: ' + e.message +
+    $('status').innerHTML = '<span class="text-danger">error: ' + esc(e.message) +
       ' &mdash; <a href="/kshsaa-round">use the download page instead</a></span>';
     $('go').disabled = false;
   }
