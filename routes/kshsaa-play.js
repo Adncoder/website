@@ -28,31 +28,46 @@ const PAGE = `<!DOCTYPE html>
     moderator's pointer never leaves that cluster. React rebuilds that row on
     every question change, so the bar is inserted into it and re-inserted when
     dropped, rather than positioned against coordinates that go stale.
+
+    It is taken out of flow with left:100%, which resolves against the nav row's
+    own width. That leaves the row measuring exactly what MODAQ put in it, so
+    the parent still centres Previous / Question # / Next on the page and the
+    clock hangs off its right edge - no widths measured in JS, and nothing to
+    recompute when the row moves.
     Controls match MODAQ's Fluent UI: 32px tall, 2px corners, #8a8886 border. */
- #timerBar{display:inline-flex;align-items:center;flex-wrap:nowrap;gap:.35rem;
+ /* top:0, not top:50% - the row box is a few px taller than its buttons
+    (inline descender space below them), so centring on the box sits low;
+    the buttons and this bar are both 32px flush to the row's top edge */
+ #timerBar{position:absolute;left:100%;top:0;margin-left:10px;
+   display:inline-flex;align-items:center;flex-wrap:nowrap;gap:.3rem;
    user-select:none;font-family:'Segoe UI',system-ui,sans-serif}
  .tb-clock{font-size:1.35rem;font-weight:600;font-variant-numeric:tabular-nums;color:#201f1e;
-   min-width:3.4rem;text-align:right;line-height:32px}
+   min-width:3.1rem;text-align:right;line-height:32px}
  .tb-clock.low{color:#a4500f}
  .tb-clock.done{color:#a4262c}
  .tb-clock.flash{animation:tpflash .45s ease-in-out 3}
  @keyframes tpflash{0%,100%{opacity:1}50%{opacity:.25}}
  .tb-btn{box-sizing:border-box;height:32px;border:1px solid #8a8886;
    background:#fff;color:#323130;border-radius:2px;font-size:14px;font-weight:600;
-   font-family:inherit;padding:0 12px;display:inline-flex;align-items:center;
+   font-family:inherit;padding:0 10px;display:inline-flex;align-items:center;
    justify-content:center;-webkit-font-smoothing:antialiased;white-space:nowrap}
  .tb-btn:hover{background:#f3f2f1}
  .tb-btn:active{background:#edebe9}
- .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:72px}
+ .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:66px}
  .tb-btn-primary:hover{background:#106ebe;border-color:#106ebe;color:#fff}
  /* a select rather than a row of chips: the limit is set automatically per
     question now, so this is a rarely used override and should not eat the width
     that keeps the whole cluster on one line */
  .tb-secs{box-sizing:border-box;height:32px;border:1px solid #8a8886;background:#fff;
    color:#323130;border-radius:2px;font-size:13px;font-family:inherit;padding:0 2px}
- .tb-note{font-size:.78rem;color:#605e5c;line-height:32px;white-space:nowrap}
- /* the row we inject into is MODAQ's; let it wrap instead of overflowing */
- .kshsaa-cycle-row{display:flex;align-items:center;justify-content:center;
+ /* the only thing we impose on MODAQ's row: a positioning context for the clock */
+ .kshsaa-cycle-row{position:relative}
+ /* Fallback for windows too narrow to hold the clock beside a centred nav row:
+    back into the flow, where the whole cluster centres together and wraps
+    rather than running under MODAQ's event pane. Applied by measurement, not a
+    guessed breakpoint - how much room there is depends on MODAQ's own layout. */
+ #timerBar.tb-inflow{position:static;margin-left:0}
+ .kshsaa-cycle-row.tb-row-inflow{display:flex;align-items:center;justify-content:center;
    gap:8px;flex-wrap:wrap}
 </style>
 </head><body>
@@ -136,7 +151,6 @@ const PAGE = `<!DOCTYPE html>
       title="Put the clock back to this question's full limit">Reset</button>
     <select class="tb-secs" id="tpDurations"
       title="Time limit for this question - set automatically, override here"></select>
-    <span class="tb-note" id="tpNote"></span>
   </div>
 
   <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
@@ -405,11 +419,11 @@ function tpRereadReset () {
   tpRender();
 }
 
-// a new question means a fresh clock, at whatever limit that question carries
+// a new question means a fresh clock, at whatever limit that question carries.
+// The number itself is not echoed anywhere here - MODAQ's own nav row and its
+// event pane both already show it.
 function tpForQuestion (n) {
-  const secs = LIMITS[n - 1] || DEFAULT_SECONDS;
-  $('tpNote').textContent = 'Q' + n + (secs === DEFAULT_SECONDS ? '' : ' \\u00b7 ' + secs + 's limit');
-  tpSet(secs, false);
+  tpSet(LIMITS[n - 1] || DEFAULT_SECONDS, false);
 }
 
 // MODAQ exposes no callbacks, so read its DOM instead. Two things matter: the
@@ -425,27 +439,51 @@ function watchReader (teamNames) {
   let lastQuestion = null;
   let queued = false;
 
-  // MODAQ's nav row: the nearest common ancestor of the Previous and Next
-  // buttons. Found by role rather than by generated class name, which changes
-  // between MODAQ builds.
+  // MODAQ's nav row, found by role rather than by generated class name (those
+  // change between MODAQ builds). Note it is not always both buttons: Next is
+  // gone on the last question of the round, so climb until the candidate holds
+  // whichever nav buttons exist plus the "Question #" label.
   const findCycleRow = () => {
-    const buttons = [...root.querySelectorAll('button')];
-    const prev = buttons.find(b => (b.textContent || '').indexOf('Previous') !== -1);
-    const next = buttons.find(b => (b.textContent || '').indexOf('Next') !== -1);
-    if (!prev || !next) return null;
-    let row = prev.parentElement;
-    while (row && row !== root && !row.contains(next)) row = row.parentElement;
+    const nav = [...root.querySelectorAll('button')].filter(b => {
+      const t = b.textContent || '';
+      return t.indexOf('Previous') !== -1 || t.indexOf('Next') !== -1;
+    });
+    if (!nav.length) return null;
+    let row = nav[0].parentElement;
+    while (row && row !== root &&
+           !(nav.every(b => row.contains(b)) && /Question\\s*#/i.test(row.textContent))) {
+      row = row.parentElement;
+    }
     return row && row !== root ? row : null;
+  };
+
+  // Hanging off the right of a centred row only works while there is room to
+  // the right of it. Ask the layout rather than guessing a breakpoint: try the
+  // hung position, and if the bar would run past the row's container - where
+  // MODAQ's event pane begins - drop back into the flow.
+  const fitToRow = row => {
+    bar.classList.remove('tb-inflow');
+    row.classList.remove('tb-row-inflow');
+    const host = row.parentElement;
+    if (!host) return;
+    const fits = bar.getBoundingClientRect().right <= host.getBoundingClientRect().right;
+    bar.classList.toggle('tb-inflow', !fits);
+    row.classList.toggle('tb-row-inflow', !fits);
   };
 
   // React owns that row and rebuilds it, so treat placement as something to
   // restore continuously rather than to do once
   const anchor = () => {
     const row = findCycleRow();
-    if (!row || bar.parentElement === row) return;
-    row.classList.add('kshsaa-cycle-row');
-    row.appendChild(bar);
+    if (!row) return;
+    if (bar.parentElement !== row) {
+      row.classList.add('kshsaa-cycle-row');
+      row.appendChild(bar);
+    }
+    fitToRow(row);
   };
+
+  window.addEventListener('resize', anchor);
 
   // matching on the real team names rather than the literal word "Team" keeps
   // this working once the moderator renames the teams
