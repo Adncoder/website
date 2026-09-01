@@ -443,6 +443,15 @@ const PAGE = `<!DOCTYPE html>
  .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
  .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
  .kshsaa-bar a.active{color:#1f3864;font-weight:600}
+ /* three columns so the section links stay centred on the page no matter how
+    wide the "back to QBReader" link on the left happens to be */
+ .kshsaa-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:.25rem}
+ .kshsaa-nav .kshsaa-links{grid-column:2}
+ .kshsaa-home{justify-self:start;margin-left:0 !important;white-space:nowrap}
+ @media (max-width:575px){
+   .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
+   .kshsaa-nav .kshsaa-links{grid-column:1}
+ }
  .rowlink{cursor:pointer}
  tr.selected td{background:#eef4ff !important}
  .res{display:inline-block;padding:.12rem .5rem;border-radius:.3rem;font-size:.85rem;margin-right:.35rem}
@@ -455,10 +464,13 @@ const PAGE = `<!DOCTYPE html>
 </head><body>
 
 <div class="kshsaa-bar py-2 mb-3">
-  <div class="container text-center" style="max-width:1100px">
-    <a href="/kshsaa-play">Read a round</a>
-    <a href="/kshsaa-round">Download packet</a>
-    <a href="/kshsaa-stats" class="active">Practice stats</a>
+  <div class="container kshsaa-nav" style="max-width:1100px">
+    <a class="kshsaa-home" href="/">&larr; QBReader</a>
+    <span class="kshsaa-links">
+      <a href="/kshsaa-play">Read a round</a>
+      <a href="/kshsaa-round">Download packet</a>
+      <a href="/kshsaa-stats" class="active">Practice stats</a>
+    </span>
   </div>
 </div>
 

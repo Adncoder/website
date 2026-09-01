@@ -24,6 +24,15 @@ const PAGE = `<!DOCTYPE html>
  .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
  .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
  .kshsaa-bar a.active{color:#1f3864;font-weight:600}
+ /* three columns so the section links stay centred on the page no matter how
+    wide the "back to QBReader" link on the left happens to be */
+ .kshsaa-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:.25rem}
+ .kshsaa-nav .kshsaa-links{grid-column:2}
+ .kshsaa-home{justify-self:start;margin-left:0 !important;white-space:nowrap}
+ @media (max-width:575px){
+   .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
+   .kshsaa-nav .kshsaa-links{grid-column:1}
+ }
  /* The clock rides inside MODAQ's own "Previous / Question # / Next" row so the
     moderator's pointer never leaves that cluster. React rebuilds that row on
     every question change, so the bar is inserted into it and re-inserted when
@@ -55,11 +64,13 @@ const PAGE = `<!DOCTYPE html>
  .tb-btn:active{background:#edebe9}
  .tb-btn-primary{background:#0078d4;border-color:#0078d4;color:#fff;min-width:66px}
  .tb-btn-primary:hover{background:#106ebe;border-color:#106ebe;color:#fff}
- /* a select rather than a row of chips: the limit is set automatically per
-    question now, so this is a rarely used override and should not eat the width
-    that keeps the whole cluster on one line */
- .tb-secs{box-sizing:border-box;height:32px;border:1px solid #8a8886;background:#fff;
-   color:#323130;border-radius:2px;font-size:13px;font-family:inherit;padding:0 2px}
+ .tb-durations{display:inline-flex;gap:4px}
+ .tb-durations button{box-sizing:border-box;height:32px;border:1px solid #8a8886;
+   background:#fff;color:#323130;border-radius:2px;font-size:14px;font-weight:600;
+   font-family:inherit;padding:0 8px;min-width:42px;display:inline-flex;align-items:center;
+   justify-content:center;-webkit-font-smoothing:antialiased}
+ .tb-durations button:hover{background:#f3f2f1}
+ .tb-durations button.active{background:#edebe9;border-color:#323130}
  /* the only thing we impose on MODAQ's row: a positioning context for the clock */
  .kshsaa-cycle-row{position:relative}
  /* Fallback for windows too narrow to hold the clock beside a centred nav row:
@@ -73,10 +84,13 @@ const PAGE = `<!DOCTYPE html>
 </head><body>
 
 <div class="kshsaa-bar py-2 mb-3">
-  <div class="container text-center" style="max-width:1100px">
-    <a href="/kshsaa-play" class="active">Read a round</a>
-    <a href="/kshsaa-round">Download packet</a>
-    <a href="/kshsaa-stats">Practice stats</a>
+  <div class="container kshsaa-nav" style="max-width:1100px">
+    <a class="kshsaa-home" href="/">&larr; QBReader</a>
+    <span class="kshsaa-links">
+      <a href="/kshsaa-play" class="active">Read a round</a>
+      <a href="/kshsaa-round">Download packet</a>
+      <a href="/kshsaa-stats">Practice stats</a>
+    </span>
   </div>
 </div>
 
@@ -110,14 +124,12 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="row g-4">
       <div class="col-md-6">
-        <label class="form-label fw-semibold">Team 1</label>
-        <input class="form-control mb-2" id="t1" value="Team 1">
+        <input class="form-control mb-2 fw-semibold" id="t1" placeholder="Team 1" aria-label="Team 1 name">
         <div id="p1"></div>
         <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p1">+ Add player</button>
       </div>
       <div class="col-md-6">
-        <label class="form-label fw-semibold">Team 2</label>
-        <input class="form-control mb-2" id="t2" value="Team 2">
+        <input class="form-control mb-2 fw-semibold" id="t2" placeholder="Team 2" aria-label="Team 2 name">
         <div id="p2"></div>
         <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p2">+ Add player</button>
       </div>
@@ -127,7 +139,7 @@ const PAGE = `<!DOCTYPE html>
 
     <div class="form-check mt-3">
       <input class="form-check-input" type="checkbox" id="conv">
-      <label class="form-check-label small" for="conv">Include converted quizbowl questions (bigger pool)</label>
+      <label class="form-check-label small" for="conv">Include converted quizbowl questions (Varsity questions)</label>
     </div>
 
     <div id="nameCheck" class="alert alert-warning mt-3 d-none"></div>
@@ -149,8 +161,8 @@ const PAGE = `<!DOCTYPE html>
       title="Wrong answer with no interruption: the other team gets the time left plus five seconds">+5s</button>
     <button type="button" class="tb-btn" id="tpReset"
       title="Put the clock back to this question's full limit">Reset</button>
-    <select class="tb-secs" id="tpDurations"
-      title="Time limit for this question - set automatically, override here"></select>
+    <span class="tb-durations" id="tpDurations"
+      title="Time limit for this question - set automatically, override here"></span>
   </div>
 
   <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
@@ -554,7 +566,9 @@ function tpSet (seconds, alsoStart) {
   TIMER.duration = seconds;
   TIMER.remaining = seconds;
   tpRender();
-  $('tpDurations').value = String(seconds);
+  Array.from($('tpDurations').children).forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.secs) === seconds);
+  });
   if (alsoStart) tpStart();
 }
 
@@ -566,11 +580,13 @@ function setupTimer (round, teamNames) {
   });
 
   // the override list has to include any limit this round actually uses, or
-  // tpSet could not show the value it just applied
+  // tpSet could not highlight the value it just applied
   const choices = [...new Set(DURATIONS.concat(LIMITS))].sort((a, b) => a - b);
   $('tpDurations').innerHTML = choices
-    .map(s => '<option value="' + s + '">' + s + 's</option>').join('');
-  $('tpDurations').onchange = () => tpSet(Number($('tpDurations').value), false);
+    .map(s => '<button type="button" data-secs="' + s + '">' + s + 's</button>').join('');
+  Array.from($('tpDurations').children).forEach(b => {
+    b.onclick = () => tpSet(Number(b.dataset.secs), false);
+  });
 
   const timed = LIMITS
     .map((s, i) => s === DEFAULT_SECONDS ? null : 'Q' + (i + 1) + ': ' + s + 's')
