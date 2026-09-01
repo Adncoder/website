@@ -6,7 +6,7 @@ const router = Router();
 
 router.get('/', async (req, res) => {
   const { user_id: userId, token } = req.query;
-  const verified = verifyResetPasswordLink(userId, token);
+  const verified = await verifyResetPasswordLink(userId, token);
   if (verified) {
     req.session.user_id = userId;
     req.session.verifyResetPassword = true;

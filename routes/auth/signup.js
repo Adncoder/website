@@ -37,7 +37,9 @@ router.post('/', async (req, res) => {
 
   const password = saltAndHashPassword(req.body.password);
   await createUser(username, password, email);
-  sendVerificationEmail(username);
+  // deliberately not awaited: signup should not block on SMTP. The catch
+  // keeps a failed send (or token write) from becoming an unhandled rejection.
+  sendVerificationEmail(username).catch((error) => console.log(error));
   // console.log(`/api/auth: SIGNUP: User ${username} successfully signed up.`);
   res.status(200).send(JSON.stringify({ expires }));
 });
