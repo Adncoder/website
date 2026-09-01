@@ -3,6 +3,8 @@ import { sendEmail } from './email.js';
 
 import getUserField from '../database/account-info/get-user-field.js';
 import getUserId from '../database/account-info/get-user-id.js';
+import consumeEmailToken from '../database/account-info/consume-email-token.js';
+import setEmailToken from '../database/account-info/set-email-token.js';
 import updateUser from '../database/account-info/update-user.js';
 import verifyEmail from '../database/account-info/verify-email.js';
 
@@ -17,13 +19,71 @@ const salt = process.env.SALT ? process.env.SALT : 'salt';
 const secret = process.env.SECRET ? process.env.SECRET : 'secret';
 
 /**
- * Stores the timestamp of the most recent email sent to a user.
- * The timestamp is used to verify that the user clicked the link within 15 minutes.
- * The timestamp is the number of milliseconds since January 1, 1970.
- * @type {{String: Number}}
+ * Fields on the user document holding the timestamp of the most recent emailed
+ * link of each kind. The timestamp proves the link was clicked within 15
+ * minutes and that it is the newest link issued; storing it on the document
+ * rather than in server memory is what lets a link survive a server restart
+ * (this server restarts daily) and work on any instance.
  */
-const activeVerifyEmailTokens = {};
-const activeResetPasswordTokens = {};
+const VERIFY_EMAIL_FIELD = 'verifyEmailTokenTimestamp';
+const RESET_PASSWORD_FIELD = 'resetPasswordTokenTimestamp';
+
+/** How long an emailed link stays usable. */
+const LINK_EXPIRATION_TIME = 1000 * 60 * 15; // 15 minutes
+
+/**
+ * Checks a one-time link's signature and that it is addressed to this user.
+ * @param {String} userId
+ * @param {String} token
+ * @returns {Number | null} the timestamp the link carries, or null if invalid.
+ */
+function decodeLinkTimestamp (userId, token) {
+  return verify(token, secret, (err, decoded) => {
+    if (err) {
+      return null;
+    }
+
+    const timestamp = parseInt(decoded.timestamp);
+    if (isNaN(timestamp)) {
+      return null;
+    }
+
+    if (decoded.user_id !== userId) {
+      return null;
+    }
+
+    return timestamp;
+  });
+}
+
+/**
+ * Spends a one-time link: confirms it is the live one for this user and clears
+ * it, then applies the expiry window. An expired link is still spent, so it
+ * cannot be replayed.
+ * @param {String} userId
+ * @param {String} token
+ * @param {String} field
+ * @returns {Promise<ObjectId | null>} the user's id if the link was good.
+ */
+async function consumeLink (userId, token, field) {
+  const timestamp = decodeLinkTimestamp(userId, token);
+  if (timestamp === null) {
+    return null;
+  }
+
+  let id;
+  try { id = new ObjectId(userId); } catch (e) { return null; }
+
+  if (!await consumeEmailToken(id, field, timestamp)) {
+    return null;
+  }
+
+  if (Date.now() - timestamp > LINK_EXPIRATION_TIME) {
+    return null;
+  }
+
+  return id;
+}
 
 /**
  * Check whether or not the given username and password are valid.
@@ -98,8 +158,7 @@ export async function sendResetPasswordEmail (username) {
   }
 
   // console.log(`Email sent: ${info.response}`);
-  activeResetPasswordTokens[userId] = timestamp;
-  return true;
+  return await setEmailToken(userId, RESET_PASSWORD_FIELD, timestamp);
 }
 
 export async function sendVerificationEmail (username) {
@@ -125,8 +184,7 @@ export async function sendVerificationEmail (username) {
   }
 
   // console.log(`Email sent: ${info.response}`);
-  activeVerifyEmailTokens[userId] = timestamp;
-  return true;
+  return await setEmailToken(userId, VERIFY_EMAIL_FIELD, timestamp);
 }
 
 export function updatePassword (username, newPassword) {
@@ -165,65 +223,27 @@ export function validateUsername (username) {
   return true;
 }
 
-export function verifyEmailLink (userId, token) {
-  const expirationTime = 1000 * 60 * 15; // 15 minutes
-  return verify(token, secret, (err, decoded) => {
-    if (err) {
-      return false;
-    }
+/**
+ * @param {String} userId
+ * @param {String} token
+ * @returns {Promise<Boolean>} true once the address is marked verified.
+ */
+export async function verifyEmailLink (userId, token) {
+  const id = await consumeLink(userId, token, VERIFY_EMAIL_FIELD);
+  if (!id) {
+    return false;
+  }
 
-    const timestamp = parseInt(decoded.timestamp);
-    if (isNaN(timestamp)) {
-      return false;
-    }
-
-    if (decoded.user_id !== userId) {
-      return false;
-    }
-
-    if (activeVerifyEmailTokens[userId] !== timestamp) {
-      return false;
-    }
-
-    delete activeVerifyEmailTokens[userId];
-
-    if (Date.now() - timestamp > expirationTime) {
-      return false;
-    }
-
-    try { userId = new ObjectId(userId); } catch (e) { return false; }
-
-    verifyEmail(userId);
-    return true;
-  });
+  // awaited, so the caller never reports success for a write that failed
+  const result = await verifyEmail(id);
+  return result.matchedCount === 1;
 }
 
-export function verifyResetPasswordLink (userId, token) {
-  const expirationTime = 1000 * 60 * 15; // 15 minutes
-  return verify(token, secret, (err, decoded) => {
-    if (err) {
-      return false;
-    }
-
-    const timestamp = parseInt(decoded.timestamp);
-    if (isNaN(timestamp)) {
-      return false;
-    }
-
-    if (decoded.user_id !== userId) {
-      return false;
-    }
-
-    if (activeResetPasswordTokens[userId] !== timestamp) {
-      return false;
-    }
-
-    delete activeResetPasswordTokens[userId];
-
-    if (Date.now() - timestamp > expirationTime) {
-      return false;
-    }
-
-    return true;
-  });
+/**
+ * @param {String} userId
+ * @param {String} token
+ * @returns {Promise<Boolean>}
+ */
+export async function verifyResetPasswordLink (userId, token) {
+  return Boolean(await consumeLink(userId, token, RESET_PASSWORD_FIELD));
 }

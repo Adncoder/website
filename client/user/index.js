@@ -15,7 +15,12 @@ fetch('/auth/get-profile')
   });
 
 document.getElementById('email-verification-link').addEventListener('click', async () => {
-  await fetch('/auth/send-verification-email');
+  const response = await fetch('/auth/send-verification-email').catch(() => null);
+  if (!response?.ok) {
+    document.getElementById('email-verification-error').classList.remove('d-none');
+    return;
+  }
+  document.getElementById('email-verification-error').classList.add('d-none');
   document.getElementById('email-verification-span').classList.add('d-none');
   document.getElementById('email-verification-confirmation').classList.remove('d-none');
 });
