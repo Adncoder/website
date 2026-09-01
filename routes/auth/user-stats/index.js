@@ -15,10 +15,10 @@ router.use((req, res, next) => {
     return;
   }
 
-  if (!checkToken(username, token, true)) {
-    res.sendStatus(403);
-    return;
-  }
+  // Having an account is enough to track your own stats. Requiring a verified
+  // email here made stat tracking impossible on any deployment without SMTP
+  // configured, since nobody could ever clear the check. Multiplayer still
+  // requires verification (server/multiplayer/handle-wss-connection.js).
 
   if (req.query.difficulties) {
     req.query.difficulties = req.query.difficulties
