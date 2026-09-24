@@ -110,7 +110,7 @@ const PAGE = `<!DOCTYPE html>
   <div id="setup" class="setup d-none">
     <h1 class="h4">Read a round</h1>
     <p class="text-secondary small mb-3">Generates a fresh randomized 16-question round
-    (1 foreign language, 3 language arts, 3 science &amp; health, 3 social science, 3 math,
+    (1 world language, 3 language arts, 3 science/health, 3 social studies, 3 math,
     2 fine arts, 1 year in review) and opens it in MODAQ with KSHSAA scoring already set:
     10 points per tossup, no powers, no bonuses, &minus;5 on a wrong interruption.</p>
 
@@ -628,8 +628,10 @@ $('go').onclick = async () => {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
+    // metadata is MODAQ's own per-question field: it renders it as <Social Studies>
+    // beside the answer, so the moderator can see which subject they are reading.
     const packet = {
-      tossups: data.round.map(q => ({ question: q.question, answer: q.answer })),
+      tossups: data.round.map(q => ({ question: q.question, answer: q.answer, metadata: q.category })),
       bonuses: []
     };
     const label = $('label').value.trim() || 'Practice';
