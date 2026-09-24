@@ -1,6 +1,8 @@
 export const MIN_YEAR = 2000;
 export const MAX_YEAR = 2026;
-export const DEFAULT_MIN_YEAR = 2010;
+// No year floor by default: this database's sets start in 2003, and a floor of
+// 2010 silently hid every set before it from random questions and search.
+export const DEFAULT_MIN_YEAR = MIN_YEAR;
 export const DEFAULT_MAX_YEAR = MAX_YEAR;
 
 export const DEFAULT_QUERY_RETURN_LENGTH = 25;
