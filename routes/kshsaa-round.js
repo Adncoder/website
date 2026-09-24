@@ -19,10 +19,10 @@ const router = Router();
 
 // [label, count, filter] - official KSHSAA round shape, 16 questions
 const DISTRIBUTION = [
-  ['Foreign Language', 1, { kshsaa_category: { $regex: 'foreign language|world language', $options: 'i' } }],
+  ['World Language', 1, { kshsaa_category: { $regex: 'foreign language|world language', $options: 'i' } }],
   ['Language Arts', 3, { category: 'Literature' }],
-  ['Science & Health', 3, { category: 'Science', alternate_subcategory: { $ne: 'Math' } }],
-  ['Social Science', 3, { category: 'Social Science' }],
+  ['Science/Health', 3, { category: 'Science', alternate_subcategory: { $ne: 'Math' } }],
+  ['Social Studies', 3, { category: 'Social Science' }],
   ['Mathematics', 3, { alternate_subcategory: 'Math' }],
   ['Fine Arts', 2, { category: 'Fine Arts' }],
   ['Year in Review', 1, { category: 'Current Events' }]
@@ -121,7 +121,7 @@ const PAGE = `<!DOCTYPE html>
 <div class="container pb-4" style="max-width:900px">
   <h1 class="h4">Download a packet</h1>
   <p class="text-secondary">Builds a fresh, randomized 16-question round in official KSHSAA order
-  (1 foreign language, 3 language arts, 3 science &amp; health, 3 social science, 3 math, 2 fine arts,
+  (1 world language, 3 language arts, 3 science/health, 3 social studies, 3 math, 2 fine arts,
   1 year in review) drawn from the full question archive.</p>
 
   <div class="card mb-3"><div class="card-body">
