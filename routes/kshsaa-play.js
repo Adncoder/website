@@ -628,8 +628,10 @@ $('go').onclick = async () => {
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
+    // metadata is MODAQ's own per-question field: it renders it as <Social Studies>
+    // beside the answer, so the moderator can see which subject they are reading.
     const packet = {
-      tossups: data.round.map(q => ({ question: q.question, answer: q.answer })),
+      tossups: data.round.map(q => ({ question: q.question, answer: q.answer, metadata: q.category })),
       bonuses: []
     };
     const label = $('label').value.trim() || 'Practice';
