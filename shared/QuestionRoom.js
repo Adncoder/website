@@ -52,11 +52,14 @@ export default class QuestionRoom extends Room {
     this.useRandomQuestionCache = true;
 
     this.query = {
-      difficulties: [4, 5],
+      // 2 = KSHSAA questions, 3 = converted quizbowl (see import-kshsaa.js).
+      // The upstream default of [4, 5] matches nothing in this database, which
+      // left every new multiplayer room unable to load a single question.
+      difficulties: [2, 3],
       minYear: DEFAULT_MIN_YEAR,
       maxYear: DEFAULT_MAX_YEAR,
       packetNumbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24],
-      setName: '2023 PACE NSC',
+      setName: 'KSHSAA 2016-2017 STATE',
       reverse: true, // used for `database.getSet`
       standardOnly: false,
       ...this.categoryManager.export()
