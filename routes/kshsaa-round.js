@@ -87,6 +87,28 @@ export const LEVELS = {
   beginner: { label: 'Beginner', pools: [['beginner'], ['converted'], ['kshsaa']], math: ['basic'] }
 };
 
+// Current events go stale: Year in Review uses only questions written this year
+// or last year, so the cutoff moves forward on its own every January.
+const yearInReviewFrom = () => new Date().getFullYear() - 1;
+
+/**
+ * The year a question was written for. A season name ("24-25 Regional",
+ * "2024-25 State") gives its spring year, when the packets were played;
+ * otherwise the latest year in the set name. Imported sets store a placeholder
+ * year when their name has none, so the stored year is trusted only for
+ * question-bank questions, which record the year they were written.
+ * @param {{set?: {name?: string, year?: number}, sjaGenerated?: boolean}} doc
+ * @returns {?number}
+ */
+function questionYear (doc) {
+  const name = String(doc.set?.name || '');
+  const season = name.match(/\b(?:20)?(\d{2})\s*[-\u2013]\s*(?:20)?(\d{2})\b/);
+  if (season && (Number(season[1]) + 1) % 100 === Number(season[2])) { return 2000 + Number(season[2]); }
+  const years = name.match(/\b20\d{2}\b/g);
+  if (years) { return Math.max(...years.map(Number)); }
+  return doc.sjaGenerated ? doc.set?.year ?? null : null;
+}
+
 // the math dropdown: 'auto' follows the level
 const MATH_CHOICES = {
   basic: ['basic'],
@@ -174,7 +196,9 @@ async function buildRound ({ level, math, includeGenerated }) {
   const [candidates, usageDocs] = await Promise.all([
     Promise.all(DISTRIBUTION.map(([label, , filter]) => tossups
       .find({ kshsaaImport: true, ...filter, ...setFilter }, {
-        projection: label === 'Mathematics' ? { 'set.name': 1, question: 1 } : { 'set.name': 1 }
+        projection: label === 'Mathematics'
+          ? { 'set.name': 1, question: 1 }
+          : label === 'Year in Review' ? { set: 1, sjaGenerated: 1 } : { 'set.name': 1 }
       })
       .toArray())),
     usage.find({}).toArray()
@@ -185,10 +209,12 @@ async function buildRound ({ level, math, includeGenerated }) {
   // Literature), so drop anything an earlier slot already took.
   const picked = new Set();
   const plan = [];
+  const recentFrom = yearInReviewFrom();
   const short = [];
   const notes = [];
   DISTRIBUTION.forEach(([label, count], i) => {
-    const docs = candidates[i].filter(d => !picked.has(String(d._id)));
+    const docs = candidates[i].filter(d => !picked.has(String(d._id)) &&
+      (label !== 'Year in Review' || questionYear(d) >= recentFrom));
     let result;
     if (label === 'Mathematics') {
       const inTier = new Set(docs.filter(d => mathTiers.includes(mathTierOf(d.question))));
@@ -212,7 +238,10 @@ async function buildRound ({ level, math, includeGenerated }) {
       notes.push(label + ': ' + result.repeats + ' question(s) repeated - every other ' + what +
         ' question at this level has already been read.');
     }
-    if (result.chosen.length < count) { short.push(`${label} (${result.chosen.length} of ${count})`); }
+    if (result.chosen.length < count) {
+      const which = label === 'Year in Review' ? `${label} from ${recentFrom} on` : label;
+      short.push(`${which} (${result.chosen.length} of ${count})`);
+    }
   });
 
   if (level === 'beginner' && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === 'beginner'))) {
