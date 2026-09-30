@@ -64,12 +64,13 @@ export const CATEGORIES = DISTRIBUTION.map(([label]) => label);
 const SET_PREFIX = {
   converted: 'QB Converted',
   generated: 'SJA Generated',
-  beginner: 'QB Beginner'
+  beginner: 'QB Beginner',
+  current: 'QB Current Events'
 };
 
 /**
  * @param {string} [setName]
- * @returns {'kshsaa'|'converted'|'generated'|'beginner'}
+ * @returns {'kshsaa'|'converted'|'generated'|'beginner'|'current'}
  */
 function sourceOf (setName) {
   const name = String(setName || '');
@@ -80,11 +81,12 @@ function sourceOf (setName) {
 // only once the earlier ones have nothing unread left in a category -- the
 // converted quizbowl sets have no World Language or math at all, and the
 // Beginner set has no Year in Review, so those slots always come from further
-// down the list.
+// down the list. The current-events import (import-current-events.js) holds
+// nothing but recent Year in Review questions, so every level reads it first.
 export const LEVELS = {
-  varsity: { label: 'Varsity', pools: [['kshsaa', 'converted']], math: ['basic', 'intermediate', 'advanced'] },
-  jv: { label: 'JV', pools: [['converted'], ['kshsaa']], math: ['basic', 'intermediate'] },
-  beginner: { label: 'Beginner', pools: [['beginner'], ['converted'], ['kshsaa']], math: ['basic'] }
+  varsity: { label: 'Varsity', pools: [['kshsaa', 'converted', 'current']], math: ['basic', 'intermediate', 'advanced'] },
+  jv: { label: 'JV', pools: [['converted', 'current'], ['kshsaa']], math: ['basic', 'intermediate'] },
+  beginner: { label: 'Beginner', pools: [['beginner', 'current'], ['converted'], ['kshsaa']], math: ['basic'] }
 };
 
 // Current events go stale: Year in Review uses only questions written this year

@@ -12,5 +12,6 @@ node_modules
 # JetBrains IDE
 .idea/
 
-# import-beginner.js --dry-run output
+# import-beginner.js / import-current-events.js --dry-run output
 beginner-preview.json
+current-events-preview.json
