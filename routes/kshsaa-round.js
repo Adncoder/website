@@ -77,16 +77,19 @@ function sourceOf (setName) {
   return Object.keys(SET_PREFIX).find(key => name.startsWith(SET_PREFIX[key])) || 'kshsaa';
 }
 
-// Question pools for each level, most preferred first. A later pool is used
-// only once the earlier ones have nothing unread left in a category -- the
-// converted quizbowl sets have no World Language or math at all, and the
-// Beginner set has no Year in Review, so those slots always come from further
-// down the list. The current-events import (import-current-events.js) holds
-// nothing but recent Year in Review questions, so every level reads it first.
+// Question pools for each level, most preferred first. Every level is short,
+// buzzer-race questions; what rises is how hard the clues are: middle-school
+// giveaways, then the real KSHSAA archive (easy clues), then converted
+// quizbowl (harder ones). A later pool is used only once the earlier ones have
+// nothing unread left in a category -- the converted sets have no World
+// Language or math at all, and the Beginner set has no Year in Review, so those
+// slots always come from further down the list. The current-events import
+// (import-current-events.js) holds nothing but recent Year in Review
+// questions, so every level reads it first.
 export const LEVELS = {
-  varsity: { label: 'Varsity', pools: [['kshsaa', 'converted', 'current']], math: ['basic', 'intermediate', 'advanced'] },
-  jv: { label: 'JV', pools: [['converted', 'current'], ['kshsaa']], math: ['basic', 'intermediate'] },
-  beginner: { label: 'Beginner', pools: [['beginner', 'current'], ['converted'], ['kshsaa']], math: ['basic'] }
+  varsity: { label: 'Varsity', pools: [['converted', 'current'], ['kshsaa']], math: ['basic', 'intermediate', 'advanced'] },
+  jv: { label: 'JV', pools: [['kshsaa', 'current'], ['converted']], math: ['basic', 'intermediate'] },
+  beginner: { label: 'Beginner', pools: [['beginner', 'current'], ['kshsaa'], ['converted']], math: ['basic'] }
 };
 
 // Current events go stale: Year in Review uses only questions written this year
