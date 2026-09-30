@@ -13,6 +13,11 @@
 //
 // Safe to re-run: removes the previous Beginner import first, and touches
 // nothing else. Needs MONGODB_URI in .env (not for --dry-run).
+//
+// On a network that inspects secure connections (school Wi-Fi, some
+// antivirus), Node rejects qbreader.org's certificate. Run it as
+//   node --use-system-ca import-beginner.js ...
+// so Node trusts the certificates Windows does.
 
 import 'dotenv/config';
 import { readFileSync, writeFileSync } from 'fs';
@@ -39,6 +44,13 @@ const dryRun = flag('--dry-run');
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// Node reports every network failure as "fetch failed"; the reason is in cause
+function reasonFor (e) {
+  const cause = e.cause;
+  if (!cause) { return e.message; }
+  return [cause.code, cause.message].filter(Boolean).join(': ');
+}
+
 async function query (params) {
   const url = API + '?' + new URLSearchParams({
     questionType: 'tossup',
@@ -53,7 +65,13 @@ async function query (params) {
       const data = await res.json();
       return data.tossups || { count: 0, questionArray: [] };
     } catch (e) {
-      if (attempt >= 4) { throw new Error(url + ' failed: ' + e.message); }
+      if (attempt >= 4) {
+        const why = reasonFor(e);
+        const hint = /cert|self.signed/i.test(why)
+          ? '\nThis network intercepts secure connections. Run it again as:\n  node --use-system-ca import-beginner.js ' + args.join(' ')
+          : '\nCheck that https://www.qbreader.org opens in a browser on this computer.';
+        throw new Error('Could not reach qbreader.org (' + why + ').' + hint + '\nURL: ' + url);
+      }
       await sleep(1000 * 2 ** attempt);
     }
   }
@@ -194,7 +212,12 @@ if (from) {
   console.log(`Loaded ${raw.length} tossups from ${from}`);
 } else {
   console.log('Fetching middle-school tossups from qbreader.org...');
-  raw = await fetchAll();
+  try {
+    raw = await fetchAll();
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
 }
 const saveRaw = option('--save-raw');
 if (saveRaw) {
