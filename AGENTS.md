@@ -150,7 +150,7 @@ document describes the upstream codebase and still applies.
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording |
 | `server/kshsaa/giveaway.js` | Turns a middle-school tossup into a Beginner question (its giveaway line) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
-| `import-kshsaa.js`, `import-beginner.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set |
+| `import-kshsaa.js`, `import-beginner.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. The last two share `server/kshsaa/qbreader-import.js` |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -161,7 +161,8 @@ packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
 Every question the pages use carries `kshsaaImport: true`; the **set name
 prefix** says where it came from: `QB Converted` (varsity quizbowl rewritten
 for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
-(`import-beginner.js`), anything else real KSHSAA. `LEVELS` in
+(`import-beginner.js`), `QB Current Events` (`import-current-events.js`, recent
+Year in Review only), anything else real KSHSAA. `LEVELS` in
 `kshsaa-round.js` lists the pools each level draws from in order of preference;
 later pools fill slots the earlier ones cannot (the converted and Beginner sets
 have no World Language, and the converted sets no math).
