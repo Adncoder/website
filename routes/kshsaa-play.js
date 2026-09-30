@@ -118,8 +118,6 @@ const PAGE = `<!DOCTYPE html>
 <div class="container-fluid pb-3">
   <div id="gate" class="setup d-none">
     <h1 class="h4">Read a round</h1>
-    <p class="text-secondary small">Log in with the team password so player names autocomplete
-    and the game can save itself to your stats when it ends.</p>
     <div class="card" style="max-width:420px"><div class="card-body">
       <label class="form-label">Team password</label>
       <input type="password" class="form-control mb-2" id="gatePw">
@@ -130,30 +128,23 @@ const PAGE = `<!DOCTYPE html>
 
   <div id="setup" class="setup d-none">
     <h1 class="h4">Read a round</h1>
-    <p class="text-secondary small mb-3">Generates a fresh randomized 16-question round
-    (1 world language, 3 language arts, 3 science/health, 3 social studies, 3 math,
-    2 fine arts, 1 year in review) and opens it in MODAQ with KSHSAA scoring already set:
-    10 points per tossup, no powers, no bonuses, &minus;5 on a wrong interruption.</p>
 
     <div class="mb-3">
-      <label class="form-label fw-semibold">Practice label</label>
+      <label class="form-label fw-semibold" for="label">Game name</label>
       <input class="form-control" id="label" placeholder="Tuesday practice, game 2">
-      <div class="form-text">Saved with the stats so you can find this game later.</div>
     </div>
 
     <div class="mb-3 d-none" id="lineupBox">
       <label class="form-label fw-semibold">Reuse a lineup</label>
       <select class="form-select form-select-sm mb-2" id="lineupGame"></select>
       <div id="lineupTeams"></div>
-      <div class="form-text">Load one side and retype the other, or load both. Team names come
-      along with the players.</div>
     </div>
 
     ${levelControls()}
 
     <div class="form-check mb-3">
       <input class="form-check-input" type="checkbox" id="gen">
-      <label class="form-check-label small" for="gen">Include generated questions (<a href="/kshsaa-questions">question bank</a>)</label>
+      <label class="form-check-label small" for="gen">Include question bank questions</label>
     </div>
 
     <div class="row g-4">
@@ -168,19 +159,11 @@ const PAGE = `<!DOCTYPE html>
         <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p2">+ Add player</button>
       </div>
     </div>
-    <div class="form-text mt-1">Type part of a name (<code>samu</code>, <code>kuhn</code>) and press Enter to take
-    the suggestion and jump to the next box. Five players per side read as active; anyone past five starts on the
-    bench. Spelling has to match for a player&rsquo;s history to line up.</div>
 
     <div id="nameCheck" class="alert alert-warning mt-3 d-none"></div>
 
     <button class="btn btn-primary mt-3" id="go">Generate round &amp; start reading</button>
     <span class="ms-2 small text-secondary" id="status"></span>
-
-    <p class="small text-secondary mt-3 mb-0">When the game ends, click &ldquo;Save to team stats&rdquo; in the
-    reader&rsquo;s menu. A game saves once; fix mistakes afterwards on the Practice stats page. On the KSHSAA neg rule: MODAQ applies &minus;5 to any wrong interruption, but per the
-    manual a <em>second</em> team that interrupts and misses takes no penalty &mdash; don&rsquo;t record the neg then.</p>
-    <p class="small mt-2"><a href="/kshsaa-round">Prefer a file to download instead?</a></p>
   </div>
 
   <div id="timerBar" class="d-none">
@@ -425,12 +408,11 @@ function restoreNextRound () {
   if (!setup) return;
   $('label').value = nextLabel(setup.label || '');
   const radio = document.querySelector('input[name="level"][value="' + setup.level + '"]');
-  if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+  if (radio) radio.checked = true;
   if (setup.math) $('mathTier').value = setup.math;
   $('gen').checked = Boolean(setup.generated);
   fillSide('p1', 't1', setup.teams[0].name, setup.teams[0].players);
   fillSide('p2', 't2', setup.teams[1].name, setup.teams[1].players);
-  $('status').textContent = 'Same teams as last round - change whoever swapped out.';
 }
 
 fetch('/kshsaa-stats/me').then(r => r.json()).then(d => {

@@ -267,11 +267,6 @@ router.get('/generate', async (req, res) => {
  * @returns {string} HTML
  */
 export function levelControls () {
-  const help = {
-    varsity: 'Real KSHSAA questions plus converted varsity quizbowl.',
-    jv: 'Converted quizbowl only. KSHSAA fills World Language and math, which it has none of.',
-    beginner: 'The last line of middle-school quizbowl questions. JV and KSHSAA questions fill the slots it lacks.'
-  };
   return `
     <div class="mb-2">
       <div class="form-label fw-semibold mb-1">Level</div>
@@ -280,7 +275,6 @@ export function levelControls () {
         <input type="radio" class="btn-check" name="level" id="level-${key}" value="${key}"${i ? '' : ' checked'}>
         <label class="btn btn-outline-primary btn-sm" for="level-${key}">${LEVELS[key].label}</label>`).join('')}
       </div>
-      <div class="form-text" id="levelHelp">${help.varsity}</div>
     </div>
     <div class="mb-2">
       <label class="form-label fw-semibold mb-1" for="mathTier">Math</label>
@@ -292,15 +286,8 @@ export function levelControls () {
         <option value="advanced">Advanced &mdash; Algebra II through calculus</option>
         <option value="any">Any</option>
       </select>
-      <div class="form-text">Matching the level gives Varsity any math, JV basic and intermediate, Beginner basic.</div>
     </div>
     <script>
-    (function () {
-      var help = ${JSON.stringify(help)};
-      Array.prototype.forEach.call(document.querySelectorAll('input[name="level"]'), function (radio) {
-        radio.addEventListener('change', function () { document.getElementById('levelHelp').textContent = help[radio.value]; });
-      });
-    })();
     function levelQuery () {
       return 'level=' + document.querySelector('input[name="level"]:checked').value +
         '&math=' + document.getElementById('mathTier').value;
