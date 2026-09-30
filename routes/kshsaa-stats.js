@@ -13,7 +13,8 @@
 import { Router } from 'express';
 import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
-import { CATEGORIES, CATEGORY_BY_QUESTION } from './kshsaa-round.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
+import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
@@ -72,9 +73,31 @@ router.post('/logout', (req, res) => {
 });
 router.get('/me', (req, res) => res.json({ authed: authed(req) }));
 
+/**
+ * Everyone who has been in a game: buzzers, plus the players on each team who
+ * never buzzed.
+ * @returns {Promise<string[]>}
+ */
+async function playedNames () {
+  const [buzzed, listed] = await Promise.all([games.distinct('buzzes.player'), games.distinct('teams.players')]);
+  return buzzed.concat(listed).filter(Boolean);
+}
+
+/**
+ * Maps any capitalization or stray spacing of a known name to its stored
+ * spelling, roster first, so "max" can never become a second "Max".
+ * @returns {Promise<function(string): string>}
+ */
+async function nameCanonicalizer () {
+  const listed = (await roster.find({}).toArray()).map(r => r.name);
+  const canon = {};
+  for (const n of (await playedNames()).concat(listed)) canon[String(n).trim().toLowerCase()] = String(n).trim();
+  return n => canon[String(n || '').trim().toLowerCase()] || String(n || '').trim();
+}
+
 // names for autocomplete elsewhere on the site: roster + anyone who has played
 router.get('/names', requireAuth, async (req, res) => {
-  const played = await games.distinct('buzzes.player');
+  const played = await playedNames();
   const listed = (await roster.find({}).toArray()).map(r => r.name);
   const seen = {};
   const names = [];
@@ -91,7 +114,7 @@ router.get('/names', requireAuth, async (req, res) => {
 
 router.get('/roster', requireAuth, async (req, res) => {
   const list = await roster.find({}).sort({ name: 1 }).toArray();
-  const played = await games.distinct('buzzes.player');
+  const played = await playedNames();
   const playedSet = {};
   played.forEach(n => { playedSet[String(n).trim().toLowerCase()] = true; });
   res.json({
@@ -169,22 +192,44 @@ router.post('/roster/update', requireAuth, async (req, res) => {
   }
 });
 
-// rename is allowed ONLY while a player has no recorded games, so a stats
-// history can never be reassigned to a different person by accident
+/**
+ * Renames a player inside every game they appear in: their buzzes, their team
+ * lists, and the questions-heard counts keyed by "team|player".
+ * @param {string} from
+ * @param {string} to
+ * @returns {Promise<number>} how many games changed
+ */
+async function renameInGames (from, to) {
+  const hit = await games.find({ $or: [{ 'buzzes.player': from }, { 'teams.players': from }] }).toArray();
+  for (const g of hit) {
+    const buzzes = (g.buzzes || []).map(b => (b.player === from ? { ...b, player: to } : b));
+    const teams = (g.teams || []).map(t => ({
+      ...t,
+      players: [...new Set((t.players || []).map(p => (p === from ? to : p)))]
+    }));
+    const heardByPlayer = {};
+    for (const [key, heard] of Object.entries(g.heardByPlayer || {})) {
+      const bar = key.indexOf('|');
+      const team = key.slice(0, bar);
+      const player = key.slice(bar + 1);
+      const next = team + '|' + (player === from ? to : player);
+      heardByPlayer[next] = Math.max(heardByPlayer[next] ?? 0, heard);
+    }
+    await games.updateOne({ _id: g._id }, { $set: { buzzes, teams, heardByPlayer } });
+  }
+  return hit.length;
+}
+
+// Renaming carries a player's history with them. If the new name is already
+// someone on the roster, the two entries merge into that one -- which is how a
+// misspelling gets folded into the right player.
 router.post('/roster/rename', requireAuth, async (req, res) => {
   try {
     const id = new ObjectId(String(req.body.id));
     const doc = await roster.findOne({ _id: id });
     if (!doc) return res.status(404).json({ error: 'not on the roster' });
 
-    const played = await games.countDocuments({ 'buzzes.player': doc.name });
-    if (played) {
-      return res.status(400).json({
-        error: doc.name + ' already has games recorded, so the name is locked. Remove and re-add only if you are sure.'
-      });
-    }
-
-    const name = String(req.body.name || '').trim();
+    const name = String(req.body.name || '').trim().slice(0, 60);
     if (!name) return res.status(400).json({ error: 'name cannot be empty' });
 
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -192,10 +237,14 @@ router.post('/roster/rename', requireAuth, async (req, res) => {
       _id: { $ne: id },
       name: { $regex: '^' + escaped + '$', $options: 'i' }
     });
-    if (clash) return res.status(400).json({ error: clash.name + ' is already on the roster' });
-
-    await roster.updateOne({ _id: id }, { $set: { name } });
-    res.json({ ok: true });
+    const target = clash ? clash.name : name;
+    const changedGames = await renameInGames(doc.name, target);
+    if (clash) {
+      await roster.deleteOne({ _id: id });
+    } else {
+      await roster.updateOne({ _id: id }, { $set: { name } });
+    }
+    res.json({ ok: true, name: target, games: changedGames, merged: Boolean(clash) });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
@@ -291,17 +340,20 @@ function parseRaw (o, cats, denominators) {
   return { teams: Object.values(teams), buzzes, heardByPlayer: {}, tossupsRead: (o.cycles || []).length };
 }
 
+const LEVEL_KEYS = Object.keys(LEVELS);
+const validLevel = v => (LEVEL_KEYS.includes(v) ? v : null);
+
 function normalize (raw, label, cats, denominators) {
   let parsed;
   if (raw && (raw.match_teams || raw.match_questions)) parsed = parseQbj(raw, cats, denominators);
   else if (raw && raw.cycles) parsed = parseRaw(raw, cats, denominators);
   else throw new Error('unrecognized export format - use MODAQ\'s QBJ or JSON export');
 
-  const byTeam = {};
-  for (const b of parsed.buzzes) byTeam[b.team] = (byTeam[b.team] || 0) + (b.value || 0);
-  for (const t of parsed.teams) t.score = byTeam[t.name] || 0;
-  for (const name of Object.keys(byTeam)) {
-    if (!parsed.teams.find(t => t.name === name)) parsed.teams.push({ name, players: [], score: byTeam[name] });
+  for (const t of parsed.teams) t.score = teamScore(parsed.buzzes, t.name);
+  for (const b of parsed.buzzes) {
+    if (!parsed.teams.find(t => t.name === b.team)) {
+      parsed.teams.push({ name: b.team, players: [], score: teamScore(parsed.buzzes, b.team) });
+    }
   }
   if (!parsed.buzzes.length) throw new Error('no buzzes found in that file');
 
@@ -319,12 +371,30 @@ function normalize (raw, label, cats, denominators) {
   };
 }
 
+function teamScore (buzzes, teamName) {
+  return buzzes.reduce((sum, b) => sum + (b.team === teamName ? b.value || 0 : 0), 0);
+}
+
 // ---------- endpoints ----------
 
+// round ids being saved right now, so two saves racing each other cannot both
+// pass the already-saved check below
+const saving = new Set();
+
 router.post('/upload', requireAuth, async (req, res) => {
+  const roundId = typeof req.body?.roundId === 'string' ? req.body.roundId.slice(0, 64) : null;
+  if (roundId && saving.has(roundId)) {
+    return res.status(409).json({ error: 'this game is still being saved' });
+  }
+  if (roundId) saving.add(roundId);
   try {
-    const { game, label, categories, wordCounts, charCounts } = req.body || {};
+    const { game, label, categories, wordCounts, charCounts, questionIds } = req.body || {};
     if (!game) return res.status(400).json({ error: 'no game data' });
+    if (roundId && await games.findOne({ roundId }, { projection: { _id: 1 } })) {
+      return res.status(409).json({
+        error: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Practice stats page'
+      });
+    }
     const cats = Array.isArray(categories)
       ? categories.map(c => String(c == null ? '' : c).trim().slice(0, 60)).filter(Boolean)
       : null;
@@ -332,14 +402,15 @@ router.post('/upload', requireAuth, async (req, res) => {
       ? arr.map(n => (Number.isFinite(Number(n)) && Number(n) > 0 ? Math.round(Number(n)) : null))
       : null);
     const denominators = { words: counts(wordCounts), chars: counts(charCounts) };
-    const doc = normalize(game, label, cats && cats.length ? cats : null, denominators);
+    const doc = normalize(game, String(label || '').slice(0, 120), cats && cats.length ? cats : null, denominators);
+    doc.level = validLevel(req.body.level);
+    doc.roundId = roundId;
+    // which questions were read, for tracing a game back to its packet
+    doc.questionIds = Array.isArray(questionIds) ? questionIds.slice(0, 40).map(q => String(q).slice(0, 40)) : null;
 
     // backstop against duplicate players: if a name already exists with different
     // capitalization or stray spaces, store it under the existing spelling
-    const existing = (await games.distinct('buzzes.player')).filter(Boolean);
-    const canon = {};
-    for (const n of existing) canon[n.trim().toLowerCase()] = n;
-    const fix = n => canon[String(n || '').trim().toLowerCase()] || String(n || '').trim();
+    const fix = await nameCanonicalizer();
     for (const b of doc.buzzes) b.player = fix(b.player);
     for (const t of doc.teams) t.players = (t.players || []).map(fix);
 
@@ -347,6 +418,8 @@ router.post('/upload', requireAuth, async (req, res) => {
     res.json({ ok: true, id: result.insertedId, buzzes: doc.buzzes.length });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
+  } finally {
+    if (roundId) saving.delete(roundId);
   }
 });
 
@@ -372,12 +445,93 @@ router.get('/lineups', requireAuth, async (req, res) => {
   });
 });
 
-// full record of one game, for download/backup
+// full record of one game, for the editor and for download/backup
 router.get('/game/:id', requireAuth, async (req, res) => {
   try {
     const g = await games.findOne({ _id: new ObjectId(String(req.params.id)) });
     if (!g) return res.status(404).json({ error: 'game not found' });
     res.json(g);
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+const BUZZ_VALUES = [10, -5, 0];
+
+/**
+ * Checks an edited game from the stats page and turns it into the stored
+ * shape. Throws with a message for the moderator on anything invalid.
+ * @param {object} body - { label, level, teams: [{name, players: [{name, heard}]}],
+ *   buzzes: [{questionNumber, category, player, value, wordIndex}] }
+ * @param {object} g - the game as stored
+ * @param {function(string): string} fix - name canonicalizer
+ */
+function editedGame (body, g, fix) {
+  const label = String(body.label || '').trim().slice(0, 120);
+  if (!label) throw new Error('the game needs a name');
+  if (!Array.isArray(body.teams) || !body.teams.length || body.teams.length > 4) {
+    throw new Error('a game has one to four teams');
+  }
+
+  const teamOf = {};
+  const heardByPlayer = {};
+  const teamNames = {};
+  const teams = body.teams.map(t => {
+    const name = String(t?.name || '').trim().slice(0, 60);
+    if (!name) throw new Error('every team needs a name');
+    if (teamNames[name.toLowerCase()]) throw new Error('two teams are both called ' + name);
+    teamNames[name.toLowerCase()] = true;
+    const players = (Array.isArray(t.players) ? t.players : []).slice(0, 20).map(p => {
+      const player = fix(String(p?.name || '').slice(0, 60));
+      if (!player) throw new Error('a player on ' + name + ' has no name');
+      if (teamOf[player]) throw new Error(player + ' is listed twice');
+      teamOf[player] = name;
+      const heard = Number(p.heard);
+      if (p.heard != null && Number.isInteger(heard) && heard >= 0 && heard <= 200) {
+        heardByPlayer[name + '|' + player] = heard;
+      }
+      return player;
+    });
+    return { name, players, score: 0 };
+  });
+
+  if (!Array.isArray(body.buzzes) || body.buzzes.length > 400) throw new Error('too many buzzes');
+  const buzzes = body.buzzes.map(b => {
+    const player = fix(String(b?.player || ''));
+    if (!teamOf[player]) throw new Error('a buzz is credited to ' + (player || 'nobody') + ', who is not on a team');
+    const value = Number(b.value);
+    if (!BUZZ_VALUES.includes(value)) throw new Error('a buzz has to be +10, -5 or 0');
+    const category = String(b.category || '');
+    if (!CATEGORIES.includes(category) && category !== 'Other') throw new Error('unknown category ' + category);
+    const q = b.questionNumber == null || b.questionNumber === '' ? null : Number(b.questionNumber);
+    if (q != null && !(Number.isInteger(q) && q >= 1 && q <= 99)) throw new Error('question numbers run 1 to 99');
+    // a buzz position only means something against the question it came from
+    const wordIndex = q != null && Number.isInteger(b.wordIndex) && b.wordIndex >= 0 ? b.wordIndex : null;
+    return {
+      player,
+      team: teamOf[player],
+      questionNumber: q,
+      category,
+      value,
+      wordIndex,
+      wordCount: wordIndex != null ? g.wordCounts?.[q - 1] ?? null : null,
+      charCount: wordIndex != null ? g.charCounts?.[q - 1] ?? null : null
+    };
+  }).sort((a, b) => (a.questionNumber ?? 999) - (b.questionNumber ?? 999));
+
+  for (const t of teams) t.score = teamScore(buzzes, t.name);
+  return { label, level: validLevel(body.level), teams, heardByPlayer, buzzes };
+}
+
+// the stats page's game editor: rename, set the level, fix teams and scorers
+router.post('/game/:id/update', requireAuth, async (req, res) => {
+  try {
+    const _id = new ObjectId(String(req.params.id));
+    const g = await games.findOne({ _id });
+    if (!g) return res.status(404).json({ error: 'game not found' });
+    const edited = editedGame(req.body || {}, g, await nameCanonicalizer());
+    await games.updateOne({ _id }, { $set: { ...edited, editedAt: new Date() } });
+    res.json({ ok: true, teams: edited.teams.map(t => ({ name: t.name, score: t.score })) });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
@@ -392,9 +546,67 @@ router.post('/delete', requireAuth, async (req, res) => {
   }
 });
 
+// ---------- stats ----------
+
+// Month boundaries in the team's own time zone, so a game read at 8pm on the
+// last day of the month is not filed under the next one (the server runs UTC).
+const MONTH_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit' });
+const monthKeyOf = date => MONTH_FORMAT.format(new Date(date)).slice(0, 7);
+const monthLabel = key => {
+  const [y, m] = key.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+};
+/** First month of the current school year, which starts in August. */
+function seasonStartKey () {
+  const [y, m] = monthKeyOf(new Date()).split('-').map(Number);
+  return (m >= 8 ? y : y - 1) + '-08';
+}
+
+function emptyTotals () {
+  return { games: new Set(), heard: 0, correct: 0, wrong: 0, negs: 0, points: 0, celSum: 0, celCount: 0 };
+}
+
+function addBuzz (t, b) {
+  if (b.value > 0) {
+    t.correct++;
+    // celerity is only meaningful on a correct buzz, same as qbreader
+    const c = celerityOf(b.wordIndex, b.wordCount);
+    if (c != null) { t.celSum += c; t.celCount++; }
+  } else {
+    // every wrong answer counts against accuracy, penalized or not
+    t.wrong++;
+    if (b.value < 0) t.negs++;
+  }
+  t.points += b.value || 0;
+}
+
+function summary (t) {
+  const buzzes = t.correct + t.wrong;
+  return {
+    games: t.games.size,
+    heard: t.heard,
+    correct: t.correct,
+    wrong: t.wrong,
+    negs: t.negs,
+    points: t.points,
+    // points per tossup heard -- a fairer rate than points per game when
+    // players rotate in and out mid-round
+    ppth: t.heard ? +(t.points / t.heard).toFixed(2) : null,
+    accuracy: buzzes ? Math.round((t.correct / buzzes) * 100) : null,
+    celerity: t.celCount ? +(t.celSum / t.celCount).toFixed(3) : null,
+    celeritySum: t.celSum,
+    celerityCount: t.celCount
+  };
+}
+
 router.get('/data', requireAuth, async (req, res) => {
+  const month = req.query.month === 'all' || /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : 'season';
+  const level = req.query.level === 'untagged' || LEVEL_KEYS.includes(req.query.level) ? req.query.level : 'all';
+  const season = seasonStartKey();
+  const inMonth = key => month === 'all' || (month === 'season' ? key >= season : key === month);
+  const inLevel = key => level === 'all' || key === level;
+
   const all = await games.find({}).sort({ playedAt: 1 }).toArray();
-  const players = {};
 
   // squad assignment comes from the roster, not from whatever the moderator
   // typed as a team name in a given game
@@ -403,82 +615,97 @@ router.get('/data', requireAuth, async (req, res) => {
     squadByName[r.name.trim().toLowerCase()] = r.squad || null;
   }
 
+  // Three views of each player at once: the filtered table, a month-by-month
+  // history under the chosen level, and a level-by-level split under the
+  // chosen months.
+  const players = {};
+  const playerFor = name => players[name] || (players[name] = {
+    name,
+    main: emptyTotals(),
+    byCategory: {},
+    perGame: {},
+    byMonth: {},
+    byLevel: {}
+  });
+  const monthsSeen = new Set();
+  const shown = [];
+
   for (const g of all) {
     const gid = String(g._id);
-    const gLabel = g.label + ' (' + new Date(g.playedAt).toLocaleDateString() + ')';
+    const mKey = monthKeyOf(g.playedAt);
+    const lKey = g.level || 'untagged';
+    monthsSeen.add(mKey);
+    const main = inMonth(mKey) && inLevel(lKey);
+    if (main) shown.push(g);
 
-    // how many tossups each player was actually in the room for. MODAQ reports
-    // it per player in its QBJ export, keyed "team|player"; without it fall back
-    // to the whole round, which is what a full game of play amounts to.
-    const heardThisGame = {};
-    for (const key of Object.keys(g.heardByPlayer || {})) {
-      const name = key.slice(key.indexOf('|') + 1);
-      heardThisGame[name] = Math.max(heardThisGame[name] ?? 0, g.heardByPlayer[key]);
+    const bucketsFor = p => {
+      const list = [];
+      if (main) list.push(p.main);
+      if (inLevel(lKey)) list.push(p.byMonth[mKey] || (p.byMonth[mKey] = emptyTotals()));
+      if (inMonth(mKey)) list.push(p.byLevel[lKey] || (p.byLevel[lKey] = emptyTotals()));
+      return list;
+    };
+
+    // Who was in the room, and for how many tossups. MODAQ reports it per
+    // player, keyed "team|player"; players added by hand have no count, and
+    // fall back to the whole round.
+    const heardBy = {};
+    for (const t of g.teams || []) {
+      for (const name of t.players || []) {
+        heardBy[name] = Math.max(heardBy[name] ?? 0, g.heardByPlayer?.[t.name + '|' + name] ?? g.tossupsRead ?? 0);
+      }
+    }
+    const buzzers = new Set((g.buzzes || []).map(b => b.player));
+    for (const name of buzzers) { if (!(name in heardBy)) heardBy[name] = g.tossupsRead ?? 0; }
+
+    for (const [name, heard] of Object.entries(heardBy)) {
+      // a bench player who never came in did not play this game
+      if (!heard && !buzzers.has(name)) continue;
+      const p = playerFor(name);
+      for (const t of bucketsFor(p)) { t.games.add(gid); t.heard += heard; }
+      if (main) p.perGame[gid] = { id: gid, label: g.label + ' (' + new Date(g.playedAt).toLocaleDateString() + ')', points: 0 };
     }
 
-    for (const b of g.buzzes) {
-      const p = players[b.player] || (players[b.player] = {
-        name: b.player,
-        games: new Set(),
-        correct: 0,
-        neg: 0,
-        points: 0,
-        celerities: [],
-        heard: 0,
-        byCategory: {},
-        perGame: {}
-      });
-      if (!p.games.has(gid)) {
-        p.games.add(gid);
-        p.heard += heardThisGame[b.player] ?? g.tossupsRead ?? 0;
+    for (const b of g.buzzes || []) {
+      const p = playerFor(b.player);
+      for (const t of bucketsFor(p)) addBuzz(t, b);
+      if (main) {
+        const pc = p.byCategory[b.category] || (p.byCategory[b.category] = { correct: 0, wrong: 0 });
+        if (b.value > 0) pc.correct++; else pc.wrong++;
+        p.perGame[gid].points += b.value || 0;
       }
-      const pg = p.perGame[gid] || (p.perGame[gid] = { id: gid, label: gLabel, points: 0, correct: 0, neg: 0 });
-      const pc = p.byCategory[b.category] || (p.byCategory[b.category] = { correct: 0, neg: 0 });
-      if (b.value > 0) {
-        p.correct++; pc.correct++; pg.correct++;
-        // celerity is only meaningful on a correct buzz, same as qbreader
-        const c = celerityOf(b.wordIndex, b.wordCount);
-        if (c != null) { p.celerities.push(c); }
-      } else if (b.value < 0) { p.neg++; pc.neg++; pg.neg++; }
-      p.points += b.value || 0;
-      pg.points += b.value || 0;
     }
   }
 
-  const playerRows = Object.values(players).map(p => {
-    const buzzes = p.correct + p.neg;
-    const avgCelerity = p.celerities.length
-      ? +(p.celerities.reduce((a, b) => a + b, 0) / p.celerities.length).toFixed(3)
-      : null;
-    const squad = squadByName[p.name.trim().toLowerCase()];
-    return {
+  const levelLabel = key => (LEVELS[key] ? LEVELS[key].label : 'Untagged');
+  const playerRows = Object.values(players)
+    .filter(p => p.main.games.size)
+    .map(p => ({
       name: p.name,
-      team: squad || 'Unassigned',
-      games: p.games.size,
-      correct: p.correct,
-      negs: p.neg,
-      points: p.points,
-      ppg: p.games.size ? +(p.points / p.games.size).toFixed(1) : 0,
-      accuracy: buzzes ? Math.round((p.correct / buzzes) * 100) : null,
-      celerity: avgCelerity,
-      celeritySum: p.celerities.reduce((a, b) => a + b, 0),
-      celerityCount: p.celerities.length,
-      heard: p.heard,
-      // points per tossup heard -- a fairer rate than points per game when
-      // players rotate in and out mid-round
-      ppth: p.heard ? +(p.points / p.heard).toFixed(2) : null,
+      team: squadByName[p.name.trim().toLowerCase()] || 'Unassigned',
+      ...summary(p.main),
       byCategory: p.byCategory,
-      perGame: Object.values(p.perGame)
-    };
-  }).sort((a, b) => b.points - a.points);
+      perGame: Object.values(p.perGame),
+      byMonth: Object.keys(p.byMonth).sort().reverse()
+        .map(key => ({ key, label: monthLabel(key), ...summary(p.byMonth[key]) })),
+      byLevel: LEVEL_KEYS.concat('untagged').filter(key => p.byLevel[key])
+        .map(key => ({ key, label: levelLabel(key), ...summary(p.byLevel[key]) }))
+    }))
+    .sort((a, b) => (b.ppth ?? -99) - (a.ppth ?? -99));
 
   res.json({
-    games: all.map(g => ({
+    filters: { month, level },
+    seasonStart: monthLabel(season),
+    months: [...monthsSeen].sort().reverse().map(key => ({ key, label: monthLabel(key) })),
+    levels: LEVEL_KEYS.map(key => ({ key, label: LEVELS[key].label })),
+    totalGames: all.length,
+    games: shown.map(g => ({
       id: String(g._id),
       label: g.label,
+      level: g.level || null,
       playedAt: g.playedAt,
       tossupsRead: g.tossupsRead,
-      teams: g.teams.map(t => ({ name: t.name, score: t.score }))
+      teams: (g.teams || []).map(t => ({ name: t.name, score: t.score }))
     })),
     players: playerRows,
     categoryNames: CATEGORIES
@@ -534,6 +761,13 @@ const PAGE = `<!DOCTYPE html>
  .res-tie{background:#fbf1de;color:#8a6116}
  .res .sc{font-variant-numeric:tabular-nums}
  .form-label{font-size:.85rem;font-weight:600;color:#4b5563}
+ .lvl{display:inline-block;padding:.1rem .45rem;border-radius:.3rem;font-size:.78rem;background:#eef1f7;color:#33415c}
+ .lvl-none{background:#f6f7f9;color:#9ca3af}
+ .kv{display:inline-block;margin:0 1.25rem .4rem 0}
+ .kv .k{display:block;font-size:.75rem;color:#6b7280}
+ .kv .v{font-size:1.05rem;font-weight:600;font-variant-numeric:tabular-nums}
+ #gmBuzzes td{padding:.25rem .35rem !important}
+ details.card > summary{cursor:pointer;padding:.75rem 1rem;font-weight:600;color:#33415c}
 </style>
 </head><body>
 
@@ -570,20 +804,32 @@ const PAGE = `<!DOCTYPE html>
     </ul>
 
     <div id="tabStats">
-    <div class="card mt-3"><div class="card-body">
-      <h2 class="mt-0">Add a practice game</h2>
-      <p class="small text-secondary">Games read on this site save themselves &mdash; use
-      &ldquo;Save to team stats&rdquo; in the reader. This form is for games exported from MODAQ elsewhere.</p>
-      <div class="row g-2 align-items-end">
-        <div class="col-sm-5"><label class="form-label small">Label</label>
-          <input class="form-control form-control-sm" id="label" placeholder="Tuesday practice, game 2"></div>
-        <div class="col-sm-5"><label class="form-label small">MODAQ export file</label>
-          <input class="form-control form-control-sm" type="file" id="file" accept=".json,.qbj"></div>
-        <div class="col-sm-2"><button class="btn btn-primary btn-sm w-100" id="up">Upload</button></div>
+      <div class="d-flex flex-wrap gap-3 align-items-end mt-3">
+        <div><label class="form-label mb-1" for="fMonth">Games from</label>
+          <select class="form-select form-select-sm" id="fMonth"></select></div>
+        <div><label class="form-label mb-1" for="fLevel">Level</label>
+          <select class="form-select form-select-sm" id="fLevel"></select></div>
+        <div class="note mb-1" id="filterNote"></div>
       </div>
-      <div class="small mt-2" id="upMsg"></div>
-    </div></div>
-    <div id="content"></div>
+      <div id="content"></div>
+
+      <details class="card mt-4">
+        <summary>Add a game exported from MODAQ elsewhere</summary>
+        <div class="card-body pt-0">
+          <p class="small text-secondary">Games read on this site save themselves &mdash; use
+          &ldquo;Save to team stats&rdquo; in the reader. This is for games exported from MODAQ somewhere else.</p>
+          <div class="row g-2 align-items-end">
+            <div class="col-sm-4"><label class="form-label small">Game name</label>
+              <input class="form-control form-control-sm" id="label" placeholder="Tuesday practice, game 2"></div>
+            <div class="col-sm-2"><label class="form-label small">Level</label>
+              <select class="form-select form-select-sm" id="upLevel"></select></div>
+            <div class="col-sm-4"><label class="form-label small">MODAQ export file</label>
+              <input class="form-control form-control-sm" type="file" id="file" accept=".json,.qbj"></div>
+            <div class="col-sm-2"><button class="btn btn-primary btn-sm w-100" id="up">Upload</button></div>
+          </div>
+          <div class="small mt-2" id="upMsg"></div>
+        </div>
+      </details>
     </div>
 
     <div id="tabRoster" class="d-none">
@@ -592,7 +838,8 @@ const PAGE = `<!DOCTYPE html>
       <p class="note mb-2" style="margin-top:0">Names here autocomplete when setting up a round, even before
       anyone has played, and the squad you assign is what shows in the stats table. One player per line;
       grade and squad after commas are optional (<code>Max Chen, 11, JV 2</code>). Re-pasting the list is
-      safe &mdash; existing names are left alone.</p>
+      safe &mdash; existing names are left alone. Renaming a player updates every game they played in; renaming
+      them to a name already on the roster merges the two.</p>
       <div class="row g-2 align-items-start">
         <div class="col-sm-8"><textarea class="form-control form-control-sm" id="rosterText" rows="4"
           placeholder="Max Chen, 11&#10;Sarah Kim, 12&#10;Diego Alvarez, 9"></textarea></div>
@@ -605,38 +852,83 @@ const PAGE = `<!DOCTYPE html>
   </div>
 </div>
 
+<div class="modal fade" id="gameModal" tabindex="-1" aria-labelledby="gmTitle" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="gmTitle">Game</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="gmBody"></div>
+      <div class="modal-footer">
+        <div class="me-auto d-flex flex-wrap gap-1">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="gmJson">Download JSON</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="gmCsv">Download CSV</button>
+          <button type="button" class="btn btn-sm btn-outline-danger" id="gmDelete">Delete game</button>
+        </div>
+        <span class="small text-danger" id="gmErr"></span>
+        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary" id="gmSave">Save changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+${NAME_AUTOCOMPLETE}
 <script>
 var $ = function (id) { return document.getElementById(id); };
 var DATA = null, SELECTED = null, CHARTS = {}, SQUADS = [], SQUAD = '';
-var SEARCH = '', CMP = null;
+var SEARCH = '', KNOWN_NAMES = [];
+var FILTER = { month: 'season', level: 'all' };
 // points per question is the default: it orders identically to raw points when
 // everyone hears the same tossups, and stays fair once players rotate in and out
 var SORT = { key: 'ppth', dir: -1 };
 var SORT_COLS = [
   { key: 'name', label: 'Player', text: true },
-  { key: 'team', label: 'Team', text: true },
-  { key: 'games', label: 'Games' },
-  { key: 'correct', label: 'Correct' },
-  { key: 'negs', label: 'Negs' },
-  { key: 'points', label: 'Points' },
-  { key: 'accuracy', label: 'Buzz accuracy' },
-  { key: 'celerity', label: 'Celerity' },
-  { key: 'heard', label: 'Questions seen' },
-  { key: 'ppth', label: 'Points/question' }
+  { key: 'team', label: 'Squad', text: true },
+  { key: 'games', label: 'Games', tip: 'Games played in, buzzing or not' },
+  { key: 'ppth', label: 'Points/question', tip: 'Points per tossup heard' },
+  { key: 'accuracy', label: 'Buzz accuracy', tip: 'Share of buzzes answered correctly, counting every wrong answer' },
+  { key: 'celerity', label: 'Celerity', tip: 'How early correct buzzes came: 1.000 is the first word, 0 the last' }
+];
+var RESULTS = [
+  { value: 10, label: '+10 correct' },
+  { value: -5, label: '\\u22125 wrong, interrupted' },
+  { value: 0, label: '0 wrong, no interrupt' }
 ];
 
-function sortColumnText (key) {
-  for (var i = 0; i < SORT_COLS.length; i++) {
-    if (SORT_COLS[i].key === key) return !!SORT_COLS[i].text;
-  }
-  return false;
+function esc (s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+  });
 }
+function postJson (url, body) {
+  return fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); });
+}
+function fmt (v, kind) {
+  if (v == null) return '-';
+  if (kind === 'pct') return v + '%';
+  if (kind === 'cel') return v.toFixed(3);
+  return v;
+}
+function levelName (key) {
+  if (!key) return 'Untagged';
+  var hit = (DATA && DATA.levels || []).filter(function (l) { return l.key === key; })[0];
+  return hit ? hit.label : key;
+}
+function levelBadge (key) {
+  return '<span class="lvl' + (key ? '' : ' lvl-none') + '">' + esc(levelName(key)) + '</span>';
+}
+
+// ---------- sorting ----------
 
 function sortColumn () {
   for (var i = 0; i < SORT_COLS.length; i++) {
     if (SORT_COLS[i].key === SORT.key) return SORT_COLS[i];
   }
-  return SORT_COLS[SORT_COLS.length - 1];
+  return SORT_COLS[3];
 }
 
 function sortPlayers (list) {
@@ -658,23 +950,56 @@ function sortPlayers (list) {
   });
 }
 
+// ---------- login ----------
+
 function show (a) {
   $('login').classList.toggle('d-none', a);
   $('app').classList.toggle('d-none', !a);
   $('logout').classList.toggle('d-none', !a);
-  if (a) load();
+  if (a) { load(); loadRoster(); loadNames(); }
 }
 fetch('/kshsaa-stats/me').then(function (r) { return r.json(); }).then(function (d) { show(d.authed); });
 
 $('loginBtn').onclick = function () {
-  fetch('/kshsaa-stats/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: $('pw').value })
-  }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+  postJson('/kshsaa-stats/login', { password: $('pw').value })
     .then(function (res) { res.ok ? show(true) : ($('loginErr').textContent = res.d.error || 'failed'); });
 };
 $('pw').onkeydown = function (e) { if (e.key === 'Enter') $('loginBtn').click(); };
 $('logout').onclick = function () { fetch('/kshsaa-stats/logout', { method: 'POST' }).then(function () { show(false); }); };
+
+function loadNames () {
+  fetch('/kshsaa-stats/names').then(function (r) { return r.json(); }).then(function (d) { KNOWN_NAMES = d.names || []; });
+}
+
+// ---------- filters ----------
+
+function fillFilters (d) {
+  var months = '<option value="season">This school year (since ' + esc(d.seasonStart) + ')</option>' +
+    '<option value="all">All time</option>' +
+    d.months.map(function (m) { return '<option value="' + m.key + '">' + esc(m.label) + '</option>'; }).join('');
+  $('fMonth').innerHTML = months;
+  $('fMonth').value = FILTER.month;
+  var levels = '<option value="all">All levels</option>' +
+    d.levels.map(function (l) { return '<option value="' + l.key + '">' + esc(l.label) + '</option>'; }).join('') +
+    '<option value="untagged">Untagged</option>';
+  $('fLevel').innerHTML = levels;
+  $('fLevel').value = FILTER.level;
+  $('upLevel').innerHTML = '<option value="">Untagged</option>' +
+    d.levels.map(function (l) { return '<option value="' + l.key + '">' + esc(l.label) + '</option>'; }).join('');
+  $('filterNote').textContent = d.games.length === d.totalGames
+    ? d.totalGames + ' games'
+    : d.games.length + ' of ' + d.totalGames + ' games';
+}
+$('fMonth').onchange = function () { FILTER.month = $('fMonth').value; load(); };
+$('fLevel').onchange = function () { FILTER.level = $('fLevel').value; load(); };
+
+function load () {
+  fetch('/kshsaa-stats/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level))
+    .then(function (r) { return r.json(); })
+    .then(function (d) { DATA = d; fillFilters(d); render(d); });
+}
+
+// ---------- upload ----------
 
 $('up').onclick = function () {
   var f = $('file').files[0];
@@ -682,28 +1007,21 @@ $('up').onclick = function () {
   var reader = new FileReader();
   reader.onload = function () {
     var game;
-    try { game = JSON.parse(reader.result); }
-    catch (e) { $('upMsg').innerHTML = '<span class="text-danger">not valid JSON</span>'; return; }
-    fetch('/kshsaa-stats/upload', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ game: game, label: $('label').value })
-    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+    try { game = JSON.parse(reader.result); } catch (e) { $('upMsg').innerHTML = '<span class="text-danger">not valid JSON</span>'; return; }
+    postJson('/kshsaa-stats/upload', { game: game, label: $('label').value, level: $('upLevel').value })
       .then(function (res) {
         if (res.ok) {
           $('upMsg').innerHTML = '<span class="text-success">added (' + res.d.buzzes + ' buzzes)</span>';
           $('file').value = ''; $('label').value = ''; load();
         } else {
-          $('upMsg').innerHTML = '<span class="text-danger">' + (res.d.error || 'upload failed') + '</span>';
+          $('upMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'upload failed') + '</span>';
         }
       });
   };
   reader.readAsText(f);
 };
 
-function load () {
-  fetch('/kshsaa-stats/data').then(function (r) { return r.json(); }).then(function (d) { DATA = d; render(d); });
-  loadRoster();
-}
+// ---------- roster ----------
 
 function loadRoster () {
   fetch('/kshsaa-stats/roster').then(function (r) { return r.json(); }).then(function (d) {
@@ -741,14 +1059,7 @@ function loadRoster () {
         var gcell = row.querySelector('.gcell');
         var acell = row.querySelector('.acell');
 
-        // name is editable only until the player has games recorded
-        if (played) {
-          ncell.innerHTML = esc(oldName) +
-            ' <span class="text-secondary" title="Name is locked because this player has recorded stats">' +
-            '(locked)</span>';
-        } else {
-          ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(oldName) + '">';
-        }
+        ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(oldName) + '">';
         gcell.innerHTML = '<input class="form-control form-control-sm gedit" type="number" min="9" max="12" ' +
           'style="width:5rem" value="' + (btn.getAttribute('data-grade') || '') + '">';
         var curSquad = btn.getAttribute('data-squad') || '';
@@ -759,45 +1070,45 @@ function loadRoster () {
           }).join('') + '</select>';
         acell.innerHTML = '<button class="btn btn-sm btn-primary py-0 px-2 me-1 gsave">save</button>' +
           '<button class="btn btn-sm btn-link p-0 gcancel">cancel</button>';
-        (ncell.querySelector('.nedit') || gcell.querySelector('.gedit')).focus();
+        ncell.querySelector('.nedit').focus();
 
         acell.querySelector('.gsave').onclick = function () {
-          var newName = ncell.querySelector('.nedit') ? ncell.querySelector('.nedit').value.trim() : oldName;
+          var newName = ncell.querySelector('.nedit').value.trim();
           var saveGrade = function () {
-            fetch('/kshsaa-stats/roster/update', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                id: id,
-                grade: gcell.querySelector('.gedit').value,
-                squad: row.querySelector('.sedit').value
-              })
+            postJson('/kshsaa-stats/roster/update', {
+              id: id,
+              grade: gcell.querySelector('.gedit').value,
+              squad: row.querySelector('.sedit').value
             }).then(loadRoster);
           };
           if (newName && newName !== oldName) {
-            fetch('/kshsaa-stats/roster/rename', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: id, name: newName })
-            }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-              .then(function (res) {
-                if (!res.ok) { alert(res.d.error || 'could not rename'); loadRoster(); return; }
+            if (played && !confirm('Rename ' + oldName + ' to ' + newName +
+              ' everywhere, including every game they have played?')) return;
+            postJson('/kshsaa-stats/roster/rename', { id: id, name: newName }).then(function (res) {
+              if (!res.ok) { alert(res.d.error || 'could not rename'); loadRoster(); return; }
+              if (res.d.merged) {
+                // the other roster entry is the one that stays
+                loadRoster();
+              } else {
                 saveGrade();
-              });
+              }
+              load(); loadNames();
+            });
           } else saveGrade();
         };
         acell.querySelector('.gcancel').onclick = loadRoster;
-        gcell.querySelector('.gedit').onkeydown = function (e) {
-          if (e.key === 'Enter') acell.querySelector('.gsave').click();
-          if (e.key === 'Escape') loadRoster();
-        };
+        [ncell.querySelector('.nedit'), gcell.querySelector('.gedit')].forEach(function (input) {
+          input.onkeydown = function (e) {
+            if (e.key === 'Enter') acell.querySelector('.gsave').click();
+            if (e.key === 'Escape') loadRoster();
+          };
+        });
       };
     });
     Array.prototype.forEach.call(document.querySelectorAll('.rdel'), function (btn) {
       btn.onclick = function () {
         if (!confirm('Remove from the roster? Their past stats are kept.')) return;
-        fetch('/kshsaa-stats/roster/remove', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: btn.getAttribute('data-id') })
-        }).then(loadRoster);
+        postJson('/kshsaa-stats/roster/remove', { id: btn.getAttribute('data-id') }).then(loadRoster);
       };
     });
   });
@@ -814,38 +1125,59 @@ Array.prototype.forEach.call(document.querySelectorAll('#tabs [data-tab]'), func
   };
 });
 
-document.getElementById('rosterAdd').onclick = function () {
+$('rosterAdd').onclick = function () {
   var text = $('rosterText').value;
   if (!text.trim()) { $('rosterMsg').textContent = 'paste some names first'; return; }
-  fetch('/kshsaa-stats/roster/add', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: text })
-  }).then(function (r) { return r.json(); }).then(function (d) {
-    if (d.error) { $('rosterMsg').innerHTML = '<span class="text-danger">' + d.error + '</span>'; return; }
+  postJson('/kshsaa-stats/roster/add', { text: text }).then(function (res) {
+    var d = res.d;
+    if (d.error) { $('rosterMsg').innerHTML = '<span class="text-danger">' + esc(d.error) + '</span>'; return; }
     $('rosterMsg').innerHTML = '<span class="text-success">added ' + d.added +
       (d.updated ? ', updated ' + d.updated : '') + '</span>';
     $('rosterText').value = '';
-    loadRoster();
+    loadRoster(); loadNames();
   });
 };
-function esc (s) {
-  return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
-  });
-}
+
+// ---------- stats ----------
+
 function heatColor (pct) {
   if (pct == null) return '#f1f1f1';
   var g = Math.round(200 * (pct / 100));
   return 'rgba(' + (220 - g) + ',' + (120 + g / 2) + ',120,0.45)';
 }
-function pctOf (v) { var t = v.correct + v.neg; return t ? Math.round((v.correct / t) * 100) : null; }
+function pctOf (v) { var t = v.correct + v.wrong; return t ? Math.round((v.correct / t) * 100) : null; }
+function heatCell (v) {
+  return '<td class="text-center"><span class="heat" style="background:' + heatColor(pctOf(v)) + '">' +
+    v.correct + (v.wrong ? ' / ' + v.wrong : '') + '</span></td>';
+}
 function playerByName (n) {
   for (var i = 0; i < DATA.players.length; i++) if (DATA.players[i].name === n) return DATA.players[i];
   return null;
 }
 
+function gamesTable (d) {
+  if (!d.games.length) return '<p class="note">No games match these filters.</p>';
+  var h = '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
+    '<table class="table table-sm table-hover mb-0"><thead><tr><th>Date</th><th>Game</th><th>Level</th><th>Result</th>' +
+    '<th class="num">Tossups</th><th></th></tr></thead><tbody>';
+  d.games.slice().reverse().forEach(function (g) {
+    var best = Math.max.apply(null, g.teams.map(function (t) { return t.score; }));
+    var tied = g.teams.filter(function (t) { return t.score === best; }).length > 1;
+    var score = g.teams.map(function (t) {
+      var cls = tied && t.score === best ? 'res-tie' : (t.score === best ? 'res-win' : 'res-loss');
+      return '<span class="res ' + cls + '">' + esc(t.name) + ': <span class="sc">' + t.score + '</span></span>';
+    }).join('');
+    h += '<tr class="rowlink grow" data-id="' + g.id + '" title="See scorers, rename, or fix this game">' +
+      '<td class="text-secondary">' + new Date(g.playedAt).toLocaleDateString() + '</td>' +
+      '<td>' + esc(g.label) + '</td><td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
+      '<td class="num">' + g.tossupsRead + '</td>' +
+      '<td class="text-end text-secondary small text-nowrap">open &rsaquo;</td></tr>';
+  });
+  return h + '</tbody></table></div></div></div>';
+}
+
 function render (d) {
-  if (!d.games.length) {
+  if (!d.totalGames) {
     $('content').innerHTML = '<div class="card mt-3"><div class="card-body text-center py-5">' +
       '<p class="mb-1 fw-semibold">No practices recorded yet</p>' +
       '<p class="text-secondary small mb-3">Read a round on this site and click &ldquo;Save to team stats&rdquo; ' +
@@ -864,96 +1196,66 @@ function render (d) {
   });
   squadsPresent.sort();
 
-  h += '<h2>Players</h2>' +
-    '<div class="mb-2" id="squadChips">' +
-    '<button class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' + (SQUAD ? '' : ' active') +
-    '" data-squad="">All squads</button>' +
-    squadsPresent.map(function (s) {
-      return '<button class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' +
-        (SQUAD === s ? ' active' : '') + '" data-squad="' + esc(s) + '">' +
-        esc(s) + '</button>';
-    }).join('') + '</div>' +
-    '<div id="squadSummary"></div>' +
-    '<input class="form-control form-control-sm mb-2" id="search" placeholder="Search players...">' +
-    '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
-    '<table class="table table-sm table-hover align-middle"><thead><tr>' +
-    SORT_COLS.map(function (c) {
-      var on = SORT.key === c.key;
-      return '<th class="sortable' + (c.text ? '' : ' num') + (on ? ' sorted' : '') +
-        '" data-sort="' + c.key + '" title="Sort by ' + esc(c.label) + '">' + esc(c.label) +
-        '<span class="sortarrow">' + (on ? (SORT.dir < 0 ? '&#9660;' : '&#9650;') : '') +
-        '</span></th>';
-    }).join('') +
-    '</tr></thead><tbody id="ptbody">';
-  d.players.forEach(function (p) {
-    h += '<tr class="rowlink prow" data-name="' + esc(p.name) + '" data-squad="' + esc(p.team) + '">' +
-      '<td>' + esc(p.name) + '</td>' +
-      '<td class="text-secondary">' + esc(p.team) + '</td>' +
-      '<td class="num">' + p.games + '</td><td class="num">' + p.correct + '</td>' +
-      '<td class="num text-danger">' + p.negs + '</td>' +
-      '<td class="num fw-semibold">' + p.points + '</td>' +
-      '<td class="num">' + (p.accuracy == null ? '-' : p.accuracy + '%') + '</td>' +
-      '<td class="num">' + (p.celerity == null ? '-' : p.celerity.toFixed(3)) + '</td>' +
-      '<td class="num">' + (p.heard || '-') + '</td>' +
-      '<td class="num">' + (p.ppth == null ? '-' : p.ppth) + '</td></tr>';
-  });
-  h += '</tbody></table></div></div></div>' +
-    '<div id="spotlight"></div>';
-
-  // category heat grid - same section, its own table so neither gets squished
-  h += '<div class="subhead">Category breakdown</div>' +
-    '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
-    '<table class="table table-sm align-middle"><thead><tr><th>Player</th>';
-  d.categoryNames.forEach(function (c) { h += '<th class="text-center">' + esc(c) + '</th>'; });
-  h += '</tr></thead><tbody>';
-  d.players.forEach(function (p) {
-    h += '<tr class="prow rowlink" data-name="' + esc(p.name) + '"><td>' + esc(p.name) + '</td>';
-    d.categoryNames.forEach(function (c) {
-      var v = p.byCategory[c] || { correct: 0, neg: 0 };
-      h += '<td class="text-center"><span class="heat" style="background:' + heatColor(pctOf(v)) + '">' +
-        v.correct + (v.neg ? ' / -' + v.neg : '') + '</span></td>';
+  h += '<h2>Players</h2>';
+  if (!d.players.length) {
+    h += '<p class="note">No one has played in the games these filters cover.</p>';
+  } else {
+    h += '<div class="mb-2" id="squadChips">' +
+      '<button class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' + (SQUAD ? '' : ' active') +
+      '" data-squad="">All squads</button>' +
+      squadsPresent.map(function (s) {
+        return '<button class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' +
+          (SQUAD === s ? ' active' : '') + '" data-squad="' + esc(s) + '">' + esc(s) + '</button>';
+      }).join('') + '</div>' +
+      '<div id="squadSummary"></div>' +
+      '<input class="form-control form-control-sm mb-2" id="search" placeholder="Search players...">' +
+      '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
+      '<table class="table table-sm table-hover align-middle"><thead><tr>' +
+      SORT_COLS.map(function (c) {
+        var on = SORT.key === c.key;
+        return '<th class="sortable' + (c.text ? '' : ' num') + (on ? ' sorted' : '') +
+          '" data-sort="' + c.key + '" title="' + esc(c.tip || 'Sort by ' + c.label) + '">' + esc(c.label) +
+          '<span class="sortarrow">' + (on ? (SORT.dir < 0 ? '&#9660;' : '&#9650;') : '') + '</span></th>';
+      }).join('') +
+      '</tr></thead><tbody>';
+    d.players.forEach(function (p) {
+      h += '<tr class="rowlink prow" data-name="' + esc(p.name) + '" data-squad="' + esc(p.team) + '">' +
+        '<td>' + esc(p.name) + '</td>' +
+        '<td class="text-secondary">' + esc(p.team) + '</td>' +
+        '<td class="num">' + p.games + '</td>' +
+        '<td class="num fw-semibold">' + fmt(p.ppth) + '</td>' +
+        '<td class="num">' + fmt(p.accuracy, 'pct') + '</td>' +
+        '<td class="num">' + fmt(p.celerity, 'cel') + '</td></tr>';
     });
-    h += '</tr>';
-  });
-  h += '</tbody></table></div></div></div>';
+    h += '</tbody></table></div></div></div>' +
+      '<p class="note">Click a player for their correct answers, misses, and history by level and month.</p>' +
+      '<div id="spotlight" class="mt-2"></div>';
 
-  // ---- compare ----
-  var opts = d.players.map(function (p) { return '<option>' + esc(p.name) + '</option>'; }).join('');
-  h += '<h2>Compare two players</h2><div class="card"><div class="card-body">' +
-    '<div class="row g-2 mb-3"><div class="col-sm-5"><select class="form-select form-select-sm" id="cmpA">' + opts + '</select></div>' +
-    '<div class="col-sm-2 text-center small text-secondary pt-1">vs</div>' +
-    '<div class="col-sm-5"><select class="form-select form-select-sm" id="cmpB">' + opts + '</select></div></div>' +
-    '<div id="cmpOut"></div></div></div>';
+    // category heat grid - same section, its own table so neither gets squished
+    h += '<div class="subhead">Category breakdown</div>' +
+      '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
+      '<table class="table table-sm align-middle"><thead><tr><th>Player</th>';
+    d.categoryNames.forEach(function (c) { h += '<th class="text-center">' + esc(c) + '</th>'; });
+    h += '</tr></thead><tbody>';
+    d.players.forEach(function (p) {
+      h += '<tr class="prow rowlink" data-name="' + esc(p.name) + '" data-squad="' + esc(p.team) + '"><td>' + esc(p.name) + '</td>';
+      d.categoryNames.forEach(function (c) { h += heatCell(p.byCategory[c] || { correct: 0, wrong: 0 }); });
+      h += '</tr>';
+    });
+    h += '</tbody></table></div></div></div>' +
+      '<p class="note">Each cell is correct / wrong answers; the colour is accuracy.</p>';
+  }
 
   // ---- games ----
-  h += '<h2>Games</h2><div class="card"><div class="card-body p-0"><div class="table-responsive">' +
-    '<table class="table table-sm mb-0"><thead><tr><th>Date</th><th>Label</th><th>Result</th>' +
-    '<th class="num">Tossups</th><th></th></tr></thead><tbody>';
-  d.games.slice().reverse().forEach(function (g) {
-    var best = Math.max.apply(null, g.teams.map(function (t) { return t.score; }));
-    var tied = g.teams.filter(function (t) { return t.score === best; }).length > 1;
-    var score = g.teams.map(function (t) {
-      var cls = tied && t.score === best ? 'res-tie' : (t.score === best ? 'res-win' : 'res-loss');
-      return '<span class="res ' + cls + '">' + esc(t.name) + ': <span class="sc">' + t.score + '</span></span>';
-    }).join('');
-    h += '<tr><td class="text-secondary">' + new Date(g.playedAt).toLocaleDateString() + '</td>' +
-      '<td>' + esc(g.label) + '</td><td>' + score + '</td>' +
-      '<td class="num">' + g.tossupsRead + '</td>' +
-      '<td class="text-end text-nowrap">' +
-      '<div class="dropdown d-inline-block">' +
-      '<button class="btn btn-sm btn-outline-secondary dropdown-toggle py-0 px-2" type="button" ' +
-      'data-bs-toggle="dropdown" aria-expanded="false">Export</button>' +
-      '<ul class="dropdown-menu dropdown-menu-end">' +
-      '<li><button class="dropdown-item gjson" data-id="' + g.id + '">Download JSON</button></li>' +
-      '<li><button class="dropdown-item gcsv" data-id="' + g.id + '">Download CSV</button></li>' +
-      '<li><hr class="dropdown-divider"></li>' +
-      '<li><button class="dropdown-item text-danger del" data-id="' + g.id + '">Remove game</button></li>' +
-      '</ul></div>' +
-      '</td></tr>';
-  });
-  h += '</tbody></table></div></div></div>';
+  h += '<h2>Games</h2>' + gamesTable(d) +
+    '<p class="note">Click a game to see who scored, rename it, set its level, or fix a buzz.</p>';
 
   $('content').innerHTML = h;
+
+  Array.prototype.forEach.call(document.querySelectorAll('.grow'), function (row) {
+    row.onclick = function () { openGame(row.getAttribute('data-id')); };
+  });
+  if (!d.players.length) return;
 
   $('search').value = SEARCH;
   $('search').oninput = function () { SEARCH = $('search').value; applyFilters(); };
@@ -965,7 +1267,7 @@ function render (d) {
       } else {
         SORT.key = key;
         // names read best A-Z, every number reads best biggest-first
-        SORT.dir = sortColumnText(key) ? 1 : -1;
+        SORT.dir = sortColumn().text ? 1 : -1;
       }
       render(DATA);
     };
@@ -985,31 +1287,6 @@ function render (d) {
   Array.prototype.forEach.call(document.querySelectorAll('.prow'), function (row) {
     row.onclick = function () { selectPlayer(row.getAttribute('data-name')); };
   });
-  Array.prototype.forEach.call(document.querySelectorAll('.gjson'), function (btn) {
-    btn.onclick = function () { downloadGame(btn.getAttribute('data-id'), 'json'); };
-  });
-  Array.prototype.forEach.call(document.querySelectorAll('.gcsv'), function (btn) {
-    btn.onclick = function () { downloadGame(btn.getAttribute('data-id'), 'csv'); };
-  });
-  Array.prototype.forEach.call(document.querySelectorAll('.del'), function (btn) {
-    btn.onclick = function () {
-      if (!confirm('Remove this game from the stats?')) return;
-      fetch('/kshsaa-stats/delete', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: btn.getAttribute('data-id') })
-      }).then(load);
-    };
-  });
-  if (d.players.length > 1) $('cmpB').selectedIndex = 1;
-  if (CMP && playerByName(CMP[0]) && playerByName(CMP[1])) {
-    $('cmpA').value = CMP[0];
-    $('cmpB').value = CMP[1];
-  }
-  $('cmpA').onchange = $('cmpB').onchange = function () {
-    CMP = [$('cmpA').value, $('cmpB').value];
-    compare();
-  };
-  compare();
   if (SELECTED && playerByName(SELECTED)) selectPlayer(SELECTED);
 }
 
@@ -1033,7 +1310,7 @@ function downloadGame (id, format) {
     var q = function (s) { return '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"'; };
     var rows = [['question', 'category', 'player', 'team', 'points', 'buzz_word_index'].join(',')];
     (g.buzzes || []).forEach(function (b) {
-      rows.push([b.questionNumber, q(b.category), q(b.player), q(b.team), b.value,
+      rows.push([b.questionNumber == null ? '' : b.questionNumber, q(b.category), q(b.player), q(b.team), b.value,
         b.wordIndex == null ? '' : b.wordIndex].join(','));
     });
     rows.push('');
@@ -1053,6 +1330,10 @@ function applyFilters () {
   });
 }
 
+function stat (label, value) {
+  return '<span class="kv"><span class="k">' + label + '</span><span class="v">' + value + '</span></span>';
+}
+
 function renderSquadSummary () {
   var box = $('squadSummary');
   if (!box) return;
@@ -1061,52 +1342,51 @@ function renderSquadSummary () {
   var members = DATA.players.filter(function (p) { return p.team === SQUAD; });
   if (!members.length) { box.innerHTML = ''; return; }
 
-  var totals = { correct: 0, negs: 0, points: 0, celSum: 0, celCount: 0, heard: 0, byCategory: {} };
+  var totals = { correct: 0, wrong: 0, points: 0, celSum: 0, celCount: 0, heard: 0, byCategory: {} };
   var gameIds = {};
   members.forEach(function (p) {
     totals.correct += p.correct;
-    totals.negs += p.negs;
+    totals.wrong += p.wrong;
     totals.points += p.points;
     totals.celSum += p.celeritySum || 0;
     totals.celCount += p.celerityCount || 0;
     totals.heard += p.heard || 0;
     p.perGame.forEach(function (g) { gameIds[g.id] = true; });
     DATA.categoryNames.forEach(function (c) {
-      var v = p.byCategory[c] || { correct: 0, neg: 0 };
-      var t = totals.byCategory[c] || (totals.byCategory[c] = { correct: 0, neg: 0 });
-      t.correct += v.correct; t.neg += v.neg;
+      var v = p.byCategory[c] || { correct: 0, wrong: 0 };
+      var t = totals.byCategory[c] || (totals.byCategory[c] = { correct: 0, wrong: 0 });
+      t.correct += v.correct; t.wrong += v.wrong;
     });
   });
 
-  var gameCount = Object.keys(gameIds).length;
-  var buzzes = totals.correct + totals.negs;
-  var stat = function (label, value) {
-    return '<div class="col-6 col-md-3 col-lg-2 mb-2"><div class="note" style="margin:0">' + label + '</div>' +
-      '<div style="font-size:1.1rem;font-weight:600">' + value + '</div></div>';
-  };
-
+  var buzzes = totals.correct + totals.wrong;
   var h = '<div class="card mb-3"><div class="card-body">' +
-    '<h3>' + esc(SQUAD) + ' &mdash; combined</h3><div class="row">' +
+    '<h3>' + esc(SQUAD) + ' &mdash; combined</h3><div>' +
     stat('Players', members.length) +
-    stat('Games', gameCount) +
-    stat('Points', totals.points) +
-
-    stat('Correct', totals.correct) +
-    stat('Negs', totals.negs) +
+    stat('Games', Object.keys(gameIds).length) +
+    stat('Points/question', totals.heard ? (totals.points / totals.heard).toFixed(2) : '-') +
     stat('Buzz accuracy', buzzes ? Math.round((totals.correct / buzzes) * 100) + '%' : '-') +
     stat('Celerity', totals.celCount ? (totals.celSum / totals.celCount).toFixed(3) : '-') +
-    stat('Questions seen', totals.heard || '-') +
     '</div><div class="table-responsive mt-2"><table class="table table-sm mb-0"><thead><tr>';
   DATA.categoryNames.forEach(function (c) { h += '<th class="text-center">' + esc(c) + '</th>'; });
   h += '</tr></thead><tbody><tr>';
-  DATA.categoryNames.forEach(function (c) {
-    var v = totals.byCategory[c] || { correct: 0, neg: 0 };
-    h += '<td class="text-center"><span class="heat" style="background:' + heatColor(pctOf(v)) + '">' +
-      v.correct + (v.neg ? ' / -' + v.neg : '') + '</span></td>';
-  });
+  DATA.categoryNames.forEach(function (c) { h += heatCell(totals.byCategory[c] || { correct: 0, wrong: 0 }); });
   h += '</tr></tbody></table></div>' +
-    '<p class="note">Squad totals across every game any member played.</p></div></div>';
+    '<p class="note">Squad totals across every game in these filters that any member played.</p></div></div>';
   box.innerHTML = h;
+}
+
+function breakdownTable (title, rows, note) {
+  if (!rows.length) return '';
+  var h = '<h3 class="mt-3">' + title + '</h3><div class="table-responsive"><table class="table table-sm mb-0"><thead><tr>' +
+    '<th></th><th class="num">Games</th><th class="num">Points/question</th><th class="num">Accuracy</th>' +
+    '<th class="num">Celerity</th></tr></thead><tbody>';
+  rows.forEach(function (r) {
+    h += '<tr><td>' + esc(r.label) + '</td><td class="num">' + r.games + '</td>' +
+      '<td class="num">' + fmt(r.ppth) + '</td><td class="num">' + fmt(r.accuracy, 'pct') + '</td>' +
+      '<td class="num">' + fmt(r.celerity, 'cel') + '</td></tr>';
+  });
+  return h + '</tbody></table></div><p class="note">' + note + '</p>';
 }
 
 function selectPlayer (name) {
@@ -1116,13 +1396,28 @@ function selectPlayer (name) {
   Array.prototype.forEach.call(document.querySelectorAll('.prow'), function (row) {
     row.classList.toggle('selected', row.getAttribute('data-name') === name);
   });
+  var monthNote = $('fMonth').options[$('fMonth').selectedIndex].text;
+  var levelNote = $('fLevel').options[$('fLevel').selectedIndex].text;
   $('spotlight').innerHTML =
     '<div class="card mb-2"><div class="card-body">' +
-    '<div class="d-flex justify-content-between align-items-center mb-2">' +
-    '<h3 class="h6 mb-0">' + esc(p.name) + '</h3>' +
-    '<span class="small text-secondary">' + p.games + ' games &middot; ' + p.points + ' points &middot; ' +
-    (p.accuracy == null ? '-' : p.accuracy + '% accuracy') + '</span></div>' +
-    '<div class="row g-3"><div class="col-md-7"><canvas id="chartCat" height="150"></canvas></div>' +
+    '<div class="d-flex justify-content-between align-items-baseline mb-2">' +
+    '<h3 class="h6 mb-0">' + esc(p.name) + '</h3><span class="small text-secondary">' + esc(p.team) + '</span></div>' +
+    '<div>' +
+    stat('Games', p.games) +
+    stat('Questions heard', p.heard || '-') +
+    stat('Points', p.points) +
+    stat('Correct', p.correct) +
+    stat('Wrong', p.wrong + (p.negs ? ' <span class="small text-danger">(' + p.negs + ' for \\u22125)</span>' : '')) +
+    stat('Points/question', fmt(p.ppth)) +
+    stat('Buzz accuracy', fmt(p.accuracy, 'pct')) +
+    stat('Celerity', fmt(p.celerity, 'cel')) +
+    '</div>' +
+    '<div class="row g-3"><div class="col-md-6">' +
+    breakdownTable('By level', p.byLevel, 'Games from: ' + esc(monthNote) + '.') +
+    '</div><div class="col-md-6">' +
+    breakdownTable('By month', p.byMonth, 'Level: ' + esc(levelNote) + '.') +
+    '</div></div>' +
+    '<div class="row g-3 mt-1"><div class="col-md-7"><canvas id="chartCat" height="150"></canvas></div>' +
     '<div class="col-md-5"><canvas id="chartGames" height="150"></canvas></div></div></div></div>';
 
   Object.keys(CHARTS).forEach(function (k) { if (CHARTS[k]) CHARTS[k].destroy(); });
@@ -1134,7 +1429,7 @@ function selectPlayer (name) {
       labels: DATA.categoryNames,
       datasets: [
         { label: 'Correct', data: DATA.categoryNames.map(function (c) { return (p.byCategory[c] || {}).correct || 0; }), backgroundColor: 'rgba(45,140,90,0.65)' },
-        { label: 'Negs', data: DATA.categoryNames.map(function (c) { return (p.byCategory[c] || {}).neg || 0; }), backgroundColor: 'rgba(200,70,70,0.65)' }
+        { label: 'Wrong', data: DATA.categoryNames.map(function (c) { return (p.byCategory[c] || {}).wrong || 0; }), backgroundColor: 'rgba(200,70,70,0.65)' }
       ]
     },
     options: {
@@ -1162,32 +1457,309 @@ function selectPlayer (name) {
   });
 }
 
-function compare () {
-  var a = playerByName($('cmpA').value), b = playerByName($('cmpB').value);
-  if (!a || !b) return;
-  var rows = [
-    ['Games', a.games, b.games],
-    ['Correct buzzes', a.correct, b.correct],
-    ['Negs', a.negs, b.negs],
-    ['Points', a.points, b.points],
+// ---------- game editor ----------
+// Players are referred to by a key rather than their name while editing, so
+// fixing a name (Max Tinberg -> Henry Block) carries their buzzes with it.
 
-    ['Buzz accuracy', a.accuracy == null ? '-' : a.accuracy + '%', b.accuracy == null ? '-' : b.accuracy + '%'],
-    ['Celerity', a.celerity == null ? '-' : a.celerity.toFixed(3), b.celerity == null ? '-' : b.celerity.toFixed(3)],
-    ['Questions seen', a.heard || '-', b.heard || '-'],
-    ['Points per question', a.ppth == null ? '-' : a.ppth, b.ppth == null ? '-' : b.ppth]
-  ];
-  DATA.categoryNames.forEach(function (c) {
-    var va = a.byCategory[c] || { correct: 0, neg: 0 }, vb = b.byCategory[c] || { correct: 0, neg: 0 };
-    rows.push([c, va.correct + (va.neg ? ' / -' + va.neg : ''), vb.correct + (vb.neg ? ' / -' + vb.neg : '')]);
+var EDIT = null;
+var NEXT_KEY = 1;
+var modal = null;
+
+function newKey () { return NEXT_KEY++; }
+
+function toEditModel (g) {
+  var teams = (g.teams || []).map(function (t) {
+    return {
+      key: newKey(),
+      name: t.name,
+      players: (t.players || []).map(function (name) {
+        var heard = g.heardByPlayer ? g.heardByPlayer[t.name + '|' + name] : null;
+        return { key: newKey(), name: name, heard: typeof heard === 'number' ? heard : null };
+      })
+    };
   });
-  var h = '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th></th>' +
-    '<th class="num">' + esc(a.name) + '</th><th class="num">' + esc(b.name) + '</th></tr></thead><tbody>';
-  rows.forEach(function (r, i) {
-    h += '<tr' + (i < 9 ? '' : ' class="small"') + '><td>' + esc(r[0]) + '</td>' +
-      '<td class="num">' + r[1] + '</td><td class="num">' + r[2] + '</td></tr>';
+  var findPlayer = function (teamName, name) {
+    var team = teams.filter(function (t) { return t.name === teamName; })[0];
+    if (!team) { team = { key: newKey(), name: teamName || 'Team', players: [] }; teams.push(team); }
+    var p = team.players.filter(function (x) { return x.name === name; })[0];
+    if (!p) { p = { key: newKey(), name: name, heard: null }; team.players.push(p); }
+    return p;
+  };
+  var buzzes = (g.buzzes || []).map(function (b) {
+    return {
+      key: newKey(),
+      q: b.questionNumber == null ? null : b.questionNumber,
+      category: b.category,
+      playerKey: findPlayer(b.team, b.player).key,
+      value: b.value > 0 ? 10 : (b.value < 0 ? -5 : 0),
+      wordIndex: b.wordIndex == null ? null : b.wordIndex
+    };
   });
-  $('cmpOut').innerHTML = h + '</tbody></table></div>';
+  return {
+    id: String(g._id),
+    label: g.label,
+    level: g.level || '',
+    playedAt: g.playedAt,
+    tossupsRead: g.tossupsRead,
+    categories: g.categories || [],
+    teams: teams,
+    buzzes: buzzes
+  };
 }
+
+function allPlayers () {
+  var out = [];
+  EDIT.teams.forEach(function (t) { t.players.forEach(function (p) { out.push({ team: t, player: p }); }); });
+  return out;
+}
+function playerEntry (key) {
+  return allPlayers().filter(function (e) { return e.player.key === key; })[0] || null;
+}
+
+function openGame (id) {
+  fetch('/kshsaa-stats/game/' + id).then(function (r) { return r.json(); }).then(function (g) {
+    if (g.error) { alert(g.error); return; }
+    EDIT = toEditModel(g);
+    $('gmErr').textContent = '';
+    renderEditor();
+    // a stray Escape or click outside must not throw away unsaved edits
+    modal = modal || new bootstrap.Modal($('gameModal'), { backdrop: 'static', keyboard: false });
+    modal.show();
+  });
+}
+
+function categoryOptions (selected) {
+  return DATA.categoryNames.concat('Other').map(function (c) {
+    return '<option' + (c === selected ? ' selected' : '') + '>' + esc(c) + '</option>';
+  }).join('');
+}
+
+function playerOptions (selectedKey) {
+  return EDIT.teams.map(function (t) {
+    return '<optgroup label="' + esc(t.name || 'Team') + '">' + t.players.map(function (p) {
+      return '<option value="' + p.key + '"' + (p.key === selectedKey ? ' selected' : '') + '>' +
+        esc(p.name || '(no name)') + '</option>';
+    }).join('') + '</optgroup>';
+  }).join('');
+}
+
+function renderEditor () {
+  var h = '<div class="row g-2">' +
+    '<div class="col-md-6"><label class="form-label" for="gmLabel">Game name</label>' +
+    '<input class="form-control form-control-sm" id="gmLabel" value="' + esc(EDIT.label) + '"></div>' +
+    '<div class="col-md-3"><label class="form-label" for="gmLevel">Level</label>' +
+    '<select class="form-select form-select-sm" id="gmLevel"><option value="">Untagged</option>' +
+    DATA.levels.map(function (l) {
+      return '<option value="' + l.key + '"' + (l.key === EDIT.level ? ' selected' : '') + '>' + esc(l.label) + '</option>';
+    }).join('') + '</select></div>' +
+    '<div class="col-md-3"><div class="form-label">Played</div><div class="small pt-1">' +
+    new Date(EDIT.playedAt).toLocaleString() + ' &middot; ' + EDIT.tossupsRead + ' tossups</div></div></div>';
+
+  h += '<div class="subhead">Scorers</div><div id="gmScorers"></div>';
+
+  h += '<div class="subhead">Teams</div><div class="row g-2">';
+  EDIT.teams.forEach(function (t, ti) {
+    h += '<div class="col-md-6"><div class="card"><div class="card-body p-2">' +
+      '<div class="input-group input-group-sm mb-2"><span class="input-group-text">Team</span>' +
+      '<input class="form-control fw-semibold tname" data-t="' + ti + '" value="' + esc(t.name) + '">' +
+      '<button type="button" class="btn btn-outline-danger tdel" data-t="' + ti + '" title="Remove this team">&times;</button></div>';
+    t.players.forEach(function (p, pi) {
+      h += '<div class="input-group input-group-sm mb-1">' +
+        '<input class="form-control pname" data-t="' + ti + '" data-p="' + pi + '" value="' + esc(p.name) + '">' +
+        '<button type="button" class="btn btn-outline-secondary pdel" data-t="' + ti + '" data-p="' + pi +
+        '" title="Take this player out of the game">&times;</button></div>';
+    });
+    h += '<input class="form-control form-control-sm padd mt-1" data-t="' + ti +
+      '" placeholder="+ add a player (type, then Enter)"></div></div></div>';
+  });
+  h += '</div>';
+  if (EDIT.teams.length < 4) {
+    h += '<button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="gmAddTeam">+ Add a team</button>';
+  }
+
+  h += '<div class="subhead">Buzzes</div>' +
+    '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr>' +
+    '<th style="width:5.5rem">Q#</th><th>Category</th><th>Player</th><th>Result</th><th></th></tr></thead><tbody id="gmBuzzes">';
+  EDIT.buzzes.forEach(function (b, bi) {
+    h += '<tr>' +
+      '<td><input type="number" min="1" max="99" class="form-control form-control-sm bq" data-b="' + bi +
+      '" value="' + (b.q == null ? '' : b.q) + '" placeholder="?"></td>' +
+      '<td><select class="form-select form-select-sm bcat" data-b="' + bi + '">' + categoryOptions(b.category) + '</select></td>' +
+      '<td><select class="form-select form-select-sm bplayer" data-b="' + bi + '">' + playerOptions(b.playerKey) + '</select></td>' +
+      '<td><select class="form-select form-select-sm bval" data-b="' + bi + '">' + RESULTS.map(function (r) {
+        return '<option value="' + r.value + '"' + (r.value === b.value ? ' selected' : '') + '>' + r.label + '</option>';
+      }).join('') + '</select></td>' +
+      '<td class="text-end"><button type="button" class="btn btn-sm btn-link text-danger p-0 bdel" data-b="' + bi + '">remove</button></td></tr>';
+  });
+  h += '</tbody></table></div>' +
+    '<button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="gmAddBuzz">+ Add a buzz</button>' +
+    '<p class="note">Interrupting only matters on a wrong answer: &minus;5 if the player interrupted, 0 if not. ' +
+    'A correct answer is +10 either way. Leave Q# blank if you do not know which question it was.</p>';
+
+  $('gmBody').innerHTML = h;
+  $('gmTitle').textContent = EDIT.label || 'Game';
+
+  Array.prototype.forEach.call($('gmBody').querySelectorAll('.pname'), function (input) {
+    attachNameAutocomplete(input, {
+      names: function () { return KNOWN_NAMES; },
+      taken: otherNames,
+      onPick: function (self) { setPlayerName(self); }
+    });
+  });
+  Array.prototype.forEach.call($('gmBody').querySelectorAll('.padd'), function (input) {
+    attachNameAutocomplete(input, {
+      names: function () { return KNOWN_NAMES; },
+      taken: otherNames,
+      onPick: function (self) { addPlayer(self); }
+    });
+  });
+  refreshDerived();
+}
+
+function otherNames (self) {
+  return Array.prototype.filter.call($('gmBody').querySelectorAll('.pname'), function (i) { return i !== self; })
+    .map(function (i) { return i.value; });
+}
+
+function setPlayerName (input) {
+  var p = EDIT.teams[Number(input.getAttribute('data-t'))].players[Number(input.getAttribute('data-p'))];
+  p.name = input.value.trim();
+  refreshDerived();
+}
+
+function addPlayer (input) {
+  var name = input.value.trim();
+  if (!name) return;
+  var clash = allPlayers().filter(function (e) { return e.player.name.toLowerCase() === name.toLowerCase(); })[0];
+  if (clash) { $('gmErr').textContent = clash.player.name + ' is already on ' + clash.team.name + '.'; return; }
+  var ti = Number(input.getAttribute('data-t'));
+  EDIT.teams[ti].players.push({ key: newKey(), name: name, heard: null });
+  $('gmErr').textContent = '';
+  renderEditor();
+  $('gmBody').querySelector('.padd[data-t="' + ti + '"]').focus();
+}
+
+// the parts of the editor that depend on names and buzzes, redrawn without
+// touching whatever input the moderator is typing in
+function refreshDerived () {
+  Array.prototype.forEach.call($('gmBody').querySelectorAll('.bplayer'), function (sel) {
+    sel.innerHTML = playerOptions(EDIT.buzzes[Number(sel.getAttribute('data-b'))].playerKey);
+  });
+  var h = '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Team</th><th>Player</th>' +
+    '<th class="num">Correct</th><th class="num">Wrong</th><th class="num">Points</th></tr></thead><tbody>';
+  EDIT.teams.forEach(function (t) {
+    var teamPoints = 0;
+    var rows = t.players.map(function (p) {
+      var mine = EDIT.buzzes.filter(function (b) { return b.playerKey === p.key; });
+      var points = mine.reduce(function (s, b) { return s + b.value; }, 0);
+      teamPoints += points;
+      return '<tr><td></td><td>' + esc(p.name) + '</td>' +
+        '<td class="num">' + mine.filter(function (b) { return b.value > 0; }).length + '</td>' +
+        '<td class="num">' + mine.filter(function (b) { return b.value <= 0; }).length + '</td>' +
+        '<td class="num">' + points + '</td></tr>';
+    });
+    h += '<tr class="table-light"><td class="fw-semibold">' + esc(t.name) + '</td><td></td><td></td><td></td>' +
+      '<td class="num fw-semibold">' + teamPoints + '</td></tr>' + rows.join('');
+  });
+  $('gmScorers').innerHTML = h + '</tbody></table></div>';
+}
+
+$('gmBody').addEventListener('input', function (e) {
+  var el = e.target;
+  if (el.id === 'gmLabel') { EDIT.label = el.value; return; }
+  if (el.classList.contains('tname')) { EDIT.teams[Number(el.getAttribute('data-t'))].name = el.value.trim(); refreshDerived(); return; }
+  if (el.classList.contains('pname')) { setPlayerName(el); }
+});
+
+$('gmBody').addEventListener('change', function (e) {
+  var el = e.target;
+  var b = el.hasAttribute('data-b') ? EDIT.buzzes[Number(el.getAttribute('data-b'))] : null;
+  if (el.id === 'gmLevel') { EDIT.level = el.value; return; }
+  if (!b) return;
+  if (el.classList.contains('bq')) {
+    b.q = el.value === '' ? null : Number(el.value);
+    // the recorded buzz position belonged to the old question
+    b.wordIndex = null;
+    var cat = b.q && EDIT.categories[b.q - 1];
+    if (cat) { b.category = cat; el.closest('tr').querySelector('.bcat').value = cat; }
+  } else if (el.classList.contains('bcat')) {
+    b.category = el.value;
+  } else if (el.classList.contains('bplayer')) {
+    b.playerKey = Number(el.value);
+  } else if (el.classList.contains('bval')) {
+    b.value = Number(el.value);
+  }
+  refreshDerived();
+});
+
+$('gmBody').addEventListener('click', function (e) {
+  var el = e.target.closest('button');
+  if (!el) return;
+  if (el.id === 'gmAddTeam') {
+    EDIT.teams.push({ key: newKey(), name: 'Team ' + (EDIT.teams.length + 1), players: [] });
+    renderEditor();
+  } else if (el.id === 'gmAddBuzz') {
+    var first = allPlayers()[0];
+    if (!first) { $('gmErr').textContent = 'Add a player first.'; return; }
+    EDIT.buzzes.push({ key: newKey(), q: null, category: DATA.categoryNames[0], playerKey: first.player.key, value: 10, wordIndex: null });
+    renderEditor();
+    var rows = $('gmBuzzes').querySelectorAll('tr');
+    rows[rows.length - 1].querySelector('.bq').focus();
+  } else if (el.classList.contains('bdel')) {
+    EDIT.buzzes.splice(Number(el.getAttribute('data-b')), 1);
+    renderEditor();
+  } else if (el.classList.contains('pdel')) {
+    var team = EDIT.teams[Number(el.getAttribute('data-t'))];
+    var p = team.players[Number(el.getAttribute('data-p'))];
+    var theirs = EDIT.buzzes.filter(function (b) { return b.playerKey === p.key; }).length;
+    if (theirs && !confirm('Take ' + p.name + ' out of this game along with their ' + theirs + ' buzz(es)?')) return;
+    EDIT.buzzes = EDIT.buzzes.filter(function (b) { return b.playerKey !== p.key; });
+    team.players = team.players.filter(function (x) { return x !== p; });
+    renderEditor();
+  } else if (el.classList.contains('tdel')) {
+    var t = EDIT.teams[Number(el.getAttribute('data-t'))];
+    var keys = t.players.map(function (x) { return x.key; });
+    var lost = EDIT.buzzes.filter(function (b) { return keys.indexOf(b.playerKey) !== -1; }).length;
+    if ((t.players.length || lost) && !confirm('Remove ' + t.name + ', its ' + t.players.length +
+      ' player(s) and ' + lost + ' buzz(es) from this game?')) return;
+    EDIT.buzzes = EDIT.buzzes.filter(function (b) { return keys.indexOf(b.playerKey) === -1; });
+    EDIT.teams = EDIT.teams.filter(function (x) { return x !== t; });
+    renderEditor();
+  }
+});
+
+$('gmSave').onclick = function () {
+  var body = {
+    label: EDIT.label,
+    level: EDIT.level || null,
+    teams: EDIT.teams.map(function (t) {
+      return { name: t.name, players: t.players.map(function (p) { return { name: p.name, heard: p.heard }; }) };
+    }),
+    buzzes: EDIT.buzzes.map(function (b) {
+      return {
+        questionNumber: b.q,
+        category: b.category,
+        player: playerEntry(b.playerKey).player.name,
+        value: b.value,
+        wordIndex: b.wordIndex
+      };
+    })
+  };
+  $('gmSave').disabled = true;
+  postJson('/kshsaa-stats/game/' + EDIT.id + '/update', body).then(function (res) {
+    $('gmSave').disabled = false;
+    if (!res.ok) { $('gmErr').textContent = res.d.error || 'could not save'; return; }
+    modal.hide();
+    load(); loadNames();
+  });
+};
+
+$('gmDelete').onclick = function () {
+  if (!confirm('Delete "' + EDIT.label + '" and all of its stats? This cannot be undone.')) return;
+  postJson('/kshsaa-stats/delete', { id: EDIT.id }).then(function () { modal.hide(); load(); });
+};
+$('gmJson').onclick = function () { downloadGame(EDIT.id, 'json'); };
+$('gmCsv').onclick = function () { downloadGame(EDIT.id, 'csv'); };
 </script>
 </body></html>`;
 

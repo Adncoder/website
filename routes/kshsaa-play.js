@@ -11,6 +11,8 @@
 // and player-name autocomplete).
 
 import { Router } from 'express';
+import { levelControls } from './kshsaa-round.js';
+import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 
 const router = Router();
 
@@ -133,8 +135,6 @@ const PAGE = `<!DOCTYPE html>
     2 fine arts, 1 year in review) and opens it in MODAQ with KSHSAA scoring already set:
     10 points per tossup, no powers, no bonuses, &minus;5 on a wrong interruption.</p>
 
-    <datalist id="knownPlayers"></datalist>
-
     <div class="mb-3">
       <label class="form-label fw-semibold">Practice label</label>
       <input class="form-control" id="label" placeholder="Tuesday practice, game 2">
@@ -149,6 +149,13 @@ const PAGE = `<!DOCTYPE html>
       along with the players.</div>
     </div>
 
+    ${levelControls()}
+
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="checkbox" id="gen">
+      <label class="form-check-label small" for="gen">Include generated questions (<a href="/kshsaa-questions">question bank</a>)</label>
+    </div>
+
     <div class="row g-4">
       <div class="col-md-6">
         <input class="form-control mb-2 fw-semibold" id="t1" placeholder="Team 1" aria-label="Team 1 name">
@@ -161,18 +168,9 @@ const PAGE = `<!DOCTYPE html>
         <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p2">+ Add player</button>
       </div>
     </div>
-    <div class="form-text mt-1">Start typing a name and pick the suggestion if the player already
-    has stats &mdash; spelling has to match for their history to line up.</div>
-
-    <div class="form-check mt-3">
-      <input class="form-check-input" type="checkbox" id="conv">
-      <label class="form-check-label small" for="conv">Include converted quizbowl questions (Varsity questions)</label>
-    </div>
-
-    <div class="form-check mt-2">
-      <input class="form-check-input" type="checkbox" id="gen">
-      <label class="form-check-label small" for="gen">Include generated questions for math</label>
-    </div>
+    <div class="form-text mt-1">Type part of a name (<code>samu</code>, <code>kuhn</code>) and press Enter to take
+    the suggestion and jump to the next box. Five players per side read as active; anyone past five starts on the
+    bench. Spelling has to match for a player&rsquo;s history to line up.</div>
 
     <div id="nameCheck" class="alert alert-warning mt-3 d-none"></div>
 
@@ -180,7 +178,7 @@ const PAGE = `<!DOCTYPE html>
     <span class="ms-2 small text-secondary" id="status"></span>
 
     <p class="small text-secondary mt-3 mb-0">When the game ends, click &ldquo;Save to team stats&rdquo; in the
-    reader&rsquo;s menu. On the KSHSAA neg rule: MODAQ applies &minus;5 to any wrong interruption, but per the
+    reader&rsquo;s menu. A game saves once; fix mistakes afterwards on the Practice stats page. On the KSHSAA neg rule: MODAQ applies &minus;5 to any wrong interruption, but per the
     manual a <em>second</em> team that interrupts and misses takes no penalty &mdash; don&rsquo;t record the neg then.</p>
     <p class="small mt-2"><a href="/kshsaa-round">Prefer a file to download instead?</a></p>
   </div>
@@ -208,11 +206,18 @@ const PAGE = `<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="roundBar" class="d-none d-flex flex-wrap align-items-center gap-2 small mb-2">
+    <span id="roundInfo" class="text-secondary"></span>
+    <span id="saveState" class="badge text-bg-light border">not saved yet</span>
+    <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="nextRound"
+      title="Start a fresh round with the same teams, then change whoever swapped out">Next round with these teams &rarr;</button>
+  </div>
   <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
 
   <div id="modaq"></div>
 </div>
 
+${NAME_AUTOCOMPLETE}
 <script type="module">
 const $ = id => document.getElementById(id);
 // player names reach innerHTML in several places below, and a name is free text
@@ -237,6 +242,9 @@ const KSHSAA_FORMAT = {
 };
 
 let KNOWN = [];
+// a game saves to stats exactly once
+let SAVED = false;
+let SAVING = false;
 
 function renumber (boxId) {
   Array.from($(boxId).querySelectorAll('.pname')).forEach((input, i) => {
@@ -250,8 +258,12 @@ function addPlayerBox (boxId) {
 
   const input = document.createElement('input');
   input.className = 'form-control pname';
-  input.setAttribute('list', 'knownPlayers');
   input.placeholder = 'Player ' + ($(boxId).querySelectorAll('.pname').length + 1);
+  attachNameAutocomplete(input, {
+    names: () => KNOWN,
+    taken: self => allNameInputs().filter(i => i !== self).map(i => i.value),
+    onPick: self => focusAfter(self)
+  });
 
   const remove = document.createElement('button');
   remove.type = 'button';
@@ -270,8 +282,27 @@ function addPlayerBox (boxId) {
   return input;
 }
 
+const allNameInputs = () => Array.from(document.querySelectorAll('#p1 .pname, #p2 .pname'));
+
+// Enter moves down the lineup, then on to the other team, then to the button
+function focusAfter (input) {
+  const all = allNameInputs();
+  const next = all[all.indexOf(input) + 1];
+  (next || $('go')).focus();
+}
+
 document.querySelectorAll('[data-add]').forEach(btn => {
   btn.onclick = () => addPlayerBox(btn.getAttribute('data-add')).focus();
+});
+
+// Enter on a team name goes to that team's first player
+[['t1', 'p1'], ['t2', 'p2']].forEach(([team, box]) => {
+  $(team).addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const first = $(box).querySelector('.pname');
+    if (first) first.focus();
+  });
 });
 
 let LINEUPS = [];
@@ -350,12 +381,56 @@ function startApp () {
   fetch('/kshsaa-stats/names').then(r => r.ok ? r.json() : null).then(d => {
     if (!d || !d.names) return;
     KNOWN = d.names;
-    $('knownPlayers').innerHTML = KNOWN.map(n => '<option value="' + esc(n) + '">').join('');
   }).catch(() => {}).finally(() => {
     $('go').disabled = false;
-    $('status').textContent = '';
+    if ($('status').textContent === 'loading player names...') $('status').textContent = '';
   });
   loadLineups();
+  restoreNextRound();
+}
+
+// ---------- next round ----------
+// Carrying the setup through a reload, rather than tearing MODAQ down in place,
+// gives the next round a clean reader. sessionStorage is per tab, so rooms
+// running side by side in different tabs keep their own lineups.
+const NEXT_KEY = 'kshsaa-next-round';
+
+// "Tuesday tryouts, game 2" -> "Tuesday tryouts, game 3"
+function nextLabel (label) {
+  let i = label.length;
+  while (i > 0 && label.charAt(i - 1) >= '0' && label.charAt(i - 1) <= '9') i--;
+  return i === label.length ? label : label.slice(0, i) + (Number(label.slice(i)) + 1);
+}
+
+function currentSetup () {
+  const side = (box, team) => ({
+    name: $(team).value.trim(),
+    players: Array.from($(box).querySelectorAll('.pname')).map(i => i.value.trim()).filter(Boolean)
+  });
+  return {
+    label: $('label').value.trim(),
+    level: document.querySelector('input[name="level"]:checked').value,
+    math: $('mathTier').value,
+    generated: $('gen').checked,
+    teams: [side('p1', 't1'), side('p2', 't2')]
+  };
+}
+
+function restoreNextRound () {
+  let setup = null;
+  try {
+    setup = JSON.parse(sessionStorage.getItem(NEXT_KEY) || 'null');
+    sessionStorage.removeItem(NEXT_KEY);
+  } catch (e) {}
+  if (!setup) return;
+  $('label').value = nextLabel(setup.label || '');
+  const radio = document.querySelector('input[name="level"][value="' + setup.level + '"]');
+  if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+  if (setup.math) $('mathTier').value = setup.math;
+  $('gen').checked = Boolean(setup.generated);
+  fillSide('p1', 't1', setup.teams[0].name, setup.teams[0].players);
+  fillSide('p2', 't2', setup.teams[1].name, setup.teams[1].players);
+  $('status').textContent = 'Same teams as last round - change whoever swapped out.';
 }
 
 fetch('/kshsaa-stats/me').then(r => r.json()).then(d => {
@@ -462,11 +537,11 @@ function validatedPlayers () {
 
   warn.classList.add('d-none');
   const players = entries.map(e => ({ name: e.input.value.trim(), teamName: e.team, isStarter: true }));
-  // starters: first four listed per team
+  // scholars bowl plays five a side; anyone listed after that starts on the bench
   const perTeam = {};
   players.forEach(p => {
     perTeam[p.teamName] = (perTeam[p.teamName] || 0) + 1;
-    p.isStarter = perTeam[p.teamName] <= 4;
+    p.isStarter = perTeam[p.teamName] <= 5;
   });
   return players;
 }
@@ -860,8 +935,9 @@ $('go').onclick = async () => {
   $('go').disabled = true;
   $('status').textContent = 'building round...';
   try {
-    const res = await fetch('/kshsaa-round/generate?converted=' + ($('conv').checked ? '1' : '0') +
-      '&generated=' + ($('gen').checked ? '1' : '0'));
+    const setup = currentSetup();
+    const res = await fetch('/kshsaa-round/generate?' + levelQuery() +
+      '&generated=' + (setup.generated ? '1' : '0'));
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
@@ -906,11 +982,22 @@ $('go').onclick = async () => {
     const charCounts = data.round.map(q => q.question.length);
 
     $('setup').style.display = 'none';
-    if (data.short && data.short.length) {
-      $('roundWarn').textContent = 'This round is ' + data.round.length + ' questions, not 16 - ' +
-        'the archive ran short on ' + data.short.join(', ') + '.';
+    const warnings = (data.short && data.short.length
+      ? ['This round is ' + data.round.length + ' questions, not 16 - the archive ran short on ' +
+        data.short.join(', ') + '.']
+      : []).concat(data.notes || []);
+    if (warnings.length) {
+      $('roundWarn').innerHTML = warnings.map(esc).join('<br>');
       $('roundWarn').classList.remove('d-none');
     }
+    const levelName = document.querySelector('label[for="level-' + data.level + '"]');
+    $('roundInfo').textContent = label + ' · ' + (levelName ? levelName.textContent : data.level);
+    $('roundBar').classList.remove('d-none');
+    $('nextRound').onclick = () => {
+      if (!SAVED && !window.confirm('This game has not been saved to team stats. Start the next round anyway?')) return;
+      try { sessionStorage.setItem(NEXT_KEY, JSON.stringify(setup)); } catch (e) {}
+      window.location.reload();
+    };
     setupTimer(data.round, teamNames);
     ReactDOM.createRoot($('modaq')).render(
       React.createElement(Modaq.ModaqControl, {
@@ -922,19 +1009,37 @@ $('go').onclick = async () => {
         customExport: {
           label: 'Save to team stats',
           type: 'QBJ',
-          // MODAQ reads the returned object, so always return {isError, message}
+          // MODAQ shows the returned { isError, status }: an error's status in
+          // its dialog, and a fixed "Export succeeded." otherwise. It calls this
+          // from its menu and again from the prompt after the last question,
+          // which is how a game used to get saved twice: only the first save
+          // counts, and the server refuses a repeat as well.
           onExport: async (match) => {
+            if (SAVED) {
+              return { isError: true, status: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Practice stats page' };
+            }
+            if (SAVING) return { isError: true, status: 'this game is still being saved' };
             const post = () => fetch('/kshsaa-stats/upload', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ game: match, label, categories, wordCounts, charCounts })
+              body: JSON.stringify({
+                game: match,
+                label,
+                level: data.level,
+                roundId: data.roundId,
+                questionIds: data.round.map(q => q.id),
+                categories,
+                wordCounts,
+                charCounts
+              })
             });
+            SAVING = true;
             try {
               let r = await post();
               if (r.status === 401) {
                 const pw = window.prompt('Team stats password (to save this game):');
                 if (!pw) {
-                  return { isError: true, message: 'Not saved. Click "Save to team stats" again when ready.' };
+                  return { isError: true, status: 'not saved. Click "Save to team stats" again when ready' };
                 }
                 const login = await fetch('/kshsaa-stats/login', {
                   method: 'POST',
@@ -942,17 +1047,25 @@ $('go').onclick = async () => {
                   body: JSON.stringify({ password: pw })
                 });
                 if (!login.ok) {
-                  return { isError: true, message: 'Wrong password - nothing was saved. Click save again to retry.' };
+                  return { isError: true, status: 'wrong password, so nothing was saved. Click save again to retry' };
                 }
                 r = await post();
               }
               const d = await r.json().catch(() => ({}));
-              if (r.ok) {
-                return { isError: false, message: 'Saved to team stats (' + (d.buzzes || 0) + ' buzzes recorded).' };
+              if (r.ok || r.status === 409) {
+                SAVED = true;
+                $('saveState').textContent = 'saved to stats';
+                $('saveState').className = 'badge text-bg-success';
               }
-              return { isError: true, message: 'Could not save: ' + (d.error || r.status) };
+              if (r.ok) {
+                return { isError: false, status: 'Saved to team stats (' + (d.buzzes || 0) + ' buzzes recorded).' };
+              }
+              if (r.status === 409) return { isError: true, status: d.error };
+              return { isError: true, status: 'could not save: ' + (d.error || r.status) };
             } catch (e) {
-              return { isError: true, message: 'Could not save: ' + e.message };
+              return { isError: true, status: 'could not save: ' + e.message };
+            } finally {
+              SAVING = false;
             }
           }
         }
