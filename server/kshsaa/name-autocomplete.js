@@ -16,7 +16,6 @@ export const NAME_AUTOCOMPLETE = `
    box-shadow:0 4px 12px rgba(0,0,0,.1);max-height:15rem;overflow-y:auto;font-size:.9rem;min-width:12rem}
  .ac-item{padding:.3rem .6rem;cursor:pointer;white-space:nowrap}
  .ac-item.on{background:#0d6efd;color:#fff}
- .ac-foot{padding:.2rem .6rem;font-size:.75rem;color:#6c757d;border-top:1px solid #eee}
 </style>
 <script>
 var AC = { list: null, input: null, items: [], index: 0 };
@@ -72,10 +71,6 @@ function acRender () {
     };
     list.appendChild(item);
   });
-  var foot = document.createElement('div');
-  foot.className = 'ac-foot';
-  foot.textContent = 'Enter to use • Esc to keep what you typed';
-  list.appendChild(foot);
   var r = AC.input.getBoundingClientRect();
   list.style.left = (r.left + window.scrollX) + 'px';
   list.style.top = (r.bottom + window.scrollY + 2) + 'px';
