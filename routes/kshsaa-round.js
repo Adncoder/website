@@ -13,9 +13,16 @@
 // No `npm run build` needed - the page is plain HTML/JS served by this route.
 
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
+import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
+import mathTierOf, { MATH_TIERS } from '../server/kshsaa/math-tier.js';
 
 const router = Router();
+
+// One document per question that has been put in a round: { _id: tossup id as a
+// string, lastUsed, count }. Round building reads it to avoid repeats.
+const usage = qbreader.collection('kshsaa_question_usage');
 
 // A World Language question is the same expression written in all three
 // languages, so its text always names all three. 43 of the 653 questions tagged
@@ -51,63 +58,255 @@ export const CATEGORY_BY_QUESTION = DISTRIBUTION.flatMap(([label, count]) => Arr
 /** Category labels in reading order, deduplicated. */
 export const CATEGORIES = DISTRIBUTION.map(([label]) => label);
 
-// The filters can overlap (a foreign-language question may also be tagged
-// Literature), so oversample every category, run them together, and drop
-// collisions afterwards. Chaining a growing $nin through seven awaits gave the
-// same result one round trip at a time.
-const HEADROOM = 3;
+// Every question these pages use was imported with kshsaaImport: true, and its
+// set name says where it came from. Anything without one of these prefixes is
+// a real KSHSAA question.
+const SET_PREFIX = {
+  converted: 'QB Converted',
+  generated: 'SJA Generated',
+  beginner: 'QB Beginner'
+};
 
 /**
- * @param {boolean} includeConverted whether to draw on the converted-quizbowl sets too
- * @param {boolean} includeGenerated whether to draw on the SJA Generated sets too
- * @returns {Promise<{round: object[], short: string[]}>} the round, plus a label
- * for each category the archive could not fill
+ * @param {string} [setName]
+ * @returns {'kshsaa'|'converted'|'generated'|'beginner'}
  */
-async function buildRound (includeConverted, includeGenerated) {
-  // Both extra sources are opt-in, so exclude whichever was not asked for.
-  const excluded = [];
-  if (!includeConverted) { excluded.push('^QB Converted'); }
-  if (!includeGenerated) { excluded.push('^SJA Generated'); }
-  const setFilter = excluded.length
-    ? { 'set.name': { $not: { $regex: excluded.join('|') } } }
-    : {};
+function sourceOf (setName) {
+  const name = String(setName || '');
+  return Object.keys(SET_PREFIX).find(key => name.startsWith(SET_PREFIX[key])) || 'kshsaa';
+}
 
-  const samples = await Promise.all(DISTRIBUTION.map(([, count, filter]) => tossups
-    .aggregate([
-      { $match: { kshsaaImport: true, ...filter, ...setFilter } },
-      { $sample: { size: count + HEADROOM } }
-    ])
-    .toArray()));
+// Question pools for each level, most preferred first. A later pool is used
+// only once the earlier ones have nothing unread left in a category -- the
+// converted quizbowl sets have no World Language or math at all, and the
+// Beginner set has no Year in Review, so those slots always come from further
+// down the list.
+export const LEVELS = {
+  varsity: { label: 'Varsity', pools: [['kshsaa', 'converted']], math: ['basic', 'intermediate', 'advanced'] },
+  jv: { label: 'JV', pools: [['converted'], ['kshsaa']], math: ['basic', 'intermediate'] },
+  beginner: { label: 'Beginner', pools: [['beginner'], ['converted'], ['kshsaa']], math: ['basic'] }
+};
 
-  const picked = new Set();
-  const round = [];
-  const short = [];
-  DISTRIBUTION.forEach(([label, count], i) => {
-    const docs = samples[i].filter(d => !picked.has(String(d._id))).slice(0, count);
-    for (const d of docs) {
-      picked.add(String(d._id));
-      const secs = d.timed_seconds || (label === 'Mathematics' ? 30 : null);
-      round.push({
-        category: label,
-        question: (secs ? `[${secs} sec] ` : '') + d.question,
-        answer: d.answer,
-        source: `${d.set?.name ?? '?'} ${d.packet?.name ?? ''}`.trim()
-      });
+// the math dropdown: 'auto' follows the level
+const MATH_CHOICES = {
+  basic: ['basic'],
+  'basic-intermediate': ['basic', 'intermediate'],
+  intermediate: ['intermediate'],
+  advanced: ['advanced'],
+  any: MATH_TIERS
+};
+
+/**
+ * Limits a query to the sets the given sources live in.
+ * @param {string[]} sources
+ * @returns {object} a filter on set.name, or {} for everything
+ */
+function setFilterFor (sources) {
+  if (sources.includes('kshsaa')) {
+    const unwanted = Object.keys(SET_PREFIX).filter(s => !sources.includes(s)).map(s => SET_PREFIX[s]);
+    return unwanted.length ? { 'set.name': { $not: new RegExp('^(' + unwanted.join('|') + ')') } } : {};
+  }
+  return { 'set.name': { $regex: '^(' + sources.map(s => SET_PREFIX[s]).join('|') + ')' } };
+}
+
+function shuffle (list) {
+  const a = list.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/**
+ * Picks questions that have never been read if it can, walking the pools in
+ * order of preference, and otherwise the ones read longest ago. That keeps any
+ * question from coming back until everything else it competes with has been
+ * used -- the longest gap the pool allows, rather than a fixed number of rounds.
+ * @param {object[]} docs - candidates, already filtered to this slot
+ * @param {number} count
+ * @param {string[][]} pools - sources, most preferred first
+ * @param {Map<string, Date>} lastUsed
+ * @returns {{chosen: object[], repeats: number}}
+ */
+function pickLeastUsed (docs, count, pools, lastUsed) {
+  const chosen = [];
+  for (const sources of pools) {
+    for (const d of shuffle(docs.filter(d => sources.includes(sourceOf(d.set?.name))))) {
+      if (chosen.length >= count) { break; }
+      if (!lastUsed.has(String(d._id))) { chosen.push(d); }
     }
-    if (docs.length < count) short.push(`${label} (${docs.length} of ${count})`);
+  }
+  const unread = chosen.length;
+  if (chosen.length < count) {
+    const read = shuffle(docs.filter(d => lastUsed.has(String(d._id))))
+      .sort((a, b) => lastUsed.get(String(a._id)) - lastUsed.get(String(b._id)));
+    chosen.push(...read.slice(0, count - chosen.length));
+  }
+  return { chosen, repeats: chosen.length - unread };
+}
+
+// Two tryout rooms generating at the same moment would otherwise both see the
+// same questions as unread. Builds are quick, so run them one at a time.
+let lastBuild = Promise.resolve();
+function oneAtATime (task) {
+  const run = lastBuild.then(task, task);
+  lastBuild = run.catch(() => {});
+  return run;
+}
+
+/**
+ * @param {object} options
+ * @param {keyof LEVELS} options.level
+ * @param {string} options.math - a key of MATH_CHOICES, or 'auto'
+ * @param {boolean} options.includeGenerated - whether to draw on the SJA Generated sets too
+ * @returns {Promise<{round: object[], short: string[], notes: string[]}>} the
+ * round, a label for each category the archive could not fill, and anything
+ * else worth telling the moderator
+ */
+async function buildRound ({ level, math, includeGenerated }) {
+  const { pools: basePools } = LEVELS[level];
+  const mathTiers = MATH_CHOICES[math] || LEVELS[level].math;
+  // generated questions sit alongside whatever each pool already holds
+  const pools = includeGenerated ? basePools.map(p => p.concat('generated')) : basePools;
+  const setFilter = setFilterFor([...new Set(pools.flat())]);
+
+  const [candidates, usageDocs] = await Promise.all([
+    Promise.all(DISTRIBUTION.map(([label, , filter]) => tossups
+      .find({ kshsaaImport: true, ...filter, ...setFilter }, {
+        projection: label === 'Mathematics' ? { 'set.name': 1, question: 1 } : { 'set.name': 1 }
+      })
+      .toArray())),
+    usage.find({}).toArray()
+  ]);
+  const lastUsed = new Map(usageDocs.map(u => [String(u._id), u.lastUsed]));
+
+  // The filters can overlap (a foreign-language question may also be tagged
+  // Literature), so drop anything an earlier slot already took.
+  const picked = new Set();
+  const plan = [];
+  const short = [];
+  const notes = [];
+  DISTRIBUTION.forEach(([label, count], i) => {
+    const docs = candidates[i].filter(d => !picked.has(String(d._id)));
+    let result;
+    if (label === 'Mathematics') {
+      const inTier = new Set(docs.filter(d => mathTiers.includes(mathTierOf(d.question))));
+      result = pickLeastUsed([...inTier], count, pools, lastUsed);
+      if (result.chosen.length < count) {
+        // a thin tier should not leave the round a question short
+        const extra = pickLeastUsed(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed);
+        notes.push('Mathematics: only ' + result.chosen.length + ' ' + mathTiers.join('/') +
+          ' question(s) available, so ' + extra.chosen.length + ' came from another tier.');
+        result = { chosen: result.chosen.concat(extra.chosen), repeats: result.repeats + extra.repeats };
+      }
+    } else {
+      result = pickLeastUsed(docs, count, pools, lastUsed);
+    }
+    for (const d of result.chosen) {
+      picked.add(String(d._id));
+      plan.push({ id: d._id, label });
+    }
+    if (result.repeats) {
+      const what = label === 'Mathematics' ? mathTiers.join('/') + ' math' : label;
+      notes.push(label + ': ' + result.repeats + ' question(s) repeated - every other ' + what +
+        ' question at this level has already been read.');
+    }
+    if (result.chosen.length < count) { short.push(`${label} (${result.chosen.length} of ${count})`); }
   });
-  return { round, short };
+
+  if (level === 'beginner' && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === 'beginner'))) {
+    notes.push('No Beginner questions have been imported yet, so this round used JV questions. ' +
+      'Run "node import-beginner.js" from the website folder to add them.');
+  }
+
+  const full = await tossups.find({ _id: { $in: plan.map(p => p.id) } }).toArray();
+  const byId = new Map(full.map(d => [String(d._id), d]));
+  const round = plan.map(({ id, label }) => {
+    const d = byId.get(String(id));
+    const secs = d.timed_seconds || (label === 'Mathematics' ? 30 : null);
+    return {
+      id: String(d._id),
+      category: label,
+      question: (secs ? `[${secs} sec] ` : '') + d.question,
+      answer: d.answer,
+      source: `${d.set?.name ?? '?'} ${d.packet?.name ?? ''}`.trim(),
+      ...(label === 'Mathematics' ? { tier: mathTierOf(d.question) } : {})
+    };
+  });
+
+  // counted as read the moment the round exists: a second room generating a
+  // minute later must not get the same questions
+  if (round.length) {
+    const now = new Date();
+    await usage.bulkWrite(round.map(q => ({
+      updateOne: { filter: { _id: q.id }, update: { $set: { lastUsed: now }, $inc: { count: 1 } }, upsert: true }
+    })));
+  }
+  return { round, short, notes };
 }
 
 router.get('/generate', async (req, res) => {
+  const level = Object.hasOwn(LEVELS, req.query.level) ? req.query.level : 'varsity';
+  const math = Object.hasOwn(MATH_CHOICES, req.query.math) ? req.query.math : 'auto';
   try {
-    const { round, short } = await buildRound(req.query.converted === '1', req.query.generated === '1');
-    res.json({ round, short });
+    const { round, short, notes } = await oneAtATime(() =>
+      buildRound({ level, math, includeGenerated: req.query.generated === '1' }));
+    // identifies this round when its game is saved, so a second save of the
+    // same game can be refused rather than counted twice
+    res.json({ roundId: randomUUID(), level, round, short, notes });
   } catch (e) {
     console.error('kshsaa-round error', e);
     res.status(500).json({ error: String(e) });
   }
 });
+
+/**
+ * The level and math controls, shared by this page and the reader so both
+ * build rounds the same way. Read them with levelQuery() in the page script.
+ * @returns {string} HTML
+ */
+export function levelControls () {
+  const help = {
+    varsity: 'Real KSHSAA questions plus converted varsity quizbowl.',
+    jv: 'Converted quizbowl only. KSHSAA fills World Language and math, which it has none of.',
+    beginner: 'The last line of middle-school quizbowl questions. JV and KSHSAA questions fill the slots it lacks.'
+  };
+  return `
+    <div class="mb-2">
+      <div class="form-label fw-semibold mb-1">Level</div>
+      <div class="btn-group" role="group" aria-label="Question level">
+        ${Object.keys(LEVELS).map((key, i) => `
+        <input type="radio" class="btn-check" name="level" id="level-${key}" value="${key}"${i ? '' : ' checked'}>
+        <label class="btn btn-outline-primary btn-sm" for="level-${key}">${LEVELS[key].label}</label>`).join('')}
+      </div>
+      <div class="form-text" id="levelHelp">${help.varsity}</div>
+    </div>
+    <div class="mb-2">
+      <label class="form-label fw-semibold mb-1" for="mathTier">Math</label>
+      <select class="form-select form-select-sm" id="mathTier" style="max-width:26rem">
+        <option value="auto">Match the level</option>
+        <option value="basic">Basic &mdash; arithmetic, fractions, percents</option>
+        <option value="basic-intermediate">Basic + intermediate</option>
+        <option value="intermediate">Intermediate &mdash; Algebra I, geometry</option>
+        <option value="advanced">Advanced &mdash; Algebra II through calculus</option>
+        <option value="any">Any</option>
+      </select>
+      <div class="form-text">Matching the level gives Varsity any math, JV basic and intermediate, Beginner basic.</div>
+    </div>
+    <script>
+    (function () {
+      var help = ${JSON.stringify(help)};
+      Array.prototype.forEach.call(document.querySelectorAll('input[name="level"]'), function (radio) {
+        radio.addEventListener('change', function () { document.getElementById('levelHelp').textContent = help[radio.value]; });
+      });
+    })();
+    function levelQuery () {
+      return 'level=' + document.querySelector('input[name="level"]:checked').value +
+        '&math=' + document.getElementById('mathTier').value;
+    }
+    </script>`;
+}
 
 const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -128,7 +327,7 @@ const PAGE = `<!DOCTYPE html>
    .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
    .kshsaa-nav .kshsaa-links{grid-column:1}
  }
- @media print{.kshsaa-bar,.card-body .btn,.form-check{display:none}}
+ @media print{.kshsaa-bar,.no-print{display:none}}
 </style>
 </head><body class="bg-light">
 <div class="kshsaa-bar py-2 mb-3">
@@ -147,15 +346,11 @@ const PAGE = `<!DOCTYPE html>
   <h1 class="h4">Download a packet</h1>
   <p class="text-secondary">Builds a fresh, randomized 16-question round in official KSHSAA order
   (1 world language, 3 language arts, 3 science/health, 3 social studies, 3 math, 2 fine arts,
-  1 year in review) drawn from the full question archive.</p>
+  1 year in review) drawn from the full question archive. A question is not used again until every
+  other question it competes with has been, whichever page built the round.</p>
 
-  <div class="card mb-3"><div class="card-body">
-    <div class="form-check mb-3">
-      <input class="form-check-input" type="checkbox" id="conv">
-      <label class="form-check-label" for="conv">
-        Include converted quizbowl questions (bigger pool, slightly rougher wording)
-      </label>
-    </div>
+  <div class="card mb-3 no-print"><div class="card-body">
+    ${levelControls()}
     <div class="form-check mb-3">
       <input class="form-check-input" type="checkbox" id="gen">
       <label class="form-check-label" for="gen">
@@ -170,6 +365,7 @@ const PAGE = `<!DOCTYPE html>
     <span class="ms-2 text-secondary" id="status"></span>
   </div></div>
 
+  <div id="notes"></div>
   <div id="out"></div>
 
   <hr>
@@ -198,7 +394,7 @@ $('go').onclick = async () => {
   $('status').textContent = 'building...';
   $('go').disabled = true;
   try {
-    const r = await fetch('/kshsaa-round/generate?converted=' + ($('conv').checked ? '1' : '0') +
+    const r = await fetch('/kshsaa-round/generate?' + levelQuery() +
       '&generated=' + ($('gen').checked ? '1' : '0'));
     const data = await r.json();
     if (data.error) throw new Error(data.error);
@@ -214,6 +410,8 @@ $('go').onclick = async () => {
     } else {
       $('status').textContent = current.length + ' questions';
     }
+    $('notes').innerHTML = (data.notes || []).map(n =>
+      '<div class="alert alert-warning py-2 small mb-2">' + escapeHtml(n) + '</div>').join('');
   } catch (e) {
     $('status').textContent = 'error: ' + e.message;
   }
@@ -223,7 +421,8 @@ $('go').onclick = async () => {
 function render (round) {
   const rows = round.map((q, i) =>
     '<tr><td class="text-secondary">' + (i + 1) + '</td>' +
-    '<td class="small text-nowrap text-secondary">' + q.category + '</td>' +
+    '<td class="small text-nowrap text-secondary">' + q.category +
+    (q.tier ? '<div>(' + q.tier + ')</div>' : '') + '</td>' +
     '<td>' + escapeHtml(q.question) +
     '<div class="small text-success mt-1">ANSWER: ' + escapeHtml(q.answer) + '</div>' +
     '<div class="small text-secondary">' + escapeHtml(q.source) + '</div></td></tr>').join('');

@@ -136,20 +136,41 @@ Lint must pass (`npm run lint` — it auto-fixes most issues). Then actually exe
 ## KSHSAA Fork (this checkout only)
 
 `Adncoder/website` is a fork adding KSHSAA Scholars Bowl practice tooling.
-Everything under `routes/kshsaa-*.js` is fork-only and does not exist upstream;
-the rest of this document describes the upstream codebase and still applies.
+Everything under `routes/kshsaa-*.js`, `server/kshsaa/`, and the root
+`import-*.js` scripts is fork-only and does not exist upstream; the rest of this
+document describes the upstream codebase and still applies.
 
 | File | Page |
 | --- | --- |
-| `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, lineup reuse, and stats export |
-| `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB; exports `CATEGORY_BY_QUESTION` and `CATEGORIES` |
-| `routes/kshsaa-stats.js` | Password-gated practice stats: upload, rosters, lineups, players table, per-game views |
+| `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, lineup reuse, next round with the same teams, and save-once stats export |
+| `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out; exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
+| `routes/kshsaa-stats.js` | Password-gated practice stats: upload, rosters, lineups, month and level filters, players table, the game editor |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-spanish.js` | Spanish practice |
+| `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording |
+| `server/kshsaa/giveaway.js` | Turns a middle-school tossup into a Beginner question (its giveaway line) |
+| `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
+| `import-kshsaa.js`, `import-beginner.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
 3 Mathematics, 2 Fine Arts, 1 Year in Review.
+
+### Question sources and levels
+
+Every question the pages use carries `kshsaaImport: true`; the **set name
+prefix** says where it came from: `QB Converted` (varsity quizbowl rewritten
+for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
+(`import-beginner.js`), anything else real KSHSAA. `LEVELS` in
+`kshsaa-round.js` lists the pools each level draws from in order of preference;
+later pools fill slots the earlier ones cannot (the converted and Beginner sets
+have no World Language, and the converted sets no math).
+
+Rounds avoid repeats through `kshsaa_question_usage` (one document per question
+used, keyed by the tossup id as a string): unread questions first, then the ones
+read longest ago. A question counts as used as soon as a round is generated, and
+builds run one at a time so simultaneous rooms cannot draw the same question.
+`import-kshsaa.js` re-creates tossup ids, so re-running it resets this history.
 
 ### These pages are template literals, not client files
 
@@ -182,6 +203,12 @@ touching the reader:
 - Its cycle row has a fixed `height: 45px` and computes ~8px tall while its
   buttons overflow to 32px, and React rebuilds it. Measure its descendants and
   re-apply placement continuously; do not restructure its layout.
+- The buzz menu lists only players with `isStarter`; there is no other cap.
+  Scholars bowl plays five a side, so the first five per team start.
+- `customExport.onExport` is called from the menu **and** from the prompt after
+  the last question. It must return `{ isError, status }` — MODAQ shows
+  `status` only on errors, and a fixed "Export succeeded." otherwise. Saves carry
+  the round's `roundId`, and the server refuses a second save with 409.
 
 ### Stats
 
@@ -189,6 +216,13 @@ Celerity is accumulated **only on correct buzzes**, matching qbreader's
 `celerity.correct.average`. That makes it a poor ranking metric on its own — one
 lucky early buzz tops the board — so the players table defaults to points per
 question.
+
+A player is credited with a game, and its questions heard, for being on a
+team's list with tossups heard — buzzing is not required. Every wrong answer
+counts against buzz accuracy, the 0-point ones included; `negs` counts only −5s.
+Months are bucketed in `America/Chicago`, and the school year starts in August.
+Games store `level` (a `LEVELS` key or null), which the game editor can change
+along with the name, teams, and buzzes.
 
 A `per-tossup-data` document must exist for a tossup or `recordTossupData`
 silently drops the buzz. `publishQuestion()` writes one; if stats look empty,
