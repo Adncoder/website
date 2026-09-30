@@ -166,6 +166,12 @@ for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
 later pools fill slots the earlier ones cannot (the converted and Beginner sets
 have no World Language, and the converted sets no math).
 
+Year in Review uses only questions written this calendar year or last. The year
+comes from the set name (the spring year of a `24-25` season, else the latest
+year in the name), because imported sets store a placeholder `set.year`; only
+question-bank tossups (`sjaGenerated`) are trusted to carry a real one. A set
+whose name has no year is never used for Year in Review.
+
 Rounds avoid repeats through `kshsaa_question_usage` (one document per question
 used, keyed by the tossup id as a string): unread questions first, then the ones
 read longest ago. A question counts as used as soon as a round is generated, and
