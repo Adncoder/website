@@ -163,8 +163,10 @@ prefix** says where it came from: `QB Converted` (varsity quizbowl rewritten
 for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
 (`import-beginner.js`), `QB Current Events` (`import-current-events.js`, recent
 Year in Review only), anything else real KSHSAA. `LEVELS` in
-`kshsaa-round.js` lists the pools each level draws from in order of preference;
-later pools fill slots the earlier ones cannot (the converted and Beginner sets
+`kshsaa-round.js` lists the pools each level draws from in order of preference,
+ordered by how hard the clues are: Beginner reads the middle-school giveaways,
+JV the real KSHSAA archive (whose clues are easy), Varsity converted quizbowl.
+Later pools fill slots the earlier ones cannot (the converted and Beginner sets
 have no World Language, and the converted sets no math).
 
 Year in Review uses only questions written this calendar year or last. The year
