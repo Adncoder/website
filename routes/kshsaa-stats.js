@@ -8,17 +8,23 @@
 //        app.use('/kshsaa-stats', kshsaaStatsRouter);
 //        app.use(indexRouter);
 //   3. Add to .env and to Render's Environment tab:
-//        STATS_PASSWORD=somethingYourTeamKnows
+//        STATS_PASSWORD=whatTheCoachAndCaptainsKnow
+//        READER_PASSWORD=whatModeratorsKnow       (optional, see below)
+//        STATS_EXPORT_TOKEN=aLongRandomString     (optional, see /export)
 
 import { Router } from 'express';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
-import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
+import { celerityOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
 const roster = qbreader.collection('kshsaa_roster');
+// small documents keyed by name: { _id: 'squads', list: [...] }
+const settings = qbreader.collection('kshsaa_settings');
 
 // Games read on this site send their own category list. Older games, and files
 // exported from MODAQ elsewhere, fall back to the slot number - which is only
@@ -26,14 +32,55 @@ const roster = qbreader.collection('kshsaa_roster');
 const categoryFor = (n, explicit) =>
   (explicit && explicit[n - 1]) || CATEGORY_BY_QUESTION[n - 1] || 'Other';
 
-// squads a rostered player can belong to (edit this list to match your season)
-const SQUADS = ['Varsity Blue', 'Varsity Crimson', 'JV Blue', 'JV Crimson', 'JV Silver', 'Rotating / sub'];
+// squads a rostered player can belong to until the Roster tab saves its own list
+const DEFAULT_SQUADS = ['Varsity Blue', 'Varsity Crimson', 'JV Blue', 'JV Crimson', 'JV Silver', 'Rotating / sub'];
+
+/** @returns {Promise<string[]>} the squads, in the order teams are filled */
+export async function getSquads () {
+  const doc = await settings.findOne({ _id: 'squads' });
+  return doc?.list?.length ? doc.list : DEFAULT_SQUADS;
+}
 
 // ---------- auth ----------
+// Two passwords. STATS_PASSWORD opens everything: stats, roster, insights, the
+// question bank. READER_PASSWORD, when set, is the one moderators use on the
+// reader: it loads player names and lineups and saves games, and nothing else,
+// so reading a round never shows anyone the stats. Without it the reader asks
+// for the stats password.
+//
+// A session keeps a fingerprint of the password it signed in with rather than
+// a flag, so changing a password on the server signs out everyone who used it.
 
-const authed = req => Boolean(req.session && req.session.kshsaaStats);
-export const requireAuth = (req, res, next) =>
-  authed(req) ? next() : res.status(401).json({ error: 'not logged in' });
+const fingerprint = password => createHmac('sha256', process.env.SECRET_KEY_1 ?? 'secretKey1')
+  .update(String(password)).digest('hex').slice(0, 32);
+
+/**
+ * @returns {?('stats'|'reader')}
+ */
+export function roleOf (req) {
+  const key = req.session?.kshsaa?.key;
+  if (!key) return null;
+  if (process.env.STATS_PASSWORD && key === fingerprint(process.env.STATS_PASSWORD)) return 'stats';
+  if (process.env.READER_PASSWORD && key === fingerprint(process.env.READER_PASSWORD)) return 'reader';
+  return null;
+}
+
+/** Stats password only. */
+export const requireAuth = (req, res, next) => {
+  const role = roleOf(req);
+  if (role === 'stats') return next();
+  res.status(role ? 403 : 401).json({ error: role ? 'this needs the stats password' : 'not logged in' });
+};
+
+/** Either password: what reading a round needs. */
+const requireReader = (req, res, next) =>
+  roleOf(req) ? next() : res.status(401).json({ error: 'not logged in' });
+
+const sameSecret = (a, b) => {
+  const x = Buffer.from(String(a));
+  const y = Buffer.from(String(b));
+  return x.length === y.length && timingSafeEqual(x, y);
+};
 
 // one shared password that never rotates is worth a guessing cap
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -57,21 +104,28 @@ function tooManyAttempts (ip) {
 }
 
 router.post('/login', (req, res) => {
-  const expected = process.env.STATS_PASSWORD;
-  if (!expected) return res.status(500).json({ error: 'STATS_PASSWORD is not set on the server' });
+  const stats = process.env.STATS_PASSWORD;
+  const reader = process.env.READER_PASSWORD;
+  if (!stats) return res.status(500).json({ error: 'STATS_PASSWORD is not set on the server' });
   if (tooManyAttempts(req.ip)) {
     return res.status(429).json({ error: 'too many attempts - wait fifteen minutes' });
   }
-  if (!req.body || req.body.password !== expected) return res.status(403).json({ error: 'wrong password' });
+  const given = String(req.body?.password ?? '');
+  const role = sameSecret(given, stats) ? 'stats' : (reader && sameSecret(given, reader) ? 'reader' : null);
+  if (!role) return res.status(403).json({ error: 'wrong password' });
   loginAttempts.delete(req.ip);
-  req.session.kshsaaStats = true;
-  res.json({ ok: true });
+  req.session.kshsaa = { key: fingerprint(given) };
+  delete req.session.kshsaaStats;
+  res.json({ ok: true, role });
 });
 router.post('/logout', (req, res) => {
-  if (req.session) req.session.kshsaaStats = false;
+  if (req.session) req.session.kshsaa = null;
   res.json({ ok: true });
 });
-router.get('/me', (req, res) => res.json({ authed: authed(req) }));
+router.get('/me', (req, res) => {
+  const role = roleOf(req);
+  res.json({ authed: role === 'stats', reader: Boolean(role), role });
+});
 
 /**
  * Everyone who has been in a game: buzzers, plus the players on each team who
@@ -96,7 +150,7 @@ async function nameCanonicalizer () {
 }
 
 // names for autocomplete elsewhere on the site: roster + anyone who has played
-router.get('/names', requireAuth, async (req, res) => {
+router.get('/names', requireReader, async (req, res) => {
   const played = await playedNames();
   const listed = (await roster.find({}).toArray()).map(r => r.name);
   const seen = {};
@@ -118,7 +172,7 @@ router.get('/roster', requireAuth, async (req, res) => {
   const playedSet = {};
   played.forEach(n => { playedSet[String(n).trim().toLowerCase()] = true; });
   res.json({
-    squads: SQUADS,
+    squads: await getSquads(),
     roster: list.map(r => ({
       id: String(r._id),
       name: r.name,
@@ -134,6 +188,7 @@ router.post('/roster/add', requireAuth, async (req, res) => {
   try {
     const text = String((req.body && req.body.text) || '');
     const existing = await roster.find({}).toArray();
+    const squads = await getSquads();
     const byKey = {};
     existing.forEach(r => { byKey[r.name.trim().toLowerCase()] = r; });
 
@@ -152,7 +207,7 @@ router.post('/roster/add', requireAuth, async (req, res) => {
       for (const part of parts) {
         if (/^(9|10|11|12)(th)?$/i.test(part)) grade = Number(part.replace(/\D/g, ''));
         else {
-          const hit = SQUADS.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') ===
+          const hit = squads.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') ===
             part.toLowerCase().replace(/[^a-z0-9]/g, ''));
           if (hit) squad = hit;
         }
@@ -184,7 +239,7 @@ router.post('/roster/add', requireAuth, async (req, res) => {
 router.post('/roster/update', requireAuth, async (req, res) => {
   try {
     const grade = req.body.grade === '' || req.body.grade == null ? null : Number(req.body.grade);
-    const squad = SQUADS.includes(req.body.squad) ? req.body.squad : null;
+    const squad = (await getSquads()).includes(req.body.squad) ? req.body.squad : null;
     await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad } });
     res.json({ ok: true });
   } catch (e) {
@@ -250,6 +305,45 @@ router.post('/roster/rename', requireAuth, async (req, res) => {
   }
 });
 
+// the squad list itself, edited on the Roster tab
+router.post('/squads', requireAuth, async (req, res) => {
+  const seen = new Set();
+  const list = (Array.isArray(req.body?.list) ? req.body.list : [])
+    .map(s => String(s ?? '').trim().slice(0, 40))
+    .filter(s => s && !seen.has(s.toLowerCase()) && seen.add(s.toLowerCase()))
+    .slice(0, 24);
+  if (!list.length) return res.status(400).json({ error: 'list at least one squad' });
+  await settings.updateOne({ _id: 'squads' }, { $set: { list } }, { upsert: true });
+  res.json({ ok: true, list });
+});
+
+// Put players on squads in one go, from the team builder. Someone who has
+// played but was never added to the roster is added now.
+router.post('/roster/assign', requireAuth, async (req, res) => {
+  try {
+    const squads = await getSquads();
+    const wanted = (Array.isArray(req.body?.assignments) ? req.body.assignments : []).slice(0, 200);
+    const byKey = {};
+    for (const r of await roster.find({}).toArray()) byKey[r.name.trim().toLowerCase()] = r;
+    const ops = [];
+    for (const a of wanted) {
+      const name = String(a?.name ?? '').trim().slice(0, 60);
+      const squad = squads.includes(a?.squad) ? a.squad : null;
+      if (!name) continue;
+      const hit = byKey[name.toLowerCase()];
+      if (hit) {
+        ops.push({ updateOne: { filter: { _id: hit._id }, update: { $set: { squad } } } });
+      } else {
+        ops.push({ insertOne: { document: { name, grade: null, squad, createdAt: new Date() } } });
+      }
+    }
+    if (ops.length) await roster.bulkWrite(ops);
+    res.json({ ok: true, assigned: ops.length });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
 router.post('/roster/remove', requireAuth, async (req, res) => {
   try {
     await roster.deleteOne({ _id: new ObjectId(String(req.body.id)) });
@@ -260,23 +354,6 @@ router.post('/roster/remove', requireAuth, async (req, res) => {
 });
 
 // ---------- parsing MODAQ exports ----------
-
-/**
- * Celerity, as qbreader defines it: the share of the question still unread when
- * the buzz came, so 1.0 is a first-word buzz and 0 is a buzz at the very end.
- * qbreader measures that in characters; a word index is proportional to it and
- * is what MODAQ gives us, so use the word position against the buzzable-word
- * count the reader sent. Returns null when the denominator is unknown, which is
- * the case for games exported from MODAQ somewhere else.
- * @param {?number} wordIndex
- * @param {?number} wordCount
- * @returns {?number}
- */
-function celerityOf (wordIndex, wordCount) {
-  if (wordIndex == null || !wordCount || wordCount < 2) { return null; }
-  const c = 1 - wordIndex / (wordCount - 1);
-  return Math.min(1, Math.max(0, Number(c.toFixed(4))));
-}
 
 function parseQbj (m, cats, denominators) {
   const teams = [];
@@ -381,7 +458,7 @@ function teamScore (buzzes, teamName) {
 // pass the already-saved check below
 const saving = new Set();
 
-router.post('/upload', requireAuth, async (req, res) => {
+router.post('/upload', requireReader, async (req, res) => {
   const roundId = typeof req.body?.roundId === 'string' ? req.body.roundId.slice(0, 64) : null;
   if (roundId && saving.has(roundId)) {
     return res.status(409).json({ error: 'this game is still being saved' });
@@ -425,7 +502,7 @@ router.post('/upload', requireAuth, async (req, res) => {
 
 // Lineups from recent games. Tryouts run the same people repeatedly with one
 // side swapping out, so the reader offers these instead of retyping a roster.
-router.get('/lineups', requireAuth, async (req, res) => {
+router.get('/lineups', requireReader, async (req, res) => {
   const recent = await games
     .find({}, { projection: { label: 1, playedAt: 1, 'teams.name': 1, 'teams.players': 1 } })
     .sort({ playedAt: -1 })
@@ -537,6 +614,29 @@ router.post('/game/:id/update', requireAuth, async (req, res) => {
   }
 });
 
+// A read-only copy of everything, for looking at the team's data from outside
+// the site. Off unless STATS_EXPORT_TOKEN is set on the server; send it as
+// "Authorization: Bearer <token>". A stats sign-in works too.
+router.get('/export', async (req, res) => {
+  const token = process.env.STATS_EXPORT_TOKEN;
+  const sent = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!(token && sent && sameSecret(sent, token)) && roleOf(req) !== 'stats') {
+    return res.status(401).json({ error: 'not allowed' });
+  }
+  try {
+    const [allGames, rosterList, squads, questionPool] = await Promise.all([
+      games.find({}).sort({ playedAt: 1 }).toArray(),
+      roster.find({}).sort({ name: 1 }).toArray(),
+      getSquads(),
+      poolSummary()
+    ]);
+    res.set('Cache-Control', 'no-store');
+    res.json({ exportedAt: new Date(), squads, roster: rosterList, games: allGames, questionPool });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
 router.post('/delete', requireAuth, async (req, res) => {
   try {
     await games.deleteOne({ _id: new ObjectId(String(req.body.id)) });
@@ -547,20 +647,6 @@ router.post('/delete', requireAuth, async (req, res) => {
 });
 
 // ---------- stats ----------
-
-// Month boundaries in the team's own time zone, so a game read at 8pm on the
-// last day of the month is not filed under the next one (the server runs UTC).
-const MONTH_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit' });
-const monthKeyOf = date => MONTH_FORMAT.format(new Date(date)).slice(0, 7);
-const monthLabel = key => {
-  const [y, m] = key.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-};
-/** First month of the current school year, which starts in August. */
-function seasonStartKey () {
-  const [y, m] = monthKeyOf(new Date()).split('-').map(Number);
-  return (m >= 8 ? y : y - 1) + '-08';
-}
 
 function emptyTotals () {
   return { games: new Set(), heard: 0, correct: 0, wrong: 0, negs: 0, points: 0, celSum: 0, celCount: 0 };
@@ -600,11 +686,7 @@ function summary (t) {
 }
 
 router.get('/data', requireAuth, async (req, res) => {
-  const month = req.query.month === 'all' || /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : 'season';
-  const level = req.query.level === 'untagged' || LEVEL_KEYS.includes(req.query.level) ? req.query.level : 'all';
-  const season = seasonStartKey();
-  const inMonth = key => month === 'all' || (month === 'season' ? key >= season : key === month);
-  const inLevel = key => level === 'all' || key === level;
+  const { month, level, season, inMonth, inLevel } = readFilters(req.query);
 
   const all = await games.find({}).sort({ playedAt: 1 }).toArray();
 
@@ -646,21 +728,7 @@ router.get('/data', requireAuth, async (req, res) => {
       return list;
     };
 
-    // Who was in the room, and for how many tossups. MODAQ reports it per
-    // player, keyed "team|player"; players added by hand have no count, and
-    // fall back to the whole round.
-    const heardBy = {};
-    for (const t of g.teams || []) {
-      for (const name of t.players || []) {
-        heardBy[name] = Math.max(heardBy[name] ?? 0, g.heardByPlayer?.[t.name + '|' + name] ?? g.tossupsRead ?? 0);
-      }
-    }
-    const buzzers = new Set((g.buzzes || []).map(b => b.player));
-    for (const name of buzzers) { if (!(name in heardBy)) heardBy[name] = g.tossupsRead ?? 0; }
-
-    for (const [name, heard] of Object.entries(heardBy)) {
-      // a bench player who never came in did not play this game
-      if (!heard && !buzzers.has(name)) continue;
+    for (const [name, heard] of playersInGame(g)) {
       const p = playerFor(name);
       for (const t of bucketsFor(p)) { t.games.add(gid); t.heard += heard; }
       if (main) p.perGame[gid] = { id: gid, label: g.label + ' (' + new Date(g.playedAt).toLocaleDateString() + ')', points: 0 };
@@ -791,7 +859,7 @@ const PAGE = `<!DOCTYPE html>
   </div>
 
   <div id="login" class="card mt-3 d-none" style="max-width:420px"><div class="card-body">
-    <label class="form-label">Team password</label>
+    <label class="form-label" for="pw">Stats password</label>
     <input type="password" class="form-control mb-2" id="pw">
     <button class="btn btn-primary" id="loginBtn">Enter</button>
     <div class="small text-danger mt-2" id="loginErr"></div>
@@ -800,6 +868,7 @@ const PAGE = `<!DOCTYPE html>
   <div id="app" class="d-none">
     <ul class="nav nav-tabs mt-3" id="tabs">
       <li class="nav-item"><button class="nav-link active" data-tab="stats" type="button">Stats</button></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><button class="nav-link" data-tab="roster" type="button">Roster</button></li>
     </ul>
 
@@ -845,6 +914,12 @@ const PAGE = `<!DOCTYPE html>
           placeholder="Max Chen, 11&#10;Sarah Kim, 12&#10;Diego Alvarez, 9"></textarea></div>
         <div class="col-sm-4"><button class="btn btn-primary btn-sm w-100" id="rosterAdd">Add to roster</button>
           <div class="small mt-2" id="rosterMsg"></div></div>
+      </div>
+      <div class="row g-2 align-items-start mt-3">
+        <div class="col-sm-8"><label class="form-label" for="squadText">Squads, one per line, strongest first</label>
+          <textarea class="form-control form-control-sm" id="squadText" rows="4"></textarea></div>
+        <div class="col-sm-4 pt-sm-4"><button class="btn btn-outline-primary btn-sm w-100" id="squadSave">Save squads</button>
+          <div class="small mt-2" id="squadMsg"></div></div>
       </div>
       <div id="rosterList" class="mt-3"></div>
     </div></div>
@@ -961,8 +1036,11 @@ function show (a) {
 fetch('/kshsaa-stats/me').then(function (r) { return r.json(); }).then(function (d) { show(d.authed); });
 
 $('loginBtn').onclick = function () {
-  postJson('/kshsaa-stats/login', { password: $('pw').value })
-    .then(function (res) { res.ok ? show(true) : ($('loginErr').textContent = res.d.error || 'failed'); });
+  postJson('/kshsaa-stats/login', { password: $('pw').value }).then(function (res) {
+    if (!res.ok) { $('loginErr').textContent = res.d.error || 'failed'; return; }
+    if (res.d.role !== 'stats') { $('loginErr').textContent = 'That is the reader password. Stats need the stats password.'; return; }
+    show(true);
+  });
 };
 $('pw').onkeydown = function (e) { if (e.key === 'Enter') $('loginBtn').click(); };
 $('logout').onclick = function () { fetch('/kshsaa-stats/logout', { method: 'POST' }).then(function () { show(false); }); };
@@ -1026,11 +1104,12 @@ $('up').onclick = function () {
 function loadRoster () {
   fetch('/kshsaa-stats/roster').then(function (r) { return r.json(); }).then(function (d) {
     var list = d.roster || [];
+    SQUADS = d.squads || [];
+    if (document.activeElement !== $('squadText')) $('squadText').value = SQUADS.join('\\n');
     if (!list.length) {
       $('rosterList').innerHTML = '<p class="note">No one on the roster yet.</p>';
       return;
     }
-    SQUADS = d.squads || [];
     var h = '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr>' +
       '<th>Player</th><th style="width:7rem">Grade</th><th style="width:11rem">Squad</th>' +
       '<th>Status</th><th style="width:9rem"></th></tr></thead><tbody>';
@@ -1124,6 +1203,18 @@ Array.prototype.forEach.call(document.querySelectorAll('#tabs [data-tab]'), func
     $('tabRoster').classList.toggle('d-none', tab !== 'roster');
   };
 });
+
+$('squadSave').onclick = function () {
+  var list = $('squadText').value.split('\\n').map(function (x) { return x.trim(); }).filter(Boolean);
+  postJson('/kshsaa-stats/squads', { list: list }).then(function (res) {
+    if (!res.ok) { $('squadMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'could not save') + '</span>'; return; }
+    $('squadMsg').innerHTML = '<span class="text-success">saved</span>';
+    loadRoster();
+  });
+};
+
+// the Insights page links back here with #roster
+if (location.hash === '#roster') document.querySelector('#tabs [data-tab="roster"]').click();
 
 $('rosterAdd').onclick = function () {
   var text = $('rosterText').value;

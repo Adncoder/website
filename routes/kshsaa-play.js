@@ -119,7 +119,7 @@ const PAGE = `<!DOCTYPE html>
   <div id="gate" class="setup d-none">
     <h1 class="h4">Read a round</h1>
     <div class="card" style="max-width:420px"><div class="card-body">
-      <label class="form-label">Team password</label>
+      <label class="form-label" for="gatePw">Reader password</label>
       <input type="password" class="form-control mb-2" id="gatePw">
       <button class="btn btn-primary" id="gateBtn">Enter</button>
       <div class="small text-danger mt-2" id="gateErr"></div>
@@ -415,8 +415,9 @@ function restoreNextRound () {
   fillSide('p2', 't2', setup.teams[1].name, setup.teams[1].players);
 }
 
+// either password works here: the reader one only loads names and saves games
 fetch('/kshsaa-stats/me').then(r => r.json()).then(d => {
-  if (d.authed) startApp();
+  if (d.reader) startApp();
   else $('gate').classList.remove('d-none');
 }).catch(() => $('gate').classList.remove('d-none'));
 
@@ -1019,7 +1020,7 @@ $('go').onclick = async () => {
             try {
               let r = await post();
               if (r.status === 401) {
-                const pw = window.prompt('Team stats password (to save this game):');
+                const pw = window.prompt('Reader password (to save this game):');
                 if (!pw) {
                   return { isError: true, status: 'not saved. Click "Save to team stats" again when ready' };
                 }
