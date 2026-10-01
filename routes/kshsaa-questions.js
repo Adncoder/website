@@ -326,7 +326,7 @@ const PAGE = `<!DOCTYPE html>
   <h1>Question bank</h1>
 
   <div id="login" class="card mt-3 d-none" style="max-width:420px"><div class="card-body">
-    <label class="form-label">Team password</label>
+    <label class="form-label">Stats password</label>
     <input type="password" class="form-control mb-2" id="pw">
     <button class="btn btn-primary" id="loginBtn">Enter</button>
     <div class="small text-danger mt-2" id="loginErr"></div>
@@ -399,7 +399,11 @@ $('loginBtn').onclick = function () {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ password: $('pw').value })
   }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-    .then(function (res) { res.ok ? show(true) : ($('loginErr').textContent = res.d.error || 'failed'); });
+    .then(function (res) {
+      if (!res.ok) { $('loginErr').textContent = res.d.error || 'failed'; return; }
+      if (res.d.role !== 'stats') { $('loginErr').textContent = 'That is the reader password. The question bank needs the stats password.'; return; }
+      show(true);
+    });
 };
 $('pw').onkeydown = function (e) { if (e.key === 'Enter') { $('loginBtn').click(); } };
 

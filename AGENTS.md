@@ -144,12 +144,14 @@ document describes the upstream codebase and still applies.
 | --- | --- |
 | `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, lineup reuse, next round with the same teams, and save-once stats export |
 | `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out; exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
-| `routes/kshsaa-stats.js` | Password-gated practice stats: upload, rosters, lineups, month and level filters, players table, the game editor |
+| `routes/kshsaa-stats.js` | Password-gated practice stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
+| `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording |
 | `server/kshsaa/giveaway.js` | Turns a middle-school tossup into a Beginner question (its giveaway line) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
+| `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `import-kshsaa.js`, `import-beginner.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. The last two share `server/kshsaa/qbreader-import.js` |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
@@ -192,7 +194,9 @@ server. Two consequences:
    JavaScript, silently matching the wrong thing. Double every escape (`\\d`) or
    avoid regex entirely (`split('(').length - 1`, `String.includes`).
    `npm run lint` catches most cases through `no-useless-escape`, so lint is the
-   detector here, not just a style gate.
+   detector here, not just a style gate. It does not catch `'\n'`: that becomes
+   a real line break inside the page's string and the whole script fails to
+   parse. Write `'\\n'`, and load the page to check.
 2. **The server does not hot-reload them.** Restart after every edit, and kill the
    previous listener first — a stale process serves the old page and makes a
    working fix look broken.
@@ -219,6 +223,26 @@ touching the reader:
   `status` only on errors, and a fixed "Export succeeded." otherwise. Saves carry
   the round's `roundId`, and the server refuses a second save with 409.
 
+### Sign-in
+
+Two passwords, both server environment variables. `STATS_PASSWORD` opens
+everything: stats, roster, insights, the question bank. `READER_PASSWORD`, if
+set, is what moderators type into the reader; it only loads names and lineups
+and saves games (`requireReader`), so reading rounds never shows players the
+stats. Use `requireAuth` for anything else. A session stores an HMAC
+fingerprint of the password it used, so changing either password signs out
+everyone who used the old one.
+
+`GET /kshsaa-stats/export` returns every game, the roster, the squads, and a
+summary of the question pools. It answers a stats session or
+`Authorization: Bearer $STATS_EXPORT_TOKEN`, and is off when that variable is
+unset. Squads live in `kshsaa_settings` (`_id: 'squads'`), edited on the Roster
+tab, strongest first: the team builder fills them in that order.
+
+`/kshsaa-round?drill=<category>&level=<level>` builds a practice set of one
+category. Practice sets are not recorded in `kshsaa_question_usage`, so
+studying never uses up questions for rounds.
+
 ### Stats
 
 Celerity is accumulated **only on correct buzzes**, matching qbreader's
@@ -231,7 +255,18 @@ team's list with tossups heard — buzzing is not required. Every wrong answer
 counts against buzz accuracy, the 0-point ones included; `negs` counts only −5s.
 Months are bucketed in `America/Chicago`, and the school year starts in August.
 Games store `level` (a `LEVELS` key or null), which the game editor can change
-along with the name, teams, and buzzes.
+along with the name, teams, and buzzes. Games saved from the reader also store
+`questionIds`, the tossup read at each number, which the question difficulty
+table needs.
+
+Insights rates a player per category as (correct − ½·negs) per question heard,
+pulled toward the player's overall rate and that toward the team's while the
+sample is small. One scale factor, fitted so that "someone in the room knew it"
+matches how often questions were answered, turns rates into rough chances of
+knowing a question; team strength is the expected number of a round's 16
+questions at least one starter knows. A category is flagged "work on" only when
+it is below the team and at least 1.5 answers short of the player's own usual
+level, so players weak everywhere do not get arbitrary flags.
 
 A `per-tossup-data` document must exist for a tossup or `recordTossupData`
 silently drops the buzz. `publishQuestion()` writes one; if stats look empty,

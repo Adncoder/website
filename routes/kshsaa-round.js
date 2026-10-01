@@ -72,7 +72,7 @@ const SET_PREFIX = {
  * @param {string} [setName]
  * @returns {'kshsaa'|'converted'|'generated'|'beginner'|'current'}
  */
-function sourceOf (setName) {
+export function sourceOf (setName) {
   const name = String(setName || '');
   return Object.keys(SET_PREFIX).find(key => name.startsWith(SET_PREFIX[key])) || 'kshsaa';
 }
@@ -182,29 +182,37 @@ function oneAtATime (task) {
   return run;
 }
 
+// what each slot's candidates need for picking, beyond their id
+const projectionFor = label => (label === 'Mathematics'
+  ? { set: 1, question: 1 }
+  : label === 'Year in Review' ? { set: 1, sjaGenerated: 1 } : { 'set.name': 1 });
+
 /**
  * @param {object} options
  * @param {keyof LEVELS} options.level
  * @param {string} options.math - a key of MATH_CHOICES, or 'auto'
  * @param {boolean} options.includeGenerated - whether to draw on the SJA Generated sets too
+ * @param {{label: string, count: number}} [options.drill] - a practice set of
+ *   one category instead of a round. Practice sets are not counted as read, so
+ *   studying never uses up the questions rounds draw on.
  * @returns {Promise<{round: object[], short: string[], notes: string[]}>} the
  * round, a label for each category the archive could not fill, and anything
  * else worth telling the moderator
  */
-async function buildRound ({ level, math, includeGenerated }) {
+async function buildRound ({ level, math, includeGenerated, drill }) {
   const { pools: basePools } = LEVELS[level];
   const mathTiers = MATH_CHOICES[math] || LEVELS[level].math;
   // generated questions sit alongside whatever each pool already holds
   const pools = includeGenerated ? basePools.map(p => p.concat('generated')) : basePools;
   const setFilter = setFilterFor([...new Set(pools.flat())]);
 
+  const slots = drill
+    ? DISTRIBUTION.filter(([label]) => label === drill.label).map(([label, , filter]) => [label, drill.count, filter])
+    : DISTRIBUTION;
+
   const [candidates, usageDocs] = await Promise.all([
-    Promise.all(DISTRIBUTION.map(([label, , filter]) => tossups
-      .find({ kshsaaImport: true, ...filter, ...setFilter }, {
-        projection: label === 'Mathematics'
-          ? { 'set.name': 1, question: 1 }
-          : label === 'Year in Review' ? { set: 1, sjaGenerated: 1 } : { 'set.name': 1 }
-      })
+    Promise.all(slots.map(([label, , filter]) => tossups
+      .find({ kshsaaImport: true, ...filter, ...setFilter }, { projection: projectionFor(label) })
       .toArray())),
     usage.find({}).toArray()
   ]);
@@ -217,7 +225,7 @@ async function buildRound ({ level, math, includeGenerated }) {
   const recentFrom = yearInReviewFrom();
   const short = [];
   const notes = [];
-  DISTRIBUTION.forEach(([label, count], i) => {
+  slots.forEach(([label, count], i) => {
     const docs = candidates[i].filter(d => !picked.has(String(d._id)) &&
       (label !== 'Year in Review' || questionYear(d) >= recentFrom));
     let result;
@@ -271,7 +279,7 @@ async function buildRound ({ level, math, includeGenerated }) {
 
   // counted as read the moment the round exists: a second room generating a
   // minute later must not get the same questions
-  if (round.length) {
+  if (round.length && !drill) {
     const now = new Date();
     await usage.bulkWrite(round.map(q => ({
       updateOne: { filter: { _id: q.id }, update: { $set: { lastUsed: now }, $inc: { count: 1 } }, upsert: true }
@@ -283,9 +291,12 @@ async function buildRound ({ level, math, includeGenerated }) {
 router.get('/generate', async (req, res) => {
   const level = Object.hasOwn(LEVELS, req.query.level) ? req.query.level : 'varsity';
   const math = Object.hasOwn(MATH_CHOICES, req.query.math) ? req.query.math : 'auto';
+  const drill = CATEGORIES.includes(req.query.drill)
+    ? { label: req.query.drill, count: Math.min(40, Math.max(5, parseInt(req.query.count) || 20)) }
+    : null;
   try {
     const { round, short, notes } = await oneAtATime(() =>
-      buildRound({ level, math, includeGenerated: req.query.generated === '1' }));
+      buildRound({ level, math, includeGenerated: req.query.generated === '1', drill }));
     // identifies this round when its game is saved, so a second save of the
     // same game can be refused rather than counted twice
     res.json({ roundId: randomUUID(), level, round, short, notes });
@@ -294,6 +305,51 @@ router.get('/generate', async (req, res) => {
     res.status(500).json({ error: String(e) });
   }
 });
+
+/**
+ * How many questions each category has, by source, and how many of those have
+ * never been read; math also by tier, and Year in Review counting only the
+ * recent questions rounds will use. For checking the pools without opening the
+ * database.
+ */
+export async function poolSummary () {
+  const [candidates, usageDocs] = await Promise.all([
+    Promise.all(DISTRIBUTION.map(([label, , filter]) => tossups
+      .find({ kshsaaImport: true, ...filter }, { projection: projectionFor(label) })
+      .toArray())),
+    usage.find({}, { projection: { _id: 1 } }).toArray()
+  ]);
+  const read = new Set(usageDocs.map(u => String(u._id)));
+  const recentFrom = yearInReviewFrom();
+  const tally = (into, key, d) => {
+    const t = into[key] || (into[key] = { total: 0, unread: 0 });
+    t.total++;
+    if (!read.has(String(d._id))) t.unread++;
+  };
+  return {
+    questionsEverRead: read.size,
+    yearInReviewFrom: recentFrom,
+    levels: Object.fromEntries(Object.entries(LEVELS).map(([key, l]) => [key, l.pools])),
+    categories: DISTRIBUTION.map(([label, perRound], i) => {
+      const bySource = {};
+      const byTier = {};
+      let older = 0;
+      for (const d of candidates[i]) {
+        if (label === 'Year in Review' && !(questionYear(d) >= recentFrom)) { older++; continue; }
+        const source = sourceOf(d.set?.name);
+        tally(bySource, source, d);
+        if (label === 'Mathematics') tally(byTier, source + ' ' + mathTierOf(d.question), d);
+      }
+      return {
+        category: label,
+        perRound,
+        bySource,
+        ...(label === 'Mathematics' ? { byTier } : {}),
+        ...(label === 'Year in Review' ? { olderLeftOut: older } : {})
+      };
+    })
+  };
+}
 
 /**
  * The level and math controls, shared by this page and the reader so both
@@ -364,8 +420,8 @@ const PAGE = `<!DOCTYPE html>
   </div>
 </div>
 <div class="container pb-4" style="max-width:900px">
-  <h1 class="h4">Download a packet</h1>
-  <p class="text-secondary">Builds a fresh, randomized 16-question round in official KSHSAA order
+  <h1 class="h4" id="title">Download a packet</h1>
+  <p class="text-secondary" id="intro">Builds a fresh, randomized 16-question round in official KSHSAA order
   (1 world language, 3 language arts, 3 science/health, 3 social studies, 3 math, 2 fine arts,
   1 year in review) drawn from the full question archive. A question is not used again until every
   other question it competes with has been, whichever page built the round.</p>
@@ -389,8 +445,8 @@ const PAGE = `<!DOCTYPE html>
   <div id="notes"></div>
   <div id="out"></div>
 
-  <hr>
-  <p class="small text-secondary mb-1"><strong>How to run the round:</strong> download the MODAQ file, open
+  <hr id="howtoRule">
+  <p class="small text-secondary mb-1" id="howto"><strong>How to run the round:</strong> download the MODAQ file, open
   <a href="https://www.quizbowlreader.com" target="_blank" rel="noopener">quizbowlreader.com</a>, start a new game,
   and load the file as the packet. Scoring per the KSHSAA manual: 10 points for a correct answer, no bonuses;
   &minus;5 only for the first team's wrong answer on an interruption (a second-team interruption miss carries no penalty).
@@ -411,12 +467,27 @@ let current = null;
 const $ = id => document.getElementById(id);
 document.getElementById('status').textContent = 'ready';
 
+// /kshsaa-round?drill=Fine%20Arts&level=jv opens a practice set of one
+// category: the link the Insights page puts in messages to players
+const params = new URLSearchParams(location.search);
+const DRILL = params.get('drill');
+const TITLE = DRILL ? DRILL + ' practice set' : 'KSHSAA practice round';
+if (DRILL) {
+  document.title = TITLE;
+  $('title').textContent = TITLE;
+  ['intro', 'howto', 'howtoRule'].forEach(id => $(id).classList.add('d-none'));
+  $('go').textContent = 'New practice set';
+  const radio = document.querySelector('input[name="level"][value="' + params.get('level') + '"]');
+  if (radio) radio.checked = true;
+}
+
 $('go').onclick = async () => {
   $('status').textContent = 'building...';
   $('go').disabled = true;
   try {
     const r = await fetch('/kshsaa-round/generate?' + levelQuery() +
-      '&generated=' + ($('gen').checked ? '1' : '0'));
+      '&generated=' + ($('gen').checked ? '1' : '0') +
+      (DRILL ? '&drill=' + encodeURIComponent(DRILL) : ''));
     const data = await r.json();
     if (data.error) throw new Error(data.error);
     current = data.round;
@@ -474,7 +545,7 @@ function stamp () { return new Date().toISOString().slice(0, 10); }
 
 $('txt').onclick = () => {
   const NL = String.fromCharCode(13, 10);
-  let out = 'KSHSAA PRACTICE ROUND - ' + stamp() + NL + NL;
+  let out = TITLE.toUpperCase() + ' - ' + stamp() + NL + NL;
   current.forEach((q, i) => {
     out += (i + 1) + '. [' + q.category + '] ' + q.question + NL;
     out += '   ANSWER: ' + q.answer + NL + NL;
@@ -482,7 +553,7 @@ $('txt').onclick = () => {
   const blob = new Blob([out], { type: 'text/plain' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'KSHSAA round ' + stamp() + '.txt';
+  a.download = TITLE + ' ' + stamp() + '.txt';
   a.click();
 };
 
@@ -495,7 +566,7 @@ $('pdf').onclick = () => {
   let y = M;
 
   doc.setFont('helvetica', 'bold').setFontSize(14);
-  doc.text('KSHSAA practice round', M, y);
+  doc.text(TITLE, M, y);
   doc.setFont('helvetica', 'normal').setFontSize(9);
   doc.text(stamp() + '   -   10 points per correct answer, -5 on a wrong interruption', M, y + 14);
   y += 36;
@@ -519,8 +590,9 @@ $('pdf').onclick = () => {
     y += aLines.length * 12 + 14;
   });
 
-  doc.save('KSHSAA round ' + stamp() + '.pdf');
+  doc.save(TITLE + ' ' + stamp() + '.pdf');
 };
+if (DRILL) $('go').click();
 </script>
 </body></html>`;
 
