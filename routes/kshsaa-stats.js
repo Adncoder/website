@@ -19,6 +19,7 @@ import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { celerityOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
+import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
@@ -178,6 +179,10 @@ router.get('/roster', requireAuth, async (req, res) => {
       name: r.name,
       grade: r.grade ?? null,
       squad: r.squad || null,
+      // the coach's 1-10 judgment from past seasons, blended with stats by the team builder
+      rating: r.rating ?? null,
+      // stays on their squad: the team builder never moves them
+      permanent: Boolean(r.permanent && r.squad),
       hasPlayed: Boolean(playedSet[r.name.trim().toLowerCase()])
     }))
   });
@@ -240,7 +245,12 @@ router.post('/roster/update', requireAuth, async (req, res) => {
   try {
     const grade = req.body.grade === '' || req.body.grade == null ? null : Number(req.body.grade);
     const squad = (await getSquads()).includes(req.body.squad) ? req.body.squad : null;
-    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad } });
+    const given = Number(req.body.rating);
+    const rating = req.body.rating === '' || req.body.rating == null || !Number.isFinite(given)
+      ? null
+      : Math.round(Math.min(10, Math.max(1, given)) * 2) / 2;
+    const permanent = Boolean(req.body.permanent) && Boolean(squad);
+    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent } });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
@@ -786,6 +796,7 @@ const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Practice stats</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+${KSHSAA_HEAD}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
 <style>
@@ -808,19 +819,6 @@ const PAGE = `<!DOCTYPE html>
  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
  .heat{display:inline-block;min-width:3rem;padding:.15rem .4rem;border-radius:.25rem;
    text-align:center;font-size:.85rem}
- .kshsaa-bar{background:#eef1f7;border-bottom:1px solid #d9e0ec}
- .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
- .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
- .kshsaa-bar a.active{color:#1f3864;font-weight:600}
- /* three columns so the section links stay centred on the page no matter how
-    wide the "back to QBReader" link on the left happens to be */
- .kshsaa-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:.25rem}
- .kshsaa-nav .kshsaa-links{grid-column:2;display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem 0}
- .kshsaa-home{justify-self:start;margin-left:0 !important;white-space:nowrap}
- @media (max-width:900px){
-   .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
-   .kshsaa-nav .kshsaa-links{grid-column:1}
- }
  .rowlink{cursor:pointer}
  tr.selected td{background:#eef4ff !important}
  .res{display:inline-block;padding:.12rem .5rem;border-radius:.3rem;font-size:.85rem;margin-right:.35rem}
@@ -836,21 +834,17 @@ const PAGE = `<!DOCTYPE html>
  .kv .v{font-size:1.05rem;font-weight:600;font-variant-numeric:tabular-nums}
  #gmBuzzes td{padding:.25rem .35rem !important}
  details.card > summary{cursor:pointer;padding:.75rem 1rem;font-weight:600;color:#33415c}
+ /* "Show to player": one player's card over the whole screen, so showing a
+    student their numbers never shows anyone else's */
+ body.solo #spotlight{position:fixed;inset:0;z-index:1050;margin:0 !important;background:#fff;overflow:auto;padding:2rem 1rem}
+ body.solo #spotlight > .card{max-width:1180px;margin:0 auto;border:0}
+ .solo-only{display:none}
+ body.solo .solo-only{display:inline-block}
+ body.solo .not-solo{display:none}
 </style>
 </head><body>
 
-<div class="kshsaa-bar py-2 mb-3">
-  <div class="container kshsaa-nav" style="max-width:1100px">
-    <a class="kshsaa-home" href="/">&larr; QBReader</a>
-    <span class="kshsaa-links">
-      <a href="/kshsaa-play">Read a round</a>
-      <a href="/kshsaa-round">Download packet</a>
-      <a href="/kshsaa-stats" class="active">Practice stats</a>
-      <a href="/kshsaa-questions">Question bank</a>
-      <a href="/kshsaa-spanish/">Spanish Practice</a>
-    </span>
-  </div>
-</div>
+${kshsaaNav('/kshsaa-stats', 1100)}
 
 <div class="container pb-5" style="max-width:1100px">
   <div class="d-flex justify-content-between align-items-center">
@@ -1101,95 +1095,168 @@ $('up').onclick = function () {
 
 // ---------- roster ----------
 
+var ROSTER = [];
+var ROSTER_SORT = { key: 'name', dir: 1 };
+// the direction each column sorts in first: names A-Z, younger grades first,
+// strongest squad first, highest rating first, players with stats first
+var ROSTER_COLS = [
+  { key: 'name', label: 'Player', dir: 1 },
+  { key: 'grade', label: 'Grade', dir: 1, width: '6rem' },
+  { key: 'squad', label: 'Squad', dir: 1, width: '14rem' },
+  { key: 'rating', label: 'Rating', dir: -1, width: '6rem', tip: 'Your 1-10 judgment from past seasons. The team builder blends it with stats.' },
+  { key: 'hasPlayed', label: 'Status', dir: -1, width: '8rem' }
+];
+
+function rosterValue (r, key) {
+  if (key === 'squad') {
+    if (!r.squad) return null;
+    var at = SQUADS.indexOf(r.squad);
+    return at === -1 ? SQUADS.length : at;
+  }
+  if (key === 'hasPlayed') return r.hasPlayed ? 1 : 0;
+  return r[key];
+}
+
+function sortedRoster () {
+  var key = ROSTER_SORT.key;
+  var dir = ROSTER_SORT.dir;
+  return ROSTER.slice().sort(function (a, b) {
+    if (key === 'name') return a.name.localeCompare(b.name) * dir;
+    var x = rosterValue(a, key);
+    var y = rosterValue(b, key);
+    // blanks sit at the bottom whichever way the column sorts
+    if (x == null || y == null) {
+      if (x != null) return -1;
+      if (y != null) return 1;
+    } else if (x !== y) {
+      return (x < y ? -1 : 1) * dir;
+    }
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function rosterSummary () {
+  var grades = {};
+  ROSTER.forEach(function (r) { if (r.grade) grades[r.grade] = (grades[r.grade] || 0) + 1; });
+  var onSquad = ROSTER.filter(function (r) { return r.squad; }).length;
+  return '<p class="mb-2"><strong>' + ROSTER.length + ' player' + (ROSTER.length === 1 ? '' : 's') + '</strong>' +
+    Object.keys(grades).sort(function (a, b) { return a - b; }).map(function (g) {
+      return ' &middot; ' + g + 'th: ' + grades[g];
+    }).join('') +
+    ' &middot; ' + onSquad + ' on a squad</p>';
+}
+
 function loadRoster () {
   fetch('/kshsaa-stats/roster').then(function (r) { return r.json(); }).then(function (d) {
-    var list = d.roster || [];
+    ROSTER = d.roster || [];
     SQUADS = d.squads || [];
     if (document.activeElement !== $('squadText')) $('squadText').value = SQUADS.join('\\n');
-    if (!list.length) {
-      $('rosterList').innerHTML = '<p class="note">No one on the roster yet.</p>';
-      return;
-    }
-    var h = '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr>' +
-      '<th>Player</th><th style="width:7rem">Grade</th><th style="width:11rem">Squad</th>' +
-      '<th>Status</th><th style="width:9rem"></th></tr></thead><tbody>';
-    list.forEach(function (r) {
-      h += '<tr data-row="' + r.id + '"><td class="ncell">' + esc(r.name) + '</td>' +
-        '<td class="gcell">' + (r.grade ? r.grade + 'th' : '<span class="text-secondary">-</span>') + '</td>' +
-        '<td class="scell">' + (r.squad ? esc(r.squad) : '<span class="text-secondary">unassigned</span>') + '</td>' +
-        '<td class="text-secondary">' + (r.hasPlayed ? 'has stats' : 'no games yet') + '</td>' +
-        '<td class="text-end acell">' +
-        '<button class="btn btn-sm btn-link p-0 me-2 redit" data-id="' + r.id +
-        '" data-name="' + esc(r.name) + '" data-played="' + (r.hasPlayed ? '1' : '') +
-        '" data-squad="' + esc(r.squad || '') + '"' +
-        ' data-grade="' + (r.grade || '') + '">edit</button>' +
-        '<button class="btn btn-sm btn-link text-danger p-0 rdel" data-id="' + r.id + '">remove</button>' +
-        '</td></tr>';
-    });
-    $('rosterList').innerHTML = h + '</tbody></table></div>';
+    renderRoster();
+  });
+}
 
-    Array.prototype.forEach.call(document.querySelectorAll('.redit'), function (btn) {
-      btn.onclick = function () {
-        var id = btn.getAttribute('data-id');
-        var played = btn.getAttribute('data-played') === '1';
-        var oldName = btn.getAttribute('data-name');
-        var row = document.querySelector('[data-row="' + id + '"]');
-        var ncell = row.querySelector('.ncell');
-        var gcell = row.querySelector('.gcell');
-        var acell = row.querySelector('.acell');
+function renderRoster () {
+  if (!ROSTER.length) {
+    $('rosterList').innerHTML = '<p class="note">No one on the roster yet.</p>';
+    return;
+  }
+  var h = rosterSummary() + '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr>' +
+    ROSTER_COLS.map(function (c) {
+      var on = ROSTER_SORT.key === c.key;
+      return '<th class="sortable' + (on ? ' sorted' : '') + '" data-rsort="' + c.key + '"' +
+        (c.width ? ' style="width:' + c.width + '"' : '') + ' title="' + esc(c.tip || 'Sort by ' + c.label) + '">' +
+        c.label + '<span class="sortarrow">' + (on ? (ROSTER_SORT.dir < 0 ? '&#9660;' : '&#9650;') : '') + '</span></th>';
+    }).join('') + '<th style="width:9rem"></th></tr></thead><tbody>';
+  sortedRoster().forEach(function (r) {
+    h += '<tr data-row="' + r.id + '"><td class="ncell">' + esc(r.name) + '</td>' +
+      '<td class="gcell">' + (r.grade ? r.grade + 'th' : '<span class="text-secondary">-</span>') + '</td>' +
+      '<td class="scell">' + (r.squad
+      ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '')
+      : '<span class="text-secondary">unassigned</span>') + '</td>' +
+      '<td class="rcell">' + (r.rating == null ? '<span class="text-secondary">-</span>' : r.rating) + '</td>' +
+      '<td class="text-secondary">' + (r.hasPlayed ? 'has stats' : 'no games yet') + '</td>' +
+      '<td class="text-end acell">' +
+      '<button class="btn btn-sm btn-link p-0 me-2 redit" data-id="' + r.id + '">edit</button>' +
+      '<button class="btn btn-sm btn-link text-danger p-0 rdel" data-id="' + r.id + '">remove</button>' +
+      '</td></tr>';
+  });
+  $('rosterList').innerHTML = h + '</tbody></table></div>';
 
-        ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(oldName) + '">';
-        gcell.innerHTML = '<input class="form-control form-control-sm gedit" type="number" min="9" max="12" ' +
-          'style="width:5rem" value="' + (btn.getAttribute('data-grade') || '') + '">';
-        var curSquad = btn.getAttribute('data-squad') || '';
-        row.querySelector('.scell').innerHTML = '<select class="form-select form-select-sm sedit">' +
-          '<option value="">unassigned</option>' +
-          SQUADS.map(function (s) {
-            return '<option value="' + esc(s) + '"' + (s === curSquad ? ' selected' : '') + '>' + esc(s) + '</option>';
-          }).join('') + '</select>';
-        acell.innerHTML = '<button class="btn btn-sm btn-primary py-0 px-2 me-1 gsave">save</button>' +
-          '<button class="btn btn-sm btn-link p-0 gcancel">cancel</button>';
-        ncell.querySelector('.nedit').focus();
+  Array.prototype.forEach.call(document.querySelectorAll('th[data-rsort]'), function (th) {
+    th.onclick = function () {
+      var key = th.getAttribute('data-rsort');
+      var col = ROSTER_COLS.filter(function (c) { return c.key === key; })[0];
+      ROSTER_SORT = ROSTER_SORT.key === key ? { key: key, dir: -ROSTER_SORT.dir } : { key: key, dir: col.dir };
+      renderRoster();
+    };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.redit'), function (btn) {
+    btn.onclick = function () { editRosterRow(btn.getAttribute('data-id')); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.rdel'), function (btn) {
+    btn.onclick = function () {
+      if (!confirm('Remove from the roster? Their past stats are kept.')) return;
+      postJson('/kshsaa-stats/roster/remove', { id: btn.getAttribute('data-id') }).then(loadRoster);
+    };
+  });
+}
 
-        acell.querySelector('.gsave').onclick = function () {
-          var newName = ncell.querySelector('.nedit').value.trim();
-          var saveGrade = function () {
-            postJson('/kshsaa-stats/roster/update', {
-              id: id,
-              grade: gcell.querySelector('.gedit').value,
-              squad: row.querySelector('.sedit').value
-            }).then(loadRoster);
-          };
-          if (newName && newName !== oldName) {
-            if (played && !confirm('Rename ' + oldName + ' to ' + newName +
-              ' everywhere, including every game they have played?')) return;
-            postJson('/kshsaa-stats/roster/rename', { id: id, name: newName }).then(function (res) {
-              if (!res.ok) { alert(res.d.error || 'could not rename'); loadRoster(); return; }
-              if (res.d.merged) {
-                // the other roster entry is the one that stays
-                loadRoster();
-              } else {
-                saveGrade();
-              }
-              load(); loadNames();
-            });
-          } else saveGrade();
-        };
-        acell.querySelector('.gcancel').onclick = loadRoster;
-        [ncell.querySelector('.nedit'), gcell.querySelector('.gedit')].forEach(function (input) {
-          input.onkeydown = function (e) {
-            if (e.key === 'Enter') acell.querySelector('.gsave').click();
-            if (e.key === 'Escape') loadRoster();
-          };
-        });
-      };
-    });
-    Array.prototype.forEach.call(document.querySelectorAll('.rdel'), function (btn) {
-      btn.onclick = function () {
-        if (!confirm('Remove from the roster? Their past stats are kept.')) return;
-        postJson('/kshsaa-stats/roster/remove', { id: btn.getAttribute('data-id') }).then(loadRoster);
-      };
-    });
+function editRosterRow (id) {
+  var r = ROSTER.filter(function (x) { return x.id === id; })[0];
+  var row = document.querySelector('[data-row="' + id + '"]');
+  var ncell = row.querySelector('.ncell');
+  var gcell = row.querySelector('.gcell');
+  var rcell = row.querySelector('.rcell');
+  var acell = row.querySelector('.acell');
+
+  ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(r.name) + '">';
+  gcell.innerHTML = '<input class="form-control form-control-sm gedit" type="number" min="9" max="12" ' +
+    'style="width:5rem" value="' + (r.grade || '') + '">';
+  row.querySelector('.scell').innerHTML = '<select class="form-select form-select-sm sedit">' +
+    '<option value="">unassigned</option>' +
+    SQUADS.map(function (s) {
+      return '<option value="' + esc(s) + '"' + (s === r.squad ? ' selected' : '') + '>' + esc(s) + '</option>';
+    }).join('') + '</select>' +
+    '<label class="small mt-1 d-flex align-items-center gap-1"><input type="checkbox" class="pedit"' +
+    (r.permanent ? ' checked' : '') + '> permanent on this squad</label>';
+  rcell.innerHTML = '<input class="form-control form-control-sm redit-rating" type="number" min="1" max="10" step="0.5" ' +
+    'style="width:5rem" value="' + (r.rating == null ? '' : r.rating) + '">';
+  acell.innerHTML = '<button class="btn btn-sm btn-primary py-0 px-2 me-1 gsave">save</button>' +
+    '<button class="btn btn-sm btn-link p-0 gcancel">cancel</button>';
+  ncell.querySelector('.nedit').focus();
+
+  acell.querySelector('.gsave').onclick = function () {
+    var newName = ncell.querySelector('.nedit').value.trim();
+    var saveDetails = function () {
+      postJson('/kshsaa-stats/roster/update', {
+        id: id,
+        grade: gcell.querySelector('.gedit').value,
+        squad: row.querySelector('.sedit').value,
+        rating: rcell.querySelector('.redit-rating').value,
+        permanent: row.querySelector('.pedit').checked
+      }).then(loadRoster);
+    };
+    if (newName && newName !== r.name) {
+      if (r.hasPlayed && !confirm('Rename ' + r.name + ' to ' + newName +
+        ' everywhere, including every game they have played?')) return;
+      postJson('/kshsaa-stats/roster/rename', { id: id, name: newName }).then(function (res) {
+        if (!res.ok) { alert(res.d.error || 'could not rename'); loadRoster(); return; }
+        if (res.d.merged) {
+          // the other roster entry is the one that stays
+          loadRoster();
+        } else {
+          saveDetails();
+        }
+        load(); loadNames();
+      });
+    } else saveDetails();
+  };
+  acell.querySelector('.gcancel').onclick = renderRoster;
+  [ncell.querySelector('.nedit'), gcell.querySelector('.gedit'), rcell.querySelector('.redit-rating')].forEach(function (input) {
+    input.onkeydown = function (e) {
+      if (e.key === 'Enter') acell.querySelector('.gsave').click();
+      if (e.key === 'Escape') renderRoster();
+    };
   });
 }
 
@@ -1212,6 +1279,10 @@ $('squadSave').onclick = function () {
     loadRoster();
   });
 };
+
+document.addEventListener('keydown', function (e) {
+  if (e.key === 'Escape') document.body.classList.remove('solo');
+});
 
 // the Insights page links back here with #roster
 if (location.hash === '#roster') document.querySelector('#tabs [data-tab="roster"]').click();
@@ -1492,7 +1563,10 @@ function selectPlayer (name) {
   $('spotlight').innerHTML =
     '<div class="card mb-2"><div class="card-body">' +
     '<div class="d-flex justify-content-between align-items-baseline mb-2">' +
-    '<h3 class="h6 mb-0">' + esc(p.name) + '</h3><span class="small text-secondary">' + esc(p.team) + '</span></div>' +
+    '<h3 class="h6 mb-0">' + esc(p.name) + '</h3><span class="d-flex align-items-center gap-2">' +
+    '<span class="small text-secondary">' + esc(p.team) + '</span>' +
+    '<button type="button" class="btn btn-sm btn-outline-secondary not-solo" id="soloShow">Show to player</button>' +
+    '<button type="button" class="btn btn-sm btn-primary solo-only" id="soloDone">Done</button></span></div>' +
     '<div>' +
     stat('Games', p.games) +
     stat('Questions heard', p.heard || '-') +
@@ -1510,6 +1584,9 @@ function selectPlayer (name) {
     '</div></div>' +
     '<div class="row g-3 mt-1"><div class="col-md-7"><canvas id="chartCat" height="150"></canvas></div>' +
     '<div class="col-md-5"><canvas id="chartGames" height="150"></canvas></div></div></div></div>';
+
+  $('soloShow').onclick = function () { document.body.classList.add('solo'); };
+  $('soloDone').onclick = function () { document.body.classList.remove('solo'); };
 
   Object.keys(CHARTS).forEach(function (k) { if (CHARTS[k]) CHARTS[k].destroy(); });
   if (typeof Chart === 'undefined') return;

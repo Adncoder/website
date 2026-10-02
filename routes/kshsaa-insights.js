@@ -18,6 +18,7 @@ import { CATEGORIES, LEVELS, sourceOf } from './kshsaa-round.js';
 import { getSquads, requireAuth } from './kshsaa-stats.js';
 import { monthKeyOf, monthLabel, readFilters } from '../server/kshsaa/game-stats.js';
 import { computeInsights } from '../server/kshsaa/insights.js';
+import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
@@ -61,7 +62,16 @@ router.get('/data', requireAuth, async (req, res) => {
       months: [...new Set(all.map(g => monthKeyOf(g.playedAt)))].sort().reverse().map(key => ({ key, label: monthLabel(key) })),
       levels: Object.keys(LEVELS).map(key => ({ key, label: LEVELS[key].label })),
       categories: CATEGORIES,
-      squads
+      squads,
+      // everyone on the roster, so the team builder can place rated players
+      // who have no games yet and keep permanent players on their squads
+      roster: rosterList.map(r => ({
+        name: r.name,
+        grade: r.grade ?? null,
+        squad: r.squad || null,
+        rating: r.rating ?? null,
+        permanent: Boolean(r.permanent && r.squad)
+      }))
     });
   } catch (e) {
     console.error('kshsaa-insights error', e);
@@ -73,6 +83,7 @@ const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Insights</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+${KSHSAA_HEAD}
 <style>
  body{background:#f6f7f9;color:#1f2733;font-size:15px}
  h1{font-size:1.35rem;font-weight:600}
@@ -84,17 +95,6 @@ const PAGE = `<!DOCTYPE html>
  th,td{padding:.4rem .6rem !important;vertical-align:middle}
  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
  .form-label{font-size:.85rem;font-weight:600;color:#4b5563}
- .kshsaa-bar{background:#eef1f7;border-bottom:1px solid #d9e0ec}
- .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
- .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
- .kshsaa-bar a.active{color:#1f3864;font-weight:600}
- .kshsaa-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:.25rem}
- .kshsaa-nav .kshsaa-links{grid-column:2;display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem 0}
- .kshsaa-home{justify-self:start;margin-left:0 !important;white-space:nowrap}
- @media (max-width:900px){
-   .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
-   .kshsaa-nav .kshsaa-links{grid-column:1}
- }
  .pick{display:inline-flex;align-items:center;gap:.3rem;margin:0 .35rem .35rem 0;padding:.2rem .55rem;
    border:1px solid #d9e0ec;border-radius:1rem;background:#fff;font-size:.85rem;cursor:pointer;user-select:none}
  .pick input{margin:0}
@@ -111,18 +111,7 @@ const PAGE = `<!DOCTYPE html>
 </style>
 </head><body>
 
-<div class="kshsaa-bar py-2 mb-3">
-  <div class="container kshsaa-nav" style="max-width:1100px">
-    <a class="kshsaa-home" href="/">&larr; QBReader</a>
-    <span class="kshsaa-links">
-      <a href="/kshsaa-play">Read a round</a>
-      <a href="/kshsaa-round">Download packet</a>
-      <a href="/kshsaa-stats" class="active">Practice stats</a>
-      <a href="/kshsaa-questions">Question bank</a>
-      <a href="/kshsaa-spanish/">Spanish Practice</a>
-    </span>
-  </div>
-</div>
+${kshsaaNav('/kshsaa-stats', 1100)}
 
 <div class="container pb-5" style="max-width:1100px">
   <h1 class="h4 mb-0">Practice stats</h1>
@@ -161,6 +150,14 @@ const PAGE = `<!DOCTYPE html>
           <select class="form-select form-select-sm" id="teamCount"></select></div>
         <button type="button" class="btn btn-primary btn-sm" id="build">Build</button>
       </div>
+      <div class="d-flex flex-wrap gap-3 align-items-center mb-3 small">
+        <label class="d-flex align-items-center gap-1" id="firstOverallLabel"><input type="checkbox" id="firstOverall" checked>
+          First squad takes the strongest players overall; the others cover every category</label>
+        <label class="d-flex align-items-center gap-1">Stats count as much as ratings after
+          <input type="number" class="form-control form-control-sm" id="equalRounds" min="1" max="40" value="6" style="width:4.2rem">
+          rounds</label>
+        <span class="text-secondary" id="weightNote"></span>
+      </div>
       <div class="small text-secondary mb-1">Available:
         <a href="#" id="selAll">everyone</a> &middot; <a href="#" id="selNone">no one</a></div>
       <div id="pool"></div>
@@ -169,8 +166,10 @@ const PAGE = `<!DOCTYPE html>
         <button type="button" class="btn btn-outline-primary btn-sm" id="assign">Put these players on these squads</button>
         <span class="small ms-2" id="assignMsg"></span>
       </div>
-      <p class="note">"Knows about" is how many of a round&rsquo;s 16 questions at least one starter would likely know,
-      from each player&rsquo;s results by category. Players with grayed names have fewer than two rounds of data.</p>
+      <div class="note" id="unplaced"></div>
+      <p class="note">"Knows about" is how many of a round&rsquo;s 16 questions at least one starter would likely know.
+      Each player blends their stats with your rating from the roster (shown as &#9733;); permanent players stay on
+      their squad. Grayed names have under two rounds of games and no rating.</p>
     </div></div>
 
     <h2>Player focus</h2>
@@ -249,6 +248,7 @@ function load () {
       if (d.error) { $('filterNote').textContent = d.error; return; }
       DATA = d;
       fillFilters(d);
+      buildCandidates();
       renderPool();
       renderFocus();
       renderDifficulty();
@@ -272,9 +272,17 @@ $('fMonth').onchange = function () { FILTER.month = $('fMonth').value; load(); }
 $('fLevel').onchange = function () { FILTER.level = $('fLevel').value; load(); };
 
 // ---------- team building ----------
-// A team's strength is how many of a round's questions at least one of its five
-// starters would likely know: per category, one minus the chance that every
-// starter misses, weighted by how many questions the category gets.
+// A team's strength is how many of a round's 16 questions at least one of its
+// five starters would likely know: per category, one minus the chance that
+// every starter misses, weighted by how many questions the category gets.
+//
+// Each player's chances blend their stats with the coach's 1-10 rating from
+// the roster. Stats count for rounds / (rounds + N) of the blend, so a rating
+// carries a player who has barely played and fades as their games pile up.
+
+var EQUAL_ROUNDS_KEY = 'kshsaa-equal-rounds';
+var CANDIDATES = [];
+var UNPLACED = [];
 
 function strength (members) {
   var total = 0;
@@ -286,14 +294,96 @@ function strength (members) {
   return total;
 }
 
-// every way to choose k of the list, best first
-function bestSubset (pool, k) {
+// how many of a round's questions the player would likely know on their own
+function levelOf (know) {
+  var total = 0;
+  DATA.categories.forEach(function (c) { total += DATA.weights[c] * (know[c] || 0); });
+  return total;
+}
+
+function scaled (know, factor) {
+  var out = {};
+  DATA.categories.forEach(function (c) { out[c] = Math.min(0.95, (know[c] || 0) * factor); });
+  return out;
+}
+
+function equalRounds () {
+  var n = Number($('equalRounds').value);
+  return n >= 1 ? n : 6;
+}
+
+// Ratings go onto the stats' scale by rank: a 10 sits with the best measured
+// player on the team and a 1 with the weakest. Someone with no games gets the
+// team's average mix of categories at that level.
+function ratingScale () {
+  var measured = DATA.players.filter(function (p) { return p.heard >= 32; });
+  var levels = measured.map(function (p) { return levelOf(p.know); }).sort(function (a, b) { return a - b; });
+  var profile = {};
+  DATA.categories.forEach(function (c) {
+    var sum = 0;
+    measured.forEach(function (p) { sum += p.know[c] || 0; });
+    profile[c] = measured.length ? sum / measured.length : 0.3;
+  });
+  var unit = levelOf(profile) || 1;
+  DATA.categories.forEach(function (c) { profile[c] /= unit; });
+  return {
+    profile: profile,
+    level: function (rating) {
+      if (!levels.length) return rating / 10 * 8;
+      var q = (rating - 1) / 9 * (levels.length - 1);
+      var lo = Math.floor(q);
+      var hi = Math.min(levels.length - 1, lo + 1);
+      return levels[lo] + (levels[hi] - levels[lo]) * (q - lo);
+    }
+  };
+}
+
+function buildCandidates () {
+  var rosterBy = {};
+  DATA.roster.forEach(function (r) { rosterBy[r.name.toLowerCase()] = r; });
+  var scale = ratingScale();
+  var n = equalRounds();
+  var list = DATA.players.map(function (p) {
+    var r = rosterBy[p.name.toLowerCase()] || {};
+    return { name: p.name, games: p.games, heard: p.heard, statsKnow: p.know, rating: r.rating ?? null, squad: r.squad || null, permanent: Boolean(r.permanent) };
+  });
+  var seen = {};
+  list.forEach(function (c) { seen[c.name.toLowerCase()] = true; });
+  DATA.roster.forEach(function (r) {
+    if (!seen[r.name.toLowerCase()] && r.rating != null) {
+      list.push({ name: r.name, games: 0, heard: 0, statsKnow: null, rating: r.rating, squad: r.squad || null, permanent: Boolean(r.permanent) });
+    }
+  });
+  list.forEach(function (c) {
+    if (c.rating == null) {
+      c.know = c.statsKnow;
+      c.statsShare = 1;
+    } else if (!c.heard) {
+      c.know = scaled(scale.profile, scale.level(c.rating));
+      c.statsShare = 0;
+    } else {
+      var rounds = c.heard / 16;
+      c.statsShare = rounds / (rounds + n);
+      var fromStats = levelOf(c.statsKnow);
+      var target = c.statsShare * fromStats + (1 - c.statsShare) * scale.level(c.rating);
+      c.know = fromStats > 0 ? scaled(c.statsKnow, target / fromStats) : scaled(scale.profile, target);
+    }
+    c.level = levelOf(c.know);
+  });
+  CANDIDATES = list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  $('weightNote').textContent = '(four rounds of games: ' + Math.round(100 * 4 / (4 + n)) + '% stats)';
+}
+
+var byLevel = function (a, b) { return b.level - a.level; };
+
+// every way to add k of the pool to the base, best first
+function bestSubset (pool, k, base) {
   var best = null;
   var bestScore = -1;
   var pick = [];
   (function walk (start) {
     if (pick.length === k) {
-      var s = strength(pick);
+      var s = strength(base.concat(pick));
       if (s > bestScore) { bestScore = s; best = pick.slice(); }
       return;
     }
@@ -306,16 +396,23 @@ function bestSubset (pool, k) {
   return best || pool.slice(0, k);
 }
 
-// the best five, plus the sixth player who would best replace any of them
-function lineup (players) {
-  var size = Math.min(5, players.length);
-  // past about 30 the search gets slow; the weakest individuals never make a top five
-  var pool = players.slice().sort(function (a, b) { return strength([b]) - strength([a]); }).slice(0, 30);
-  var starters = bestSubset(pool, size);
-  var rest = players.filter(function (p) { return starters.indexOf(p) === -1; });
-  return { starters: starters, bench: rest };
+// five starters around whoever is fixed: either the strongest individuals or
+// whoever covers the categories best
+function lineup (fixed, players, overall) {
+  var mine = fixed.slice().sort(byLevel);
+  var starters = mine.slice(0, 5);
+  var pool = players.filter(function (p) { return fixed.indexOf(p) === -1; }).sort(byLevel);
+  var need = Math.min(5 - starters.length, pool.length);
+  // past about 30 the search gets slow; the weakest never make a top five
+  var chosen = overall ? pool.slice(0, need) : bestSubset(pool.slice(0, 30), need, starters);
+  return {
+    starters: starters.concat(chosen),
+    bench: pool.filter(function (p) { return chosen.indexOf(p) === -1; }),
+    extra: mine.slice(5)
+  };
 }
 
+// the bench, best replacement for any starter first
 function benchOrder (starters, bench) {
   return bench.map(function (p) {
     var best = 0;
@@ -327,22 +424,34 @@ function benchOrder (starters, bench) {
 }
 
 function buildStrongest (players, count) {
-  var left = players.slice();
+  var overallFirst = $('firstOverall').checked;
+  // permanent players are kept for their own squad and never placed elsewhere
+  var reserved = {};
+  players.forEach(function (p) { if (p.permanent && p.squad) (reserved[p.squad] = reserved[p.squad] || []).push(p); });
+  var left = players.filter(function (p) { return !(p.permanent && p.squad); });
   var teams = [];
-  for (var t = 0; t < count && left.length; t++) {
-    var l = lineup(left);
-    var sub = benchOrder(l.starters, l.bench).slice(0, 1);
-    var members = l.starters.concat(sub);
+  for (var t = 0; t < count; t++) {
+    var squad = DATA.squads[t] || '';
+    var fixed = reserved[squad] || [];
+    if (!fixed.length && !left.length) break;
+    var overall = overallFirst && t === 0;
+    var l = lineup(fixed, left, overall);
+    var subs = l.extra.length ? l.extra : (overall ? l.bench : benchOrder(l.starters, l.bench)).slice(0, 1);
+    var members = l.starters.concat(subs);
     left = left.filter(function (p) { return members.indexOf(p) === -1; });
-    teams.push({ starters: l.starters, subs: sub });
+    teams.push({ starters: l.starters, subs: subs, squad: squad, fixed: fixed });
   }
+  var built = teams.map(function (tm) { return tm.squad; });
+  UNPLACED = Object.keys(reserved).filter(function (sq) { return built.indexOf(sq) === -1; }).map(function (sq) {
+    return reserved[sq].map(function (p) { return p.name; }).join(', ') + ' (permanent on ' + sq + ')';
+  });
   return teams;
 }
 
 function buildEven (players, count) {
   // snake draft by individual strength, then swap players between teams while
   // that narrows the gap between the strongest and weakest team
-  var sorted = players.slice().sort(function (a, b) { return strength([b]) - strength([a]); });
+  var sorted = players.slice().sort(byLevel);
   var groups = [];
   for (var i = 0; i < count; i++) groups.push([]);
   sorted.forEach(function (p, i) {
@@ -350,7 +459,7 @@ function buildEven (players, count) {
     var slot = i % count;
     groups[round % 2 ? count - 1 - slot : slot].push(p);
   });
-  var scoreOf = function (g) { return strength(lineup(g).starters); };
+  var scoreOf = function (g) { return strength(lineup([], g, false).starters); };
   var gap = function () {
     var s = groups.map(scoreOf);
     return Math.max.apply(null, s) - Math.min.apply(null, s);
@@ -372,9 +481,10 @@ function buildEven (players, count) {
     }
     if (!improved) break;
   }
+  UNPLACED = [];
   return groups.map(function (g) {
-    var l = lineup(g);
-    return { starters: l.starters, subs: benchOrder(l.starters, l.bench) };
+    var l = lineup([], g, false);
+    return { starters: l.starters, subs: benchOrder(l.starters, l.bench), squad: '', fixed: [] };
   });
 }
 
@@ -384,15 +494,24 @@ function bestCategory (p) {
   return best;
 }
 
+// what the team card says about a player
+function describe (p) {
+  if (p.heard >= 32) return bestCategory(p);
+  if (p.rating != null) return '&#9733; ' + p.rating + (p.games ? ', ' + p.games + ' game' + (p.games === 1 ? '' : 's') : ', no games');
+  return 'few games';
+}
+
 function renderPool () {
-  var names = DATA.players.map(function (p) { return p.name; });
+  var names = CANDIDATES.map(function (p) { return p.name; });
   Object.keys(AVAILABLE).forEach(function (n) { if (names.indexOf(n) === -1) delete AVAILABLE[n]; });
-  DATA.players.forEach(function (p) { if (!(p.name in AVAILABLE)) AVAILABLE[p.name] = true; });
-  $('pool').innerHTML = DATA.players.map(function (p) {
-    return '<label class="pick' + (p.heard < 32 ? ' few' : '') + '" title="' + p.games + ' games">' +
+  CANDIDATES.forEach(function (p) { if (!(p.name in AVAILABLE)) AVAILABLE[p.name] = true; });
+  $('pool').innerHTML = CANDIDATES.map(function (p) {
+    var title = p.games + ' games' + (p.rating != null ? ', rated ' + p.rating + ', stats ' + Math.round(p.statsShare * 100) + '%' : '') +
+      (p.permanent ? ', permanent on ' + p.squad : '');
+    return '<label class="pick' + (p.heard < 32 && p.rating == null ? ' few' : '') + '" title="' + esc(title) + '">' +
       '<input type="checkbox" class="avail" value="' + esc(p.name) + '"' + (AVAILABLE[p.name] ? ' checked' : '') + '>' +
-      esc(p.name) + '</label>';
-  }).join('') || '<p class="note">No games in these filters.</p>';
+      esc(p.name) + (p.rating != null ? ' <span class="text-secondary">&#9733;' + p.rating + '</span>' : '') + '</label>';
+  }).join('') || '<p class="note">No games in these filters, and no one on the roster has a rating.</p>';
   Array.prototype.forEach.call(document.querySelectorAll('.avail'), function (box) {
     box.onchange = function () { AVAILABLE[box.value] = box.checked; fillTeamCount(); };
   });
@@ -400,7 +519,7 @@ function renderPool () {
 }
 
 function availablePlayers () {
-  return DATA.players.filter(function (p) { return AVAILABLE[p.name]; });
+  return CANDIDATES.filter(function (p) { return AVAILABLE[p.name]; });
 }
 
 function fillTeamCount () {
@@ -412,23 +531,35 @@ function fillTeamCount () {
   $('teamCount').innerHTML = h;
 }
 
-$('selAll').onclick = function (e) { e.preventDefault(); DATA.players.forEach(function (p) { AVAILABLE[p.name] = true; }); renderPool(); };
-$('selNone').onclick = function (e) { e.preventDefault(); DATA.players.forEach(function (p) { AVAILABLE[p.name] = false; }); renderPool(); };
+$('selAll').onclick = function (e) { e.preventDefault(); CANDIDATES.forEach(function (p) { AVAILABLE[p.name] = true; }); renderPool(); };
+$('selNone').onclick = function (e) { e.preventDefault(); CANDIDATES.forEach(function (p) { AVAILABLE[p.name] = false; }); renderPool(); };
+
+try { var savedRounds = localStorage.getItem(EQUAL_ROUNDS_KEY); if (savedRounds) $('equalRounds').value = savedRounds; } catch (e) {}
+$('equalRounds').onchange = function () {
+  try { localStorage.setItem(EQUAL_ROUNDS_KEY, String(equalRounds())); } catch (e) {}
+  if (!DATA) return;
+  buildCandidates();
+  renderPool();
+  if (TEAMS.length) $('build').click();
+};
+$('firstOverall').onchange = function () { if (TEAMS.length) $('build').click(); };
+// squads and permanent players only mean something when making the real teams
+$('mode').onchange = function () {
+  $('firstOverallLabel').classList.toggle('d-none', $('mode').value === 'even');
+};
 
 $('build').onclick = function () {
   var players = availablePlayers();
   var count = Number($('teamCount').value) || 1;
   if (!players.length) return;
   TEAMS = $('mode').value === 'even' ? buildEven(players, count) : buildStrongest(players, count);
-  TEAMS.forEach(function (t, i) {
-    t.squad = $('mode').value === 'strong' ? (DATA.squads[i] || '') : '';
-  });
   renderTeams();
 };
 
 function renderTeams () {
   $('assignRow').classList.toggle('d-none', !TEAMS.length);
   $('assignMsg').textContent = '';
+  $('unplaced').textContent = UNPLACED.length ? 'Not placed, because their squad was not built: ' + UNPLACED.join('; ') + '.' : '';
   $('teams').innerHTML = TEAMS.map(function (t, i) {
     var knows = strength(t.starters);
     var h = '<div class="col-md-6"><div class="card h-100"><div class="card-body">' +
@@ -440,13 +571,14 @@ function renderTeams () {
       }).join('') + '</select>' +
       '<span class="fw-semibold text-nowrap">knows about ' + knows.toFixed(1) + ' of 16</span></div>' +
       '<table class="table table-sm mb-2"><tbody>';
-    t.starters.forEach(function (p) {
-      h += '<tr><td>' + esc(p.name) + '</td><td class="text-secondary small">' + esc(bestCategory(p)) + '</td></tr>';
-    });
-    t.subs.forEach(function (p) {
-      h += '<tr><td class="text-secondary">' + esc(p.name) + ' <span class="small">(sub)</span></td>' +
-        '<td class="text-secondary small">' + esc(bestCategory(p)) + '</td></tr>';
-    });
+    var row = function (p, sub) {
+      var tags = (sub ? ' <span class="small">(sub)</span>' : '') +
+        (t.fixed.indexOf(p) !== -1 ? ' <span class="small text-secondary">permanent</span>' : '');
+      return '<tr><td' + (sub ? ' class="text-secondary"' : '') + '>' + esc(p.name) + tags + '</td>' +
+        '<td class="text-secondary small">' + describe(p) + '</td></tr>';
+    };
+    t.starters.forEach(function (p) { h += row(p, false); });
+    t.subs.forEach(function (p) { h += row(p, true); });
     h += '</tbody></table>';
     DATA.categories.forEach(function (c) {
       var miss = 1;

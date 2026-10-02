@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
 import mathTierOf, { MATH_TIERS } from '../server/kshsaa/math-tier.js';
+import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
 const router = Router();
 
@@ -389,36 +390,13 @@ const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Download a packet - SJA Scholars Bowl</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+${KSHSAA_HEAD}
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
- .kshsaa-bar{background:#eef1f7;border-bottom:1px solid #d9e0ec}
- .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
- .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
- .kshsaa-bar a.active{color:#1f3864;font-weight:600}
- /* three columns so the section links stay centred on the page no matter how
-    wide the "back to QBReader" link on the left happens to be */
- .kshsaa-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:.25rem}
- .kshsaa-nav .kshsaa-links{grid-column:2;display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem 0}
- .kshsaa-home{justify-self:start;margin-left:0 !important;white-space:nowrap}
- @media (max-width:900px){
-   .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
-   .kshsaa-nav .kshsaa-links{grid-column:1}
- }
  @media print{.kshsaa-bar,.no-print{display:none}}
 </style>
 </head><body class="bg-light">
-<div class="kshsaa-bar py-2 mb-3">
-  <div class="container kshsaa-nav" style="max-width:900px">
-    <a class="kshsaa-home" href="/">&larr; QBReader</a>
-    <span class="kshsaa-links">
-      <a href="/kshsaa-play">Read a round</a>
-      <a href="/kshsaa-round" class="active">Download packet</a>
-      <a href="/kshsaa-stats">Practice stats</a>
-      <a href="/kshsaa-questions">Question bank</a>
-      <a href="/kshsaa-spanish/">Spanish Practice</a>
-    </span>
-  </div>
-</div>
+${kshsaaNav('/kshsaa-round', 900)}
 <div class="container pb-4" style="max-width:900px">
   <h1 class="h4" id="title">Download a packet</h1>
   <p class="text-secondary" id="intro">Builds a fresh, randomized 16-question round in official KSHSAA order

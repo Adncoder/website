@@ -152,6 +152,7 @@ document describes the upstream codebase and still applies.
 | `server/kshsaa/giveaway.js` | Turns a middle-school tossup into a Beginner question (its giveaway line) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
+| `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. The last two share `server/kshsaa/qbreader-import.js` |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
@@ -182,6 +183,10 @@ used, keyed by the tossup id as a string): unread questions first, then the ones
 read longest ago. A question counts as used as soon as a round is generated, and
 builds run one at a time so simultaneous rooms cannot draw the same question.
 `import-kshsaa.js` re-creates tossup ids, so re-running it resets this history.
+
+Every page puts `${KSHSAA_HEAD}` in its `<head>` and `${kshsaaNav('/kshsaa-…')}`
+at the top of the body; change the bar there, not in a page. The Spanish
+practice page is a static file and keeps its own copy.
 
 ### These pages are template literals, not client files
 
@@ -267,6 +272,15 @@ knowing a question; team strength is the expected number of a round's 16
 questions at least one starter knows. A category is flagged "work on" only when
 it is below the team and at least 1.5 answers short of the player's own usual
 level, so players weak everywhere do not get arbitrary flags.
+
+Roster entries can carry a coach `rating` (1–10, past performance) and
+`permanent` (stays on their squad). The team builder blends a rating with
+stats, stats counting for rounds ÷ (rounds + N) with N = 6 by default
+(adjustable on the page), mapping ratings onto the stats' scale by rank among
+measured players; a rated player with no games is placed on the rating alone.
+Permanent players are only ever placed on their own squad. The first squad
+takes the strongest individuals and the rest maximize category coverage,
+unless that checkbox is cleared.
 
 A `per-tossup-data` document must exist for a tossup or `recordTossupData`
 silently drops the buzz. `publishQuestion()` writes one; if stats look empty,
