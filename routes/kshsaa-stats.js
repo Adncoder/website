@@ -183,12 +183,16 @@ router.get('/roster', requireAuth, async (req, res) => {
       rating: r.rating ?? null,
       // stays on their squad: the team builder never moves them
       permanent: Boolean(r.permanent && r.squad),
+      // where the Insights page's "email" button sends a player's message
+      email: r.email || null,
       hasPlayed: Boolean(playedSet[r.name.trim().toLowerCase()])
     }))
   });
 });
 
-// bulk add: one player per line, optional grade ("Max Chen, 11" / "Max Chen 11")
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// bulk add: one player per line, then any of grade, squad, and email after commas
 router.post('/roster/add', requireAuth, async (req, res) => {
   try {
     const text = String((req.body && req.body.text) || '');
@@ -204,13 +208,14 @@ router.post('/roster/add', requireAuth, async (req, res) => {
       const line = rawLine.trim();
       if (!line) continue;
 
-      // "Name", "Name, 11", "Name, 11, JV 2", "Name, JV 2" all work
+      // "Name", "Name, 11", "Name, 11, JV 2", "Name, JV 2, name@school.org" all work
       const parts = line.split(',').map(s => s.trim()).filter(Boolean);
       const name = (parts.shift() || '').replace(/[,-]+$/, '').trim();
       if (!name) continue;
-      let grade = null; let squad = null;
+      let grade = null; let squad = null; let email = null;
       for (const part of parts) {
         if (/^(9|10|11|12)(th)?$/i.test(part)) grade = Number(part.replace(/\D/g, ''));
+        else if (EMAIL.test(part)) email = part.slice(0, 120);
         else {
           const hit = squads.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') ===
             part.toLowerCase().replace(/[^a-z0-9]/g, ''));
@@ -223,14 +228,15 @@ router.post('/roster/add', requireAuth, async (req, res) => {
         const set = {};
         if (grade != null && byKey[key].grade !== grade) set.grade = grade;
         if (squad && byKey[key].squad !== squad) set.squad = squad;
+        if (email && byKey[key].email !== email) set.email = email;
         if (Object.keys(set).length) {
           ops.push({ updateOne: { filter: { _id: byKey[key]._id }, update: { $set: set } } });
           Object.assign(byKey[key], set);
           updated++;
         }
       } else {
-        ops.push({ insertOne: { document: { name, grade, squad, createdAt: new Date() } } });
-        byKey[key] = { name, grade, squad };
+        ops.push({ insertOne: { document: { name, grade, squad, email, createdAt: new Date() } } });
+        byKey[key] = { name, grade, squad, email };
         added++;
       }
     }
@@ -250,7 +256,9 @@ router.post('/roster/update', requireAuth, async (req, res) => {
       ? null
       : Math.round(Math.min(10, Math.max(1, given)) * 2) / 2;
     const permanent = Boolean(req.body.permanent) && Boolean(squad);
-    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent } });
+    const email = String(req.body.email ?? '').trim().slice(0, 120) || null;
+    if (email && !EMAIL.test(email)) return res.status(400).json({ error: email + ' does not look like an email address' });
+    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent, email } });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
@@ -636,7 +644,8 @@ router.get('/export', async (req, res) => {
   try {
     const [allGames, rosterList, squads, questionPool] = await Promise.all([
       games.find({}).sort({ playedAt: 1 }).toArray(),
-      roster.find({}).sort({ name: 1 }).toArray(),
+      // emails stay on the site: the export is for numbers, not contacting anyone
+      roster.find({}, { projection: { email: 0 } }).sort({ name: 1 }).toArray(),
       getSquads(),
       poolSummary()
     ]);
@@ -900,7 +909,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <h2 class="mt-0">Roster</h2>
       <p class="note mb-2" style="margin-top:0">Names here autocomplete when setting up a round, even before
       anyone has played, and the squad you assign is what shows in the stats table. One player per line;
-      grade and squad after commas are optional (<code>Max Chen, 11, JV 2</code>). Re-pasting the list is
+      grade, squad, and email after commas are optional (<code>Max Chen, 11, JV Blue, max@school.org</code>). Re-pasting the list is
       safe &mdash; existing names are left alone. Renaming a player updates every game they played in; renaming
       them to a name already on the roster merges the two.</p>
       <div class="row g-2 align-items-start">
@@ -1168,7 +1177,8 @@ function renderRoster () {
         c.label + '<span class="sortarrow">' + (on ? (ROSTER_SORT.dir < 0 ? '&#9660;' : '&#9650;') : '') + '</span></th>';
     }).join('') + '<th style="width:9rem"></th></tr></thead><tbody>';
   sortedRoster().forEach(function (r) {
-    h += '<tr data-row="' + r.id + '"><td class="ncell">' + esc(r.name) + '</td>' +
+    h += '<tr data-row="' + r.id + '"><td class="ncell">' + esc(r.name) +
+      (r.email ? '<div class="small text-secondary">' + esc(r.email) + '</div>' : '') + '</td>' +
       '<td class="gcell">' + (r.grade ? r.grade + 'th' : '<span class="text-secondary">-</span>') + '</td>' +
       '<td class="scell">' + (r.squad
       ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '')
@@ -1209,7 +1219,8 @@ function editRosterRow (id) {
   var rcell = row.querySelector('.rcell');
   var acell = row.querySelector('.acell');
 
-  ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(r.name) + '">';
+  ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(r.name) + '">' +
+    '<input class="form-control form-control-sm eedit mt-1" type="email" placeholder="email (optional)" value="' + esc(r.email || '') + '">';
   gcell.innerHTML = '<input class="form-control form-control-sm gedit" type="number" min="9" max="12" ' +
     'style="width:5rem" value="' + (r.grade || '') + '">';
   row.querySelector('.scell').innerHTML = '<select class="form-select form-select-sm sedit">' +
@@ -1233,8 +1244,12 @@ function editRosterRow (id) {
         grade: gcell.querySelector('.gedit').value,
         squad: row.querySelector('.sedit').value,
         rating: rcell.querySelector('.redit-rating').value,
-        permanent: row.querySelector('.pedit').checked
-      }).then(loadRoster);
+        permanent: row.querySelector('.pedit').checked,
+        email: ncell.querySelector('.eedit').value
+      }).then(function (res) {
+        if (!res.ok) alert(res.d.error || 'could not save');
+        loadRoster();
+      });
     };
     if (newName && newName !== r.name) {
       if (r.hasPlayed && !confirm('Rename ' + r.name + ' to ' + newName +
@@ -1252,7 +1267,7 @@ function editRosterRow (id) {
     } else saveDetails();
   };
   acell.querySelector('.gcancel').onclick = renderRoster;
-  [ncell.querySelector('.nedit'), gcell.querySelector('.gedit'), rcell.querySelector('.redit-rating')].forEach(function (input) {
+  [ncell.querySelector('.nedit'), ncell.querySelector('.eedit'), gcell.querySelector('.gedit'), rcell.querySelector('.redit-rating')].forEach(function (input) {
     input.onkeydown = function (e) {
       if (e.key === 'Enter') acell.querySelector('.gsave').click();
       if (e.key === 'Escape') renderRoster();

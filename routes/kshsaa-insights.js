@@ -70,7 +70,8 @@ router.get('/data', requireAuth, async (req, res) => {
         grade: r.grade ?? null,
         squad: r.squad || null,
         rating: r.rating ?? null,
-        permanent: Boolean(r.permanent && r.squad)
+        permanent: Boolean(r.permanent && r.squad),
+        email: r.email || null
       }))
     });
   } catch (e) {
@@ -108,6 +109,18 @@ ${KSHSAA_HEAD}
  .chip-habit{background:#fbf1de;color:#8a6116}
  .up{color:#1d6b40}.down{color:#9b3a24}
  textarea.msg{font-size:.88rem}
+ /* the printed focus sheet: only it prints, and only from its button */
+ #printSheet{display:none}
+ @media print{
+   body.printing-focus > *:not(#printSheet){display:none !important}
+   body.printing-focus #printSheet{display:block}
+   #printSheet{font-size:10pt;color:#000}
+   #printSheet h1{font-size:15pt;margin:0 0 2pt}
+   #printSheet table{width:100%;border-collapse:collapse}
+   #printSheet th,#printSheet td{border:1px solid #999;padding:3pt 5pt !important;vertical-align:top}
+   #printSheet tr{break-inside:avoid}
+   #printSheet .sub{font-size:8.5pt;color:#444}
+ }
 </style>
 </head><body>
 
@@ -172,7 +185,10 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       their squad. Grayed names have under two rounds of games and no rating.</p>
     </div></div>
 
-    <h2>Player focus</h2>
+    <div class="d-flex justify-content-between align-items-end">
+      <h2>Player focus</h2>
+      <button type="button" class="btn btn-sm btn-outline-secondary mb-2" id="printFocus">Print focus sheet</button>
+    </div>
     <div class="card"><div class="card-body p-0"><div class="table-responsive">
       <table class="table table-sm align-middle mb-0"><thead><tr>
         <th>Player</th><th class="num">Games</th><th class="num">Points/question</th><th>Trend</th>
@@ -192,6 +208,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     <div id="dead"></div>
   </div>
 </div>
+
+<div id="printSheet"></div>
 
 <script>
 var $ = function (id) { return document.getElementById(id); };
@@ -620,13 +638,21 @@ function drillLevel (p) {
   return FILTER.level === 'varsity' || FILTER.level === 'beginner' ? FILTER.level : 'jv';
 }
 
+function practiceLink (p) {
+  return location.origin + '/kshsaa-round?drill=' + encodeURIComponent(p.weak[0]) + '&level=' + drillLevel(p);
+}
+
+function emailOf (name) {
+  var hit = DATA.roster.filter(function (r) { return r.name.toLowerCase() === name.toLowerCase(); })[0];
+  return hit ? hit.email : null;
+}
+
 function message (p) {
   var first = p.name.split(' ')[0];
   var lines = ['Hi ' + first + '!'];
   if (p.strong.length) lines.push('You have been great on ' + list(p.strong) + '.');
   if (p.weak.length) {
-    lines.push('One thing to work on: ' + p.weak[0] + '. Here is a practice set for it: ' +
-      location.origin + '/kshsaa-round?drill=' + encodeURIComponent(p.weak[0]) + '&level=' + drillLevel(p));
+    lines.push('One thing to work on: ' + p.weak[0] + '. Here is a practice set for it: ' + practiceLink(p));
   }
   p.habits.forEach(function (h) { lines.push(HABITS[h][1]); });
   if (lines.length === 1) lines.push('Nice work at practice. Keep it up!');
@@ -656,6 +682,9 @@ function renderFocus () {
       '<td class="text-end"><button type="button" class="btn btn-sm btn-link p-0 draft" data-i="' + i + '">message</button></td></tr>' +
       '<tr class="d-none" id="msg' + i + '"><td colspan="8"><textarea class="form-control msg mb-1" rows="3"></textarea>' +
       '<button type="button" class="btn btn-sm btn-outline-secondary copy" data-i="' + i + '">Copy</button> ' +
+      (emailOf(p.name)
+        ? '<button type="button" class="btn btn-sm btn-outline-primary mail" data-i="' + i + '">Email ' + esc(emailOf(p.name)) + '</button> '
+        : '<span class="small text-secondary">No email on the roster for ' + esc(p.name.split(' ')[0]) + '. Add one on the Roster tab to email from here.</span> ') +
       '<span class="small text-success copied"></span></td></tr>';
   }).join('');
   Array.prototype.forEach.call(document.querySelectorAll('.draft'), function (btn) {
@@ -675,7 +704,44 @@ function renderFocus () {
       else { text.select(); document.execCommand('copy'); done(); }
     };
   });
+  // opens the viewer's own email app with the message as edited above
+  Array.prototype.forEach.call(document.querySelectorAll('.mail'), function (btn) {
+    btn.onclick = function () {
+      var i = Number(btn.getAttribute('data-i'));
+      var body = $('msg' + i).querySelector('textarea').value;
+      window.location.href = 'mailto:' + emailOf(rows[i].name) + '?subject=' + encodeURIComponent('Scholars Bowl practice') +
+        '&body=' + encodeURIComponent(body);
+    };
+  });
 }
+
+// A sheet to have in hand at practice: everyone in the current filters, by
+// squad, with what to say to them and room for notes.
+function printFocus () {
+  var squadRank = function (p) {
+    var at = p.squad ? DATA.squads.indexOf(p.squad) : -1;
+    return at === -1 ? DATA.squads.length : at;
+  };
+  var rows = DATA.players.slice().sort(function (a, b) {
+    return squadRank(a) - squadRank(b) || a.name.localeCompare(b.name);
+  });
+  var month = $('fMonth').options[$('fMonth').selectedIndex].text;
+  var level = $('fLevel').options[$('fLevel').selectedIndex].text;
+  $('printSheet').innerHTML = '<h1>Player focus</h1><p>' + esc(month) + ' &middot; ' + esc(level) +
+    ' &middot; printed ' + new Date().toLocaleDateString() + '</p>' +
+    '<table><thead><tr><th style="width:24%">Player</th><th>Strong</th><th>Work on</th><th>Habits</th><th style="width:24%">Notes</th></tr></thead><tbody>' +
+    rows.map(function (p) {
+      var who = '<strong>' + esc(p.name) + '</strong><div class="sub">' + (p.squad ? esc(p.squad) + ' &middot; ' : '') +
+        p.games + ' games &middot; ' + (p.ppq == null ? '-' : p.ppq) + ' pts/q</div>';
+      if (p.heard < 32) return '<tr><td>' + who + '</td><td colspan="3">Too early to tell</td><td></td></tr>';
+      return '<tr><td>' + who + '</td><td>' + esc(p.strong.join(', ')) + '</td><td>' + esc(p.weak.join(', ')) + '</td>' +
+        '<td>' + p.habits.map(function (h) { return HABITS[h][0]; }).join(', ') + '</td><td></td></tr>';
+    }).join('') + '</tbody></table>';
+  document.body.classList.add('printing-focus');
+  window.print();
+}
+window.addEventListener('afterprint', function () { document.body.classList.remove('printing-focus'); });
+$('printFocus').onclick = printFocus;
 
 // ---------- question difficulty ----------
 
