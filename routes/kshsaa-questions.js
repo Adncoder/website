@@ -18,6 +18,7 @@ import { packets, sets, tossups } from '../database/qbreader/collections.js';
 import { perTossupData } from '../database/account-info/collections.js';
 import { CATEGORY_BY_QUESTION } from './kshsaa-round.js';
 import { requireAuth } from './kshsaa-stats.js';
+import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
 const router = Router();
 const pending = qbreader.collection('kshsaa_pending_questions');
@@ -281,23 +282,13 @@ const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Question bank</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+${KSHSAA_HEAD}
 <style>
  body{background:#f6f7f9;color:#1f2733;font-size:15px}
  h1{font-size:1.35rem;font-weight:600}
  h2{font-size:1.05rem;font-weight:600;color:#33415c;margin:2rem 0 .65rem}
  .card{border:1px solid #e4e8ee;border-radius:.5rem;box-shadow:none}
  .note{font-size:.83rem;color:#6b7280}
- .kshsaa-bar{background:#eef1f7;border-bottom:1px solid #d9e0ec}
- .kshsaa-bar a{color:#4a5b7d;text-decoration:none;margin:0 .85rem;font-size:.9rem}
- .kshsaa-bar a:hover{color:#1f3864;text-decoration:underline}
- .kshsaa-bar a.active{color:#1f3864;font-weight:600}
- .kshsaa-nav{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:.25rem}
- .kshsaa-nav .kshsaa-links{grid-column:2;display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem 0}
- .kshsaa-home{justify-self:start;margin-left:0 !important;white-space:nowrap}
- @media (max-width:900px){
-   .kshsaa-nav{grid-template-columns:1fr;justify-items:center;gap:.35rem}
-   .kshsaa-nav .kshsaa-links{grid-column:1}
- }
  .qcard{border-left:3px solid #c7d2e5}
  .qcard.done{opacity:.45}
  .subj{font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em;color:#4a5b7d}
@@ -309,18 +300,7 @@ const PAGE = `<!DOCTYPE html>
 </style>
 </head><body>
 
-<div class="kshsaa-bar py-2 mb-3">
-  <div class="container kshsaa-nav" style="max-width:1000px">
-    <a class="kshsaa-home" href="/">&larr; QBReader</a>
-    <span class="kshsaa-links">
-      <a href="/kshsaa-play">Read a round</a>
-      <a href="/kshsaa-round">Download packet</a>
-      <a href="/kshsaa-stats">Practice stats</a>
-      <a href="/kshsaa-questions" class="active">Question bank</a>
-      <a href="/kshsaa-spanish/">Spanish Practice</a>
-    </span>
-  </div>
-</div>
+${kshsaaNav('/kshsaa-questions', 1000)}
 
 <div class="container pb-5" style="max-width:1000px">
   <h1>Question bank</h1>
