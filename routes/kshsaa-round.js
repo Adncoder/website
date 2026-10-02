@@ -17,7 +17,7 @@ import { randomUUID } from 'crypto';
 import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
 import mathTierOf, { MATH_TIERS } from '../server/kshsaa/math-tier.js';
-import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
+import { KSHSAA_HEAD, kshsaaNav, readTabs } from '../server/kshsaa/nav.js';
 
 const router = Router();
 
@@ -396,9 +396,10 @@ ${KSHSAA_HEAD}
  @media print{.kshsaa-bar,.no-print{display:none}}
 </style>
 </head><body class="bg-light">
-${kshsaaNav('/kshsaa-round', 900)}
+${kshsaaNav('/kshsaa-play', 900)}
 <div class="container pb-4" style="max-width:900px">
-  <h1 class="h4" id="title">Download a packet</h1>
+  <h1 class="h4" id="title">Read a round</h1>
+  ${readTabs('/kshsaa-round')}
   <p class="text-secondary" id="intro">Builds a fresh, randomized 16-question round in official KSHSAA order
   (1 world language, 3 language arts, 3 science/health, 3 social studies, 3 math, 2 fine arts,
   1 year in review) drawn from the full question archive. A question is not used again until every
@@ -453,7 +454,7 @@ const TITLE = DRILL ? DRILL + ' practice set' : 'KSHSAA practice round';
 if (DRILL) {
   document.title = TITLE;
   $('title').textContent = TITLE;
-  ['intro', 'howto', 'howtoRule'].forEach(id => $(id).classList.add('d-none'));
+  ['readTabs', 'intro', 'howto', 'howtoRule'].forEach(id => $(id).classList.add('d-none'));
   $('go').textContent = 'New practice set';
   const radio = document.querySelector('input[name="level"][value="' + params.get('level') + '"]');
   if (radio) radio.checked = true;

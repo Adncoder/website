@@ -13,7 +13,7 @@
 import { Router } from 'express';
 import { levelControls } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
-import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
+import { KSHSAA_HEAD, kshsaaNav, readTabs } from '../server/kshsaa/nav.js';
 
 const router = Router();
 
@@ -94,8 +94,12 @@ ${KSHSAA_HEAD}
 ${kshsaaNav('/kshsaa-play', 1100)}
 
 <div class="container-fluid pb-3">
-  <div id="gate" class="setup d-none">
+  <div id="readHead" class="setup">
     <h1 class="h4">Read a round</h1>
+    ${readTabs('/kshsaa-play')}
+  </div>
+
+  <div id="gate" class="setup d-none">
     <div class="card" style="max-width:420px"><div class="card-body">
       <label class="form-label" for="gatePw">Reader password</label>
       <input type="password" class="form-control mb-2" id="gatePw">
@@ -105,8 +109,6 @@ ${kshsaaNav('/kshsaa-play', 1100)}
   </div>
 
   <div id="setup" class="setup d-none">
-    <h1 class="h4">Read a round</h1>
-
     <div class="mb-3">
       <label class="form-label fw-semibold" for="label">Game name</label>
       <input class="form-control" id="label" placeholder="Tuesday practice, game 2">
@@ -943,6 +945,7 @@ $('go').onclick = async () => {
     const charCounts = data.round.map(q => q.question.length);
 
     $('setup').style.display = 'none';
+    $('readHead').style.display = 'none';
     const warnings = (data.short && data.short.length
       ? ['This round is ' + data.round.length + ' questions, not 16 - the archive ran short on ' +
         data.short.join(', ') + '.']

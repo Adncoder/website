@@ -839,6 +839,10 @@ ${KSHSAA_HEAD}
  .lvl{display:inline-block;padding:.1rem .45rem;border-radius:.3rem;font-size:.78rem;background:#eef1f7;color:#33415c}
  .lvl-none{background:#f6f7f9;color:#9ca3af}
  .kv{display:inline-block;margin:0 1.25rem .4rem 0}
+ .tallies{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-size:.85rem}
+ .tally{border:1px solid #d9e0ec;background:#f6f8fb;border-radius:.3rem;padding:.12rem .55rem;color:#4b5563}
+ .tally strong{color:#1f2733}
+ .tally-total{border:0;background:none;padding-left:0;font-weight:700;font-size:.95rem;color:#1f2733}
  .kv .k{display:block;font-size:.75rem;color:#6b7280}
  .kv .v{font-size:1.05rem;font-weight:600;font-variant-numeric:tabular-nums}
  #gmBuzzes td{padding:.25rem .35rem !important}
@@ -873,6 +877,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <li class="nav-item"><button class="nav-link active" data-tab="stats" type="button">Stats</button></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><button class="nav-link" data-tab="roster" type="button">Roster</button></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-questions">Question bank</a></li>
     </ul>
 
     <div id="tabStats">
@@ -1112,7 +1117,7 @@ var ROSTER_COLS = [
   { key: 'name', label: 'Player', dir: 1 },
   { key: 'grade', label: 'Grade', dir: 1, width: '6rem' },
   { key: 'squad', label: 'Squad', dir: 1, width: '14rem' },
-  { key: 'rating', label: 'Rating', dir: -1, width: '6rem', tip: 'Your 1-10 judgment from past seasons. The team builder blends it with stats.' },
+  { key: 'rating', label: 'Past rating', dir: -1, width: '8rem', tip: 'Out of 10, from past seasons. N/A for anyone you have not seen play yet. The team builder blends it with stats.' },
   { key: 'hasPlayed', label: 'Status', dir: -1, width: '8rem' }
 ];
 
@@ -1147,12 +1152,13 @@ function sortedRoster () {
 function rosterSummary () {
   var grades = {};
   ROSTER.forEach(function (r) { if (r.grade) grades[r.grade] = (grades[r.grade] || 0) + 1; });
+  var noGrade = ROSTER.filter(function (r) { return !r.grade; }).length;
   var onSquad = ROSTER.filter(function (r) { return r.squad; }).length;
-  return '<p class="mb-2"><strong>' + ROSTER.length + ' player' + (ROSTER.length === 1 ? '' : 's') + '</strong>' +
-    Object.keys(grades).sort(function (a, b) { return a - b; }).map(function (g) {
-      return ' &middot; ' + g + 'th: ' + grades[g];
-    }).join('') +
-    ' &middot; ' + onSquad + ' on a squad</p>';
+  var tally = function (label, n) { return '<span class="tally">' + label + ': <strong>' + n + '</strong></span>'; };
+  return '<div class="tallies mb-2"><span class="tally tally-total">' + ROSTER.length + ' player' + (ROSTER.length === 1 ? '' : 's') + '</span>' +
+    Object.keys(grades).sort(function (a, b) { return a - b; }).map(function (g) { return tally(g + 'th grade', grades[g]); }).join('') +
+    (noGrade ? tally('No grade', noGrade) : '') +
+    tally('On a squad', onSquad) + '</div>';
 }
 
 function loadRoster () {
@@ -1183,7 +1189,7 @@ function renderRoster () {
       '<td class="scell">' + (r.squad
       ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '')
       : '<span class="text-secondary">unassigned</span>') + '</td>' +
-      '<td class="rcell">' + (r.rating == null ? '<span class="text-secondary">-</span>' : r.rating) + '</td>' +
+      '<td class="rcell">' + (r.rating == null ? '<span class="text-secondary">N/A</span>' : r.rating + '<span class="text-secondary">/10</span>') + '</td>' +
       '<td class="text-secondary">' + (r.hasPlayed ? 'has stats' : 'no games yet') + '</td>' +
       '<td class="text-end acell">' +
       '<button class="btn btn-sm btn-link p-0 me-2 redit" data-id="' + r.id + '">edit</button>' +
@@ -1230,8 +1236,15 @@ function editRosterRow (id) {
     }).join('') + '</select>' +
     '<label class="small mt-1 d-flex align-items-center gap-1"><input type="checkbox" class="pedit"' +
     (r.permanent ? ' checked' : '') + '> permanent on this squad</label>';
-  rcell.innerHTML = '<input class="form-control form-control-sm redit-rating" type="number" min="1" max="10" step="0.5" ' +
-    'style="width:5rem" value="' + (r.rating == null ? '' : r.rating) + '">';
+  // N/A is for anyone not yet seen play: the team builder goes on their stats alone
+  var ratings = [''];
+  for (var v = 10; v >= 1; v -= 0.5) ratings.push(v);
+  if (r.rating != null && ratings.indexOf(r.rating) === -1) ratings.push(r.rating);
+  rcell.innerHTML = '<select class="form-select form-select-sm redit-rating" style="width:6.5rem">' +
+    ratings.map(function (v) {
+      return '<option value="' + v + '"' + ((r.rating == null ? '' : r.rating) === v ? ' selected' : '') + '>' +
+        (v === '' ? 'N/A' : v + '/10') + '</option>';
+    }).join('') + '</select>';
   acell.innerHTML = '<button class="btn btn-sm btn-primary py-0 px-2 me-1 gsave">save</button>' +
     '<button class="btn btn-sm btn-link p-0 gcancel">cancel</button>';
   ncell.querySelector('.nedit').focus();
@@ -1436,7 +1449,8 @@ function render (d) {
 
   $('search').value = SEARCH;
   $('search').oninput = function () { SEARCH = $('search').value; applyFilters(); };
-  Array.prototype.forEach.call(document.querySelectorAll('th.sortable'), function (th) {
+  // only this table's headers: the roster's are sortable too, with their own handler
+  Array.prototype.forEach.call(document.querySelectorAll('#content th[data-sort]'), function (th) {
     th.onclick = function () {
       var key = th.getAttribute('data-sort');
       if (SORT.key === key) {

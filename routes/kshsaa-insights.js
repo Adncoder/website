@@ -141,6 +141,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Stats</a></li>
       <li class="nav-item"><a class="nav-link active" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats#roster">Roster</a></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-questions">Question bank</a></li>
     </ul>
 
     <div class="d-flex flex-wrap gap-3 align-items-end mt-3">
@@ -181,7 +182,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       </div>
       <div class="note" id="unplaced"></div>
       <p class="note">"Knows about" is how many of a round&rsquo;s 16 questions at least one starter would likely know.
-      Each player blends their stats with your rating from the roster (shown as &#9733;); permanent players stay on
+      Each player blends their stats with your past rating from the roster (&#9733;, out of 10); permanent players stay on
       their squad. Grayed names have under two rounds of games and no rating.</p>
     </div></div>
 
@@ -515,7 +516,7 @@ function bestCategory (p) {
 // what the team card says about a player
 function describe (p) {
   if (p.heard >= 32) return bestCategory(p);
-  if (p.rating != null) return '&#9733; ' + p.rating + (p.games ? ', ' + p.games + ' game' + (p.games === 1 ? '' : 's') : ', no games');
+  if (p.rating != null) return '&#9733; ' + p.rating + '/10' + (p.games ? ', ' + p.games + ' game' + (p.games === 1 ? '' : 's') : ', no games');
   return 'few games';
 }
 
@@ -524,7 +525,7 @@ function renderPool () {
   Object.keys(AVAILABLE).forEach(function (n) { if (names.indexOf(n) === -1) delete AVAILABLE[n]; });
   CANDIDATES.forEach(function (p) { if (!(p.name in AVAILABLE)) AVAILABLE[p.name] = true; });
   $('pool').innerHTML = CANDIDATES.map(function (p) {
-    var title = p.games + ' games' + (p.rating != null ? ', rated ' + p.rating + ', stats ' + Math.round(p.statsShare * 100) + '%' : '') +
+    var title = p.games + ' games' + (p.rating != null ? ', past rating ' + p.rating + '/10, stats ' + Math.round(p.statsShare * 100) + '%' : '') +
       (p.permanent ? ', permanent on ' + p.squad : '');
     return '<label class="pick' + (p.heard < 32 && p.rating == null ? ' few' : '') + '" title="' + esc(title) + '">' +
       '<input type="checkbox" class="avail" value="' + esc(p.name) + '"' + (AVAILABLE[p.name] ? ' checked' : '') + '>' +
