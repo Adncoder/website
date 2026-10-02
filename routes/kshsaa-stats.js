@@ -1155,10 +1155,19 @@ function rosterSummary () {
   var noGrade = ROSTER.filter(function (r) { return !r.grade; }).length;
   var onSquad = ROSTER.filter(function (r) { return r.squad; }).length;
   var tally = function (label, n) { return '<span class="tally">' + label + ': <strong>' + n + '</strong></span>'; };
+  // every squad, empty ones too, so a squad still short of players shows
+  var squads = {};
+  ROSTER.forEach(function (r) { if (r.squad) squads[r.squad] = (squads[r.squad] || 0) + 1; });
+  var squadNames = SQUADS.concat(Object.keys(squads).filter(function (q) { return SQUADS.indexOf(q) === -1; }));
   return '<div class="tallies mb-2"><span class="tally tally-total">' + ROSTER.length + ' player' + (ROSTER.length === 1 ? '' : 's') + '</span>' +
     Object.keys(grades).sort(function (a, b) { return a - b; }).map(function (g) { return tally(g + 'th grade', grades[g]); }).join('') +
     (noGrade ? tally('No grade', noGrade) : '') +
-    tally('On a squad', onSquad) + '</div>';
+    tally('On a squad', onSquad) + '</div>' +
+    (squadNames.length
+      ? '<div class="tallies mb-2"><span class="tally tally-total">By squad</span>' +
+        squadNames.map(function (q) { return tally(esc(q), squads[q] || 0); }).join('') +
+        tally('Unassigned', ROSTER.length - onSquad) + '</div>'
+      : '');
 }
 
 function loadRoster () {
