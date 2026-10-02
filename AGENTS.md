@@ -282,6 +282,14 @@ Permanent players are only ever placed on their own squad. The first squad
 takes the strongest individuals and the rest maximize category coverage,
 unless that checkbox is cleared.
 
+Roster entries can also carry an `email`, set on the Roster tab (edit row, or
+a fourth comma part when pasting). Player focus then offers an "Email" button
+that opens the viewer's own mail app through a `mailto:` link with the drafted
+message; the site never sends mail itself. The export leaves emails out.
+"Print focus sheet" prints only `#printSheet` (everyone in the current filters,
+by squad, with a notes column) by toggling `body.printing-focus` around
+`window.print()`.
+
 A `per-tossup-data` document must exist for a tossup or `recordTossupData`
 silently drops the buzz. `publishQuestion()` writes one; if stats look empty,
 check for that document before suspecting auth or the upload path.
