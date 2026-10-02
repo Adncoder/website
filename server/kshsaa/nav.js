@@ -1,13 +1,16 @@
 // The bar across the top of every KSHSAA page: the logo, the sections, and a
 // way back to QBReader. Put KSHSAA_HEAD in a page's <head> and
 // ${kshsaaNav('/kshsaa-stats')} where the bar goes. The Spanish practice page
-// is a static file (client/kshsaa-spanish/) and carries its own copy.
+// is a static file (client/kshsaa-spanish/) and carries its own copy, and the
+// QBReader navbar's KSHSAA menu (client/ssi/nav.html) lists the same sections.
+//
+// Pages that belong to a section without being its first page pass that
+// section's path: the packet download sits under Read a round, and Insights
+// and the question bank under Practice stats, each as a tab.
 
 const SECTIONS = [
   ['/kshsaa-play', 'Read a round'],
-  ['/kshsaa-round', 'Download packet'],
   ['/kshsaa-stats', 'Practice stats'],
-  ['/kshsaa-questions', 'Question bank'],
   ['/kshsaa-spanish/', 'Spanish Practice']
 ];
 
@@ -52,4 +55,18 @@ export function kshsaaNav (active, maxWidth = 1100) {
     <a class="kshsaa-home" href="/">QBReader &rarr;</a>
   </div>
 </div>`;
+}
+
+/**
+ * The tabs under the Read a round heading: reading on this screen with MODAQ,
+ * or downloading the packet to read somewhere else.
+ * @param {string} active - '/kshsaa-play' or '/kshsaa-round'
+ * @returns {string} HTML
+ */
+export function readTabs (active) {
+  return `<ul class="nav nav-tabs mb-3" id="readTabs">
+    ${[['/kshsaa-play', 'Read on this screen'], ['/kshsaa-round', 'Download packet']]
+      .map(([href, label]) => `<li class="nav-item"><a class="nav-link${href === active ? ' active' : ''}" href="${href}">${label}</a></li>`)
+      .join('\n    ')}
+  </ul>`;
 }

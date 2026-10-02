@@ -186,7 +186,17 @@ builds run one at a time so simultaneous rooms cannot draw the same question.
 
 Every page puts `${KSHSAA_HEAD}` in its `<head>` and `${kshsaaNav('/kshsaa-…')}`
 at the top of the body; change the bar there, not in a page. The Spanish
-practice page is a static file and keeps its own copy.
+practice page is a static file and keeps its own copy, and the QBReader navbar's
+KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has three
+sections; the other pages are tabs inside one, and pass that section's path to
+`kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
+(`readTabs()` from `nav.js`), and Insights and the question bank are tabs under
+Practice stats, whose tab lists are written out in each of those pages.
+
+The stats page has two sortable tables, the players and the roster. Attach each
+one's header handlers through a selector scoped to that table (`#content
+th[data-sort]`, `th[data-rsort]`). A bare `th.sortable` picks up the other
+table's headers too, and whichever renders last silently takes over both.
 
 ### These pages are template literals, not client files
 
@@ -273,8 +283,9 @@ questions at least one starter knows. A category is flagged "work on" only when
 it is below the team and at least 1.5 answers short of the player's own usual
 level, so players weak everywhere do not get arbitrary flags.
 
-Roster entries can carry a coach `rating` (1–10, past performance) and
-`permanent` (stays on their squad). The team builder blends a rating with
+Roster entries can carry a coach `rating` (1–10 in halves, shown as "Past
+rating x/10"; null is N/A, for anyone not yet seen play) and `permanent` (stays
+on their squad). The team builder blends a rating with
 stats, stats counting for rounds ÷ (rounds + N) with N = 6 by default
 (adjustable on the page), mapping ratings onto the stats' scale by rank among
 measured players; a rated player with no games is placed on the rating alone.
