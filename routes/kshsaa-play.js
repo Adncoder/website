@@ -87,6 +87,10 @@ ${KSHSAA_HEAD}
     rather than running under MODAQ's event pane. Applied by measurement, not a
     guessed breakpoint - how much room there is depends on MODAQ's own layout. */
  #timerBar.tb-inflow{left:auto;right:0;margin-left:0}
+ /* a note on the current question: a small card in the corner, so the
+    question underneath stays readable while the moderator types */
+ #notePanel{position:fixed;right:1rem;bottom:1rem;z-index:1500;width:min(340px,calc(100vw - 2rem));
+   background:#fff;border:1px solid #c8c6c4;border-radius:.4rem;box-shadow:0 6px 24px rgba(0,0,0,.18);padding:.75rem}
  /* reserve the row the clock now sits in, so it cannot cover the question */
 </style>
 </head><body>
@@ -172,10 +176,23 @@ ${kshsaaNav('/kshsaa-play', 1100)}
   <div id="roundBar" class="d-none d-flex flex-wrap align-items-center gap-2 small mb-2">
     <span id="roundInfo" class="text-secondary"></span>
     <span id="saveState" class="badge text-bg-light border">not saved yet</span>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="noteBtn"
+      title="Write down something about this question, for a player or the team">Note on this question</button>
     <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="nextRound"
       title="Start a fresh round with the same teams, then change whoever swapped out">Next round with these teams &rarr;</button>
   </div>
   <div id="roundWarn" class="alert alert-warning py-2 small d-none"></div>
+  <div id="notePanel" class="d-none" role="dialog" aria-labelledby="npTitle">
+    <div class="fw-semibold small mb-2" id="npTitle">Note on question <span id="npQ"></span></div>
+    <select class="form-select form-select-sm mb-2" id="npWho" aria-label="Who the note is about"></select>
+    <textarea class="form-control form-control-sm mb-2" id="npText" rows="3" maxlength="500"
+      placeholder="Great early buzz on this one" aria-label="Note"></textarea>
+    <div class="d-flex align-items-center gap-2">
+      <button type="button" class="btn btn-sm btn-primary" id="npSave">Save note</button>
+      <button type="button" class="btn btn-sm btn-link" id="npCancel">Cancel</button>
+      <span class="small ms-auto" id="npMsg"></span>
+    </div>
+  </div>
 
   <div id="modaq"></div>
 </div>
@@ -208,6 +225,10 @@ let KNOWN = [];
 // a game saves to stats exactly once
 let SAVED = false;
 let SAVING = false;
+// notes written during the round: sent with the game when it saves, or added
+// to the saved game when written after that
+const NOTES = [];
+let ROUND_ID = null;
 
 function renumber (boxId) {
   Array.from($(boxId).querySelectorAll('.pname')).forEach((input, i) => {
@@ -890,6 +911,40 @@ function setupTimer (round, teamNames) {
   watchReader(teamNames);
 }
 
+function showNoteCount () {
+  $('noteBtn').textContent = 'Note on this question' + (NOTES.length ? ' (' + NOTES.length + ' so far)' : '');
+}
+
+function openNote (teams) {
+  $('npQ').textContent = CURRENT_QUESTION || 1;
+  $('npWho').innerHTML = '<option value="">No one in particular</option>' + teams.map(t =>
+    '<optgroup label="' + esc(t.name) + '">' + t.players.map(n => '<option>' + esc(n) + '</option>').join('') + '</optgroup>').join('');
+  $('npText').value = '';
+  $('npMsg').textContent = '';
+  $('notePanel').classList.remove('d-none');
+  $('npText').focus();
+}
+
+async function saveNote () {
+  const text = $('npText').value.trim();
+  if (!text) { $('npMsg').textContent = 'write something first'; return; }
+  // a save in flight has already sent its notes
+  if (SAVING) { $('npMsg').textContent = 'the game is saving, try again in a moment'; return; }
+  const note = { questionNumber: CURRENT_QUESTION || 1, player: $('npWho').value || null, text };
+  if (SAVED) {
+    const r = await fetch('/kshsaa-stats/notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ roundId: ROUND_ID, notes: [note] })
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { $('npMsg').innerHTML = '<span class="text-danger">' + esc(d.error || 'could not save') + '</span>'; return; }
+  }
+  NOTES.push(note);
+  showNoteCount();
+  $('notePanel').classList.add('d-none');
+}
+
 $('go').onclick = async () => {
   const players = validatedPlayers();
   if (!players) return;
@@ -916,6 +971,20 @@ $('go').onclick = async () => {
     const categories = data.round.map(q => q.category);
 
     const teamNames = [...new Set(players.map(p => p.teamName))];
+    ROUND_ID = data.roundId;
+    const noteTeams = teamNames.map(name => ({ name, players: players.filter(p => p.teamName === name).map(p => p.name) }));
+    $('noteBtn').onclick = () => openNote(noteTeams);
+    $('npSave').onclick = saveNote;
+    $('npCancel').onclick = () => $('notePanel').classList.add('d-none');
+    $('npText').onkeydown = e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveNote(); }
+      if (e.key === 'Escape') { $('notePanel').classList.add('d-none'); }
+    };
+    // MODAQ listens for its shortcuts across the whole page, so letters typed
+    // into a note would otherwise move it to the next question
+    for (const type of ['keydown', 'keypress', 'keyup']) {
+      $('notePanel').addEventListener(type, e => e.stopPropagation());
+    }
 
     $('status').textContent = 'loading reader...';
     const [React, ReactDOM, Modaq] = await Promise.all([
@@ -994,7 +1063,8 @@ $('go').onclick = async () => {
                 questionIds: data.round.map(q => q.id),
                 categories,
                 wordCounts,
-                charCounts
+                charCounts,
+                notes: NOTES
               })
             });
             SAVING = true;

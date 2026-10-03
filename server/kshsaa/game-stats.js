@@ -1,6 +1,11 @@
 // Reading recorded games, shared by the stats and insights pages: who played
 // and for how long, how early a buzz came, and which games a month/level filter
 // covers.
+//
+// Games come in two kinds. Practice games are read on this site (or uploaded
+// from MODAQ), and both teams are ours. Tournament games are typed in from the
+// paper scoresheet afterwards (kind: 'tournament'): one team is ours, and the
+// other team's buzzes carry no player, since we only know that they answered.
 
 import { LEVELS } from '../../routes/kshsaa-round.js';
 
@@ -38,21 +43,27 @@ export function seasonStartKey () {
   return (m >= 8 ? y : y - 1) + '-08';
 }
 
+export const KINDS = { practice: 'Practice', tournament: 'Tournaments' };
+export const kindOf = g => (g.kind === 'tournament' ? 'tournament' : 'practice');
+
 /**
- * The month and level filters from a query string, validated, plus tests for a
- * game's month key and level key.
+ * The month, level, and practice/tournament filters from a query string,
+ * validated, plus tests for a game's month key, level key, and the game itself.
  * @param {object} query - req.query
  */
 export function readFilters (query) {
   const month = query.month === 'all' || /^\d{4}-\d{2}$/.test(query.month || '') ? query.month : 'season';
   const level = query.level === 'untagged' || LEVEL_KEYS.includes(query.level) ? query.level : 'all';
+  const kind = KINDS[query.kind] ? query.kind : 'all';
   const season = seasonStartKey();
   return {
     month,
     level,
+    kind,
     season,
     inMonth: key => month === 'all' || (month === 'season' ? key >= season : key === month),
-    inLevel: key => level === 'all' || key === level
+    inLevel: key => level === 'all' || key === level,
+    inKind: g => kind === 'all' || kindOf(g) === kind
   };
 }
 
@@ -71,8 +82,32 @@ export function playersInGame (g) {
       heardBy.set(name, Math.max(heardBy.get(name) ?? 0, heard));
     }
   }
-  const buzzers = new Set((g.buzzes || []).map(b => b.player));
+  // an opponent's buzz in a tournament game has no player
+  const buzzers = new Set((g.buzzes || []).map(b => b.player).filter(Boolean));
   for (const name of buzzers) { if (!heardBy.has(name)) heardBy.set(name, g.tossupsRead ?? 0); }
   for (const [name, heard] of heardBy) { if (!heard && !buzzers.has(name)) heardBy.delete(name); }
   return heardBy;
+}
+
+/**
+ * A game's notes as a page sent them, checked: each is some text, the question
+ * it is about (or none), and the player it is about (or none) -- who has to be
+ * in the game.
+ * @param {*} raw - [{questionNumber, player, text}]
+ * @param {function(string): boolean} inGame - whether a player was in the game
+ * @param {function(string): string} [fix] - name canonicalizer
+ * @returns {{questionNumber: ?number, player: ?string, text: string}[]}
+ */
+export function cleanNotes (raw, inGame, fix = n => n) {
+  if (raw == null) return [];
+  if (!Array.isArray(raw) || raw.length > 200) throw new Error('too many notes');
+  return raw.map(n => {
+    const text = String(n?.text ?? '').trim().slice(0, 500);
+    if (!text) return null;
+    const q = n.questionNumber == null || n.questionNumber === '' ? null : Number(n.questionNumber);
+    if (q != null && !(Number.isInteger(q) && q >= 1 && q <= 99)) throw new Error('question numbers run 1 to 99');
+    const player = n.player ? fix(String(n.player).trim().slice(0, 60)) : null;
+    if (player && !inGame(player)) throw new Error('a note is about ' + player + ', who is not in this game');
+    return { questionNumber: q, player, text };
+  }).filter(Boolean);
 }
