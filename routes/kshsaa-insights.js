@@ -523,11 +523,13 @@ function bestCategory (p) {
   return best;
 }
 
-// what the team card says about a player
-function describe (p) {
-  if (p.heard >= 32) return bestCategory(p);
-  if (p.rating != null) return '&#9733; ' + p.rating + '/10' + (p.games ? ', ' + p.games + ' game' + (p.games === 1 ? '' : 's') : ', no games');
-  return 'few games';
+// the same three things for every player on a team card. A best category
+// needs two rounds of games: before that a player's mix of categories is the
+// team's average, not theirs.
+function playerCells (p) {
+  return '<td class="small text-nowrap">' + (p.rating != null ? '&#9733; ' + p.rating + '/10' : '<span class="text-secondary">N/A</span>') + '</td>' +
+    '<td class="small text-secondary num">' + p.games + '</td>' +
+    '<td class="small text-secondary">' + (p.heard >= 32 ? esc(bestCategory(p)) : '<span title="Under two rounds of games">&ndash;</span>') + '</td>';
 }
 
 function renderPool () {
@@ -599,12 +601,12 @@ function renderTeams () {
         return '<option' + (s === t.squad ? ' selected' : '') + '>' + esc(s) + '</option>';
       }).join('') + '</select>' +
       '<span class="fw-semibold text-nowrap">knows about ' + knows.toFixed(1) + ' of 16</span></div>' +
-      '<table class="table table-sm mb-2"><tbody>';
+      '<table class="table table-sm mb-2"><thead><tr><th class="small">Player</th><th class="small">Past rating</th>' +
+      '<th class="small num">Games</th><th class="small">Best at</th></tr></thead><tbody>';
     var row = function (p, sub) {
       var tags = (sub ? ' <span class="small">(sub)</span>' : '') +
         (t.fixed.indexOf(p) !== -1 ? ' <span class="small text-secondary">permanent</span>' : '');
-      return '<tr><td' + (sub ? ' class="text-secondary"' : '') + '>' + esc(p.name) + tags + '</td>' +
-        '<td class="text-secondary small">' + describe(p) + '</td></tr>';
+      return '<tr><td' + (sub ? ' class="text-secondary"' : '') + '>' + esc(p.name) + tags + '</td>' + playerCells(p) + '</tr>';
     };
     t.starters.forEach(function (p) { h += row(p, false); });
     t.subs.forEach(function (p) { h += row(p, true); });
