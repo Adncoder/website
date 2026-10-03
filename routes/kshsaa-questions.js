@@ -317,6 +317,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Stats</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats#roster">Roster</a></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-tournaments">Tournaments</a></li>
       <li class="nav-item"><a class="nav-link active" href="/kshsaa-questions">Question bank</a></li>
     </ul>
 

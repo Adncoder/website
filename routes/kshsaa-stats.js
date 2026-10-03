@@ -18,7 +18,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
-import { celerityOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
+import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
 const router = Router();
@@ -143,7 +143,7 @@ async function playedNames () {
  * spelling, roster first, so "max" can never become a second "Max".
  * @returns {Promise<function(string): string>}
  */
-async function nameCanonicalizer () {
+export async function nameCanonicalizer () {
   const listed = (await roster.find({}).toArray()).map(r => r.name);
   const canon = {};
   for (const n of (await playedNames()).concat(listed)) canon[String(n).trim().toLowerCase()] = String(n).trim();
@@ -185,14 +185,21 @@ router.get('/roster', requireAuth, async (req, res) => {
       permanent: Boolean(r.permanent && r.squad),
       // where the Insights page's "email" button sends a player's message
       email: r.email || null,
+      // a coach who sometimes plays in practice: kept out of counts and team building
+      coach: Boolean(r.coach),
       hasPlayed: Boolean(playedSet[r.name.trim().toLowerCase()])
     }))
   });
 });
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// a past rating written the way the roster shows it: "7/10", "7.5/10", or "N/A"
+const RATING = /^(10|[1-9](\.5)?)\s*\/\s*10$/;
+const NO_RATING = /^n\/?a$/i;
+const COACH = /^(assistant |head )?coach$/i;
 
-// bulk add: one player per line, then any of grade, squad, and email after commas
+// bulk add: one player per line, then any of grade, squad, email, past rating,
+// and "coach" after commas
 router.post('/roster/add', requireAuth, async (req, res) => {
   try {
     const text = String((req.body && req.body.text) || '');
@@ -208,14 +215,20 @@ router.post('/roster/add', requireAuth, async (req, res) => {
       const line = rawLine.trim();
       if (!line) continue;
 
-      // "Name", "Name, 11", "Name, 11, JV 2", "Name, JV 2, name@school.org" all work
+      // "Name", "Name, 11", "Name, 11, JV 2", "Name, JV 2, name@school.org",
+      // "Name, 7/10", "Name, N/A", "Name, coach" all work
       const parts = line.split(',').map(s => s.trim()).filter(Boolean);
       const name = (parts.shift() || '').replace(/[,-]+$/, '').trim();
       if (!name) continue;
       let grade = null; let squad = null; let email = null;
+      // undefined: not given, so an existing rating is left alone
+      let rating; let coach = false;
       for (const part of parts) {
         if (/^(9|10|11|12)(th)?$/i.test(part)) grade = Number(part.replace(/\D/g, ''));
         else if (EMAIL.test(part)) email = part.slice(0, 120);
+        else if (RATING.test(part)) rating = Number(part.match(RATING)[1]);
+        else if (NO_RATING.test(part)) rating = null;
+        else if (COACH.test(part)) coach = true;
         else {
           const hit = squads.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') ===
             part.toLowerCase().replace(/[^a-z0-9]/g, ''));
@@ -229,14 +242,17 @@ router.post('/roster/add', requireAuth, async (req, res) => {
         if (grade != null && byKey[key].grade !== grade) set.grade = grade;
         if (squad && byKey[key].squad !== squad) set.squad = squad;
         if (email && byKey[key].email !== email) set.email = email;
+        if (rating !== undefined && (byKey[key].rating ?? null) !== rating) set.rating = rating;
+        if (coach && !byKey[key].coach) Object.assign(set, { coach: true, squad: null, permanent: false });
         if (Object.keys(set).length) {
           ops.push({ updateOne: { filter: { _id: byKey[key]._id }, update: { $set: set } } });
           Object.assign(byKey[key], set);
           updated++;
         }
       } else {
-        ops.push({ insertOne: { document: { name, grade, squad, email, createdAt: new Date() } } });
-        byKey[key] = { name, grade, squad, email };
+        const doc = { name, grade, squad: coach ? null : squad, email, rating: rating ?? null, coach, createdAt: new Date() };
+        ops.push({ insertOne: { document: doc } });
+        byKey[key] = doc;
         added++;
       }
     }
@@ -250,15 +266,17 @@ router.post('/roster/add', requireAuth, async (req, res) => {
 router.post('/roster/update', requireAuth, async (req, res) => {
   try {
     const grade = req.body.grade === '' || req.body.grade == null ? null : Number(req.body.grade);
-    const squad = (await getSquads()).includes(req.body.squad) ? req.body.squad : null;
+    const listed = (await getSquads()).includes(req.body.squad) ? req.body.squad : null;
     const given = Number(req.body.rating);
     const rating = req.body.rating === '' || req.body.rating == null || !Number.isFinite(given)
       ? null
       : Math.round(Math.min(10, Math.max(1, given)) * 2) / 2;
+    const coach = Boolean(req.body.coach);
+    const squad = coach ? null : listed;
     const permanent = Boolean(req.body.permanent) && Boolean(squad);
     const email = String(req.body.email ?? '').trim().slice(0, 120) || null;
     if (email && !EMAIL.test(email)) return res.status(400).json({ error: email + ' does not look like an email address' });
-    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent, email } });
+    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent, email, coach } });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
@@ -276,6 +294,7 @@ async function renameInGames (from, to) {
   const hit = await games.find({ $or: [{ 'buzzes.player': from }, { 'teams.players': from }] }).toArray();
   for (const g of hit) {
     const buzzes = (g.buzzes || []).map(b => (b.player === from ? { ...b, player: to } : b));
+    const notes = (g.notes || []).map(n => (n.player === from ? { ...n, player: to } : n));
     const teams = (g.teams || []).map(t => ({
       ...t,
       players: [...new Set((t.players || []).map(p => (p === from ? to : p)))]
@@ -288,7 +307,7 @@ async function renameInGames (from, to) {
       const next = team + '|' + (player === from ? to : player);
       heardByPlayer[next] = Math.max(heardByPlayer[next] ?? 0, heard);
     }
-    await games.updateOne({ _id: g._id }, { $set: { buzzes, teams, heardByPlayer } });
+    await games.updateOne({ _id: g._id }, { $set: { buzzes, teams, heardByPlayer, notes } });
   }
   return hit.length;
 }
@@ -508,6 +527,9 @@ router.post('/upload', requireReader, async (req, res) => {
     const fix = await nameCanonicalizer();
     for (const b of doc.buzzes) b.player = fix(b.player);
     for (const t of doc.teams) t.players = (t.players || []).map(fix);
+    // notes the moderator wrote while reading
+    const inGame = new Set(doc.teams.flatMap(t => t.players).concat(doc.buzzes.map(b => b.player)));
+    doc.notes = cleanNotes(req.body.notes, n => inGame.has(n), fix);
 
     const result = await games.insertOne(doc);
     res.json({ ok: true, id: result.insertedId, buzzes: doc.buzzes.length });
@@ -515,6 +537,22 @@ router.post('/upload', requireReader, async (req, res) => {
     res.status(400).json({ error: String(e.message || e) });
   } finally {
     if (roundId) saving.delete(roundId);
+  }
+});
+
+// A note written in the reader after its game was already saved: added to
+// that game, found by the round it was read from.
+router.post('/notes', requireReader, async (req, res) => {
+  try {
+    const roundId = typeof req.body?.roundId === 'string' ? req.body.roundId.slice(0, 64) : '';
+    const g = roundId && await games.findOne({ roundId });
+    if (!g) return res.status(404).json({ error: 'that game is not saved yet' });
+    const inGame = new Set(playersInGame(g).keys());
+    const added = cleanNotes(req.body.notes, n => inGame.has(n), await nameCanonicalizer());
+    await games.updateOne({ _id: g._id }, { $set: { notes: (g.notes || []).concat(added) } });
+    res.json({ ok: true, notes: added.length });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
   }
 });
 
@@ -557,7 +595,8 @@ const BUZZ_VALUES = [10, -5, 0];
  * Checks an edited game from the stats page and turns it into the stored
  * shape. Throws with a message for the moderator on anything invalid.
  * @param {object} body - { label, level, teams: [{name, players: [{name, heard}]}],
- *   buzzes: [{questionNumber, category, player, value, wordIndex}] }
+ *   buzzes: [{questionNumber, category, player, value, wordIndex}],
+ *   notes: [{questionNumber, player, text}] }
  * @param {object} g - the game as stored
  * @param {function(string): string} fix - name canonicalizer
  */
@@ -615,7 +654,8 @@ function editedGame (body, g, fix) {
   }).sort((a, b) => (a.questionNumber ?? 999) - (b.questionNumber ?? 999));
 
   for (const t of teams) t.score = teamScore(buzzes, t.name);
-  return { label, level: validLevel(body.level), teams, heardByPlayer, buzzes };
+  const notes = cleanNotes(body.notes, n => Boolean(teamOf[n]), fix);
+  return { label, level: validLevel(body.level), teams, heardByPlayer, buzzes, notes };
 }
 
 // the stats page's game editor: rename, set the level, fix teams and scorers
@@ -624,6 +664,7 @@ router.post('/game/:id/update', requireAuth, async (req, res) => {
     const _id = new ObjectId(String(req.params.id));
     const g = await games.findOne({ _id });
     if (!g) return res.status(404).json({ error: 'game not found' });
+    if (kindOf(g) === 'tournament') return res.status(400).json({ error: 'tournament games are edited on the Tournaments tab' });
     const edited = editedGame(req.body || {}, g, await nameCanonicalizer());
     await games.updateOne({ _id }, { $set: { ...edited, editedAt: new Date() } });
     res.json({ ok: true, teams: edited.teams.map(t => ({ name: t.name, score: t.score })) });
@@ -705,9 +746,10 @@ function summary (t) {
 }
 
 router.get('/data', requireAuth, async (req, res) => {
-  const { month, level, season, inMonth, inLevel } = readFilters(req.query);
+  const { month, level, kind, season, inMonth, inLevel, inKind } = readFilters(req.query);
 
-  const all = await games.find({}).sort({ playedAt: 1 }).toArray();
+  const everything = await games.find({}).sort({ playedAt: 1 }).toArray();
+  const all = everything.filter(inKind);
 
   // squad assignment comes from the roster, not from whatever the moderator
   // typed as a team name in a given game
@@ -726,7 +768,8 @@ router.get('/data', requireAuth, async (req, res) => {
     byCategory: {},
     perGame: {},
     byMonth: {},
-    byLevel: {}
+    byLevel: {},
+    notes: []
   });
   const monthsSeen = new Set();
   const shown = [];
@@ -754,12 +797,27 @@ router.get('/data', requireAuth, async (req, res) => {
     }
 
     for (const b of g.buzzes || []) {
+      if (!b.player) continue; // the other school, in a tournament game
       const p = playerFor(b.player);
       for (const t of bucketsFor(p)) addBuzz(t, b);
       if (main) {
         const pc = p.byCategory[b.category] || (p.byCategory[b.category] = { correct: 0, wrong: 0 });
         if (b.value > 0) pc.correct++; else pc.wrong++;
         p.perGame[gid].points += b.value || 0;
+      }
+    }
+
+    if (main) {
+      for (const n of g.notes || []) {
+        if (!n.player || !players[n.player]) continue;
+        players[n.player].notes.push({
+          gameId: gid,
+          game: g.label,
+          playedAt: g.playedAt,
+          questionNumber: n.questionNumber,
+          category: n.questionNumber ? (g.categories || CATEGORY_BY_QUESTION)[n.questionNumber - 1] || null : null,
+          text: n.text
+        });
       }
     }
   }
@@ -776,19 +834,24 @@ router.get('/data', requireAuth, async (req, res) => {
       byMonth: Object.keys(p.byMonth).sort().reverse()
         .map(key => ({ key, label: monthLabel(key), ...summary(p.byMonth[key]) })),
       byLevel: LEVEL_KEYS.concat('untagged').filter(key => p.byLevel[key])
-        .map(key => ({ key, label: levelLabel(key), ...summary(p.byLevel[key]) }))
+        .map(key => ({ key, label: levelLabel(key), ...summary(p.byLevel[key]) })),
+      // newest first
+      notes: p.notes.reverse()
     }))
     .sort((a, b) => (b.ppth ?? -99) - (a.ppth ?? -99));
 
   res.json({
-    filters: { month, level },
+    filters: { month, level, kind },
     seasonStart: monthLabel(season),
     months: [...monthsSeen].sort().reverse().map(key => ({ key, label: monthLabel(key) })),
     levels: LEVEL_KEYS.map(key => ({ key, label: LEVELS[key].label })),
-    totalGames: all.length,
+    kinds: Object.keys(KINDS).map(key => ({ key, label: KINDS[key] })),
+    totalGames: everything.length,
     games: shown.map(g => ({
       id: String(g._id),
       label: g.label,
+      kind: kindOf(g),
+      notes: (g.notes || []).length,
       level: g.level || null,
       playedAt: g.playedAt,
       tossupsRead: g.tossupsRead,
@@ -877,6 +940,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <li class="nav-item"><button class="nav-link active" data-tab="stats" type="button">Stats</button></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><button class="nav-link" data-tab="roster" type="button">Roster</button></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-tournaments">Tournaments</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-questions">Question bank</a></li>
     </ul>
 
@@ -886,6 +950,9 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <select class="form-select form-select-sm" id="fMonth"></select></div>
         <div><label class="form-label mb-1" for="fLevel">Level</label>
           <select class="form-select form-select-sm" id="fLevel"></select></div>
+        <div><label class="form-label mb-1" for="fKind">Games</label>
+          <select class="form-select form-select-sm" id="fKind"><option value="all">Practice and tournaments</option>
+            <option value="practice">Practice only</option><option value="tournament">Tournaments only</option></select></div>
         <div class="note mb-1" id="filterNote"></div>
       </div>
       <div id="content"></div>
@@ -914,8 +981,9 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <h2 class="mt-0">Roster</h2>
       <p class="note mb-2" style="margin-top:0">Names here autocomplete when setting up a round, even before
       anyone has played, and the squad you assign is what shows in the stats table. One player per line;
-      grade, squad, and email after commas are optional (<code>Max Chen, 11, JV Blue, max@school.org</code>). Re-pasting the list is
-      safe &mdash; existing names are left alone. Renaming a player updates every game they played in; renaming
+      grade, squad, email, and past rating after commas are optional (<code>Max Chen, 11, JV Blue, max@school.org, 7/10</code>;
+      <code>N/A</code> clears a rating, <code>coach</code> marks a coach). Pasting a name already on the roster changes
+      only what that line gives &mdash; the rest is left alone. Renaming a player updates every game they played in; renaming
       them to a name already on the roster merges the two.</p>
       <div class="row g-2 align-items-start">
         <div class="col-sm-8"><textarea class="form-control form-control-sm" id="rosterText" rows="4"
@@ -962,7 +1030,7 @@ ${NAME_AUTOCOMPLETE}
 var $ = function (id) { return document.getElementById(id); };
 var DATA = null, SELECTED = null, CHARTS = {}, SQUADS = [], SQUAD = '';
 var SEARCH = '', KNOWN_NAMES = [];
-var FILTER = { month: 'season', level: 'all' };
+var FILTER = { month: 'season', level: 'all', kind: 'all' };
 // points per question is the default: it orders identically to raw points when
 // everyone hears the same tossups, and stays fair once players rotate in and out
 var SORT = { key: 'ppth', dir: -1 };
@@ -1078,9 +1146,11 @@ function fillFilters (d) {
 }
 $('fMonth').onchange = function () { FILTER.month = $('fMonth').value; load(); };
 $('fLevel').onchange = function () { FILTER.level = $('fLevel').value; load(); };
+$('fKind').onchange = function () { FILTER.kind = $('fKind').value; load(); };
 
 function load () {
-  fetch('/kshsaa-stats/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level))
+  fetch('/kshsaa-stats/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level) +
+    '&kind=' + encodeURIComponent(FILTER.kind))
     .then(function (r) { return r.json(); })
     .then(function (d) { DATA = d; fillFilters(d); render(d); });
 }
@@ -1150,23 +1220,26 @@ function sortedRoster () {
 }
 
 function rosterSummary () {
+  // coaches are on the list for autocomplete, not counted as players
+  var players = ROSTER.filter(function (r) { return !r.coach; });
+  var coaches = ROSTER.length - players.length;
   var grades = {};
-  ROSTER.forEach(function (r) { if (r.grade) grades[r.grade] = (grades[r.grade] || 0) + 1; });
-  var noGrade = ROSTER.filter(function (r) { return !r.grade; }).length;
-  var onSquad = ROSTER.filter(function (r) { return r.squad; }).length;
+  players.forEach(function (r) { if (r.grade) grades[r.grade] = (grades[r.grade] || 0) + 1; });
+  var noGrade = players.filter(function (r) { return !r.grade; }).length;
+  var onSquad = players.filter(function (r) { return r.squad; }).length;
   var tally = function (label, n) { return '<span class="tally">' + label + ': <strong>' + n + '</strong></span>'; };
   // every squad, empty ones too, so a squad still short of players shows
   var squads = {};
-  ROSTER.forEach(function (r) { if (r.squad) squads[r.squad] = (squads[r.squad] || 0) + 1; });
+  players.forEach(function (r) { if (r.squad) squads[r.squad] = (squads[r.squad] || 0) + 1; });
   var squadNames = SQUADS.concat(Object.keys(squads).filter(function (q) { return SQUADS.indexOf(q) === -1; }));
-  return '<div class="tallies mb-2"><span class="tally tally-total">' + ROSTER.length + ' player' + (ROSTER.length === 1 ? '' : 's') + '</span>' +
+  return '<div class="tallies mb-2"><span class="tally tally-total">' + players.length + ' player' + (players.length === 1 ? '' : 's') + '</span>' +
     Object.keys(grades).sort(function (a, b) { return a - b; }).map(function (g) { return tally(g + 'th grade', grades[g]); }).join('') +
     (noGrade ? tally('No grade', noGrade) : '') +
-    tally('On a squad', onSquad) + '</div>' +
+    tally('On a squad', onSquad) + (coaches ? tally('Coaches', coaches) : '') + '</div>' +
     (squadNames.length
       ? '<div class="tallies mb-2"><span class="tally tally-total">By squad</span>' +
         squadNames.map(function (q) { return tally(esc(q), squads[q] || 0); }).join('') +
-        tally('Unassigned', ROSTER.length - onSquad) + '</div>'
+        tally('Unassigned', players.length - onSquad) + '</div>'
       : '');
 }
 
@@ -1195,9 +1268,11 @@ function renderRoster () {
     h += '<tr data-row="' + r.id + '"><td class="ncell">' + esc(r.name) +
       (r.email ? '<div class="small text-secondary">' + esc(r.email) + '</div>' : '') + '</td>' +
       '<td class="gcell">' + (r.grade ? r.grade + 'th' : '<span class="text-secondary">-</span>') + '</td>' +
-      '<td class="scell">' + (r.squad
-      ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '')
-      : '<span class="text-secondary">unassigned</span>') + '</td>' +
+      '<td class="scell">' + (r.coach
+      ? '<span class="badge text-bg-light border">coach</span>'
+      : r.squad
+        ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '')
+        : '<span class="text-secondary">unassigned</span>') + '</td>' +
       '<td class="rcell">' + (r.rating == null ? '<span class="text-secondary">N/A</span>' : r.rating + '<span class="text-secondary">/10</span>') + '</td>' +
       '<td class="text-secondary">' + (r.hasPlayed ? 'has stats' : 'no games yet') + '</td>' +
       '<td class="text-end acell">' +
@@ -1244,7 +1319,9 @@ function editRosterRow (id) {
       return '<option value="' + esc(s) + '"' + (s === r.squad ? ' selected' : '') + '>' + esc(s) + '</option>';
     }).join('') + '</select>' +
     '<label class="small mt-1 d-flex align-items-center gap-1"><input type="checkbox" class="pedit"' +
-    (r.permanent ? ' checked' : '') + '> permanent on this squad</label>';
+    (r.permanent ? ' checked' : '') + '> permanent on this squad</label>' +
+    '<label class="small d-flex align-items-center gap-1"><input type="checkbox" class="cedit"' +
+    (r.coach ? ' checked' : '') + '> coach, not a player</label>';
   // N/A is for anyone not yet seen play: the team builder goes on their stats alone
   var ratings = [''];
   for (var v = 10; v >= 1; v -= 0.5) ratings.push(v);
@@ -1267,6 +1344,7 @@ function editRosterRow (id) {
         squad: row.querySelector('.sedit').value,
         rating: rcell.querySelector('.redit-rating').value,
         permanent: row.querySelector('.pedit').checked,
+        coach: row.querySelector('.cedit').checked,
         email: ncell.querySelector('.eedit').value
       }).then(function (res) {
         if (!res.ok) alert(res.d.error || 'could not save');
@@ -1368,7 +1446,9 @@ function gamesTable (d) {
     }).join('');
     h += '<tr class="rowlink grow" data-id="' + g.id + '" title="See scorers, rename, or fix this game">' +
       '<td class="text-secondary">' + new Date(g.playedAt).toLocaleDateString() + '</td>' +
-      '<td>' + esc(g.label) + '</td><td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
+      '<td>' + esc(g.label) + (g.kind === 'tournament' ? ' <span class="lvl">Tournament</span>' : '') +
+      (g.notes ? ' <span class="small text-secondary" title="Notes on this game">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
+      '<td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
       '<td class="num">' + g.tossupsRead + '</td>' +
       '<td class="text-end text-secondary small text-nowrap">open &rsaquo;</td></tr>';
   });
@@ -1589,6 +1669,16 @@ function breakdownTable (title, rows, note) {
   return h + '</tbody></table></div><p class="note">' + note + '</p>';
 }
 
+// notes about a player from games in the filters, newest first
+function notesList (notes) {
+  if (!notes || !notes.length) return '';
+  return '<h3 class="mt-3">Notes</h3><ul class="list-unstyled mb-0 small">' + notes.map(function (n) {
+    return '<li class="mb-1"><span class="text-secondary">' + new Date(n.playedAt).toLocaleDateString() + ' &middot; ' +
+      esc(n.game) + (n.questionNumber ? ' &middot; Q' + n.questionNumber + (n.category ? ' ' + esc(n.category) : '') : '') +
+      '</span><br>' + esc(n.text) + '</li>';
+  }).join('') + '</ul>';
+}
+
 function selectPlayer (name) {
   SELECTED = name;
   var p = playerByName(name);
@@ -1621,7 +1711,8 @@ function selectPlayer (name) {
     breakdownTable('By month', p.byMonth, 'Level: ' + esc(levelNote) + '.') +
     '</div></div>' +
     '<div class="row g-3 mt-1"><div class="col-md-7"><canvas id="chartCat" height="150"></canvas></div>' +
-    '<div class="col-md-5"><canvas id="chartGames" height="150"></canvas></div></div></div></div>';
+    '<div class="col-md-5"><canvas id="chartGames" height="150"></canvas></div></div>' +
+    notesList(p.notes) + '</div></div>';
 
   $('soloShow').onclick = function () { document.body.classList.add('solo'); };
   $('soloDone').onclick = function () { document.body.classList.remove('solo'); };
@@ -1701,6 +1792,14 @@ function toEditModel (g) {
       wordIndex: b.wordIndex == null ? null : b.wordIndex
     };
   });
+  var keyOfName = function (name) {
+    var hit = null;
+    teams.forEach(function (t) { t.players.forEach(function (p) { if (p.name === name) hit = p.key; }); });
+    return hit;
+  };
+  var notes = (g.notes || []).map(function (n) {
+    return { key: newKey(), q: n.questionNumber == null ? null : n.questionNumber, playerKey: n.player ? keyOfName(n.player) : null, text: n.text };
+  });
   return {
     id: String(g._id),
     label: g.label,
@@ -1709,7 +1808,8 @@ function toEditModel (g) {
     tossupsRead: g.tossupsRead,
     categories: g.categories || [],
     teams: teams,
-    buzzes: buzzes
+    buzzes: buzzes,
+    notes: notes
   };
 }
 
@@ -1725,6 +1825,8 @@ function playerEntry (key) {
 function openGame (id) {
   fetch('/kshsaa-stats/game/' + id).then(function (r) { return r.json(); }).then(function (g) {
     if (g.error) { alert(g.error); return; }
+    // typed in from a scoresheet, so it is fixed the same way
+    if (g.kind === 'tournament') { location.href = '/kshsaa-tournaments#game=' + id; return; }
     EDIT = toEditModel(g);
     $('gmErr').textContent = '';
     renderEditor();
@@ -1802,6 +1904,22 @@ function renderEditor () {
     '<p class="note">Interrupting only matters on a wrong answer: &minus;5 if the player interrupted, 0 if not. ' +
     'A correct answer is +10 either way. Leave Q# blank if you do not know which question it was.</p>';
 
+  h += '<div class="subhead">Notes</div>';
+  if (EDIT.notes.length) {
+    h += '<div class="table-responsive"><table class="table table-sm align-middle mb-0"><thead><tr>' +
+      '<th style="width:5.5rem">Q#</th><th style="width:14rem">About</th><th>Note</th><th></th></tr></thead><tbody>';
+    EDIT.notes.forEach(function (n, ni) {
+      h += '<tr><td><input type="number" min="1" max="99" class="form-control form-control-sm nq" data-n="' + ni +
+        '" value="' + (n.q == null ? '' : n.q) + '" placeholder="-"></td>' +
+        '<td><select class="form-select form-select-sm nplayer" data-n="' + ni + '">' + noteWhoOptions(n.playerKey) + '</select></td>' +
+        '<td><input class="form-control form-control-sm ntext" data-n="' + ni + '" maxlength="500" value="' + esc(n.text) + '"></td>' +
+        '<td class="text-end"><button type="button" class="btn btn-sm btn-link text-danger p-0 ndel" data-n="' + ni + '">remove</button></td></tr>';
+    });
+    h += '</tbody></table></div>';
+  }
+  h += '<button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="gmAddNote">+ Add a note</button>' +
+    '<p class="note">Notes about a player show on their card, including when you show it to them.</p>';
+
   $('gmBody').innerHTML = h;
   $('gmTitle').textContent = EDIT.label || 'Game';
 
@@ -1820,6 +1938,10 @@ function renderEditor () {
     });
   });
   refreshDerived();
+}
+
+function noteWhoOptions (selectedKey) {
+  return '<option value=""' + (selectedKey == null ? ' selected' : '') + '>no one in particular</option>' + playerOptions(selectedKey);
 }
 
 function otherNames (self) {
@@ -1851,6 +1973,9 @@ function refreshDerived () {
   Array.prototype.forEach.call($('gmBody').querySelectorAll('.bplayer'), function (sel) {
     sel.innerHTML = playerOptions(EDIT.buzzes[Number(sel.getAttribute('data-b'))].playerKey);
   });
+  Array.prototype.forEach.call($('gmBody').querySelectorAll('.nplayer'), function (sel) {
+    sel.innerHTML = noteWhoOptions(EDIT.notes[Number(sel.getAttribute('data-n'))].playerKey);
+  });
   var h = '<div class="table-responsive"><table class="table table-sm mb-0"><thead><tr><th>Team</th><th>Player</th>' +
     '<th class="num">Correct</th><th class="num">Wrong</th><th class="num">Points</th></tr></thead><tbody>';
   EDIT.teams.forEach(function (t) {
@@ -1874,13 +1999,20 @@ $('gmBody').addEventListener('input', function (e) {
   var el = e.target;
   if (el.id === 'gmLabel') { EDIT.label = el.value; return; }
   if (el.classList.contains('tname')) { EDIT.teams[Number(el.getAttribute('data-t'))].name = el.value.trim(); refreshDerived(); return; }
-  if (el.classList.contains('pname')) { setPlayerName(el); }
+  if (el.classList.contains('pname')) { setPlayerName(el); return; }
+  if (el.classList.contains('ntext')) { EDIT.notes[Number(el.getAttribute('data-n'))].text = el.value; }
 });
 
 $('gmBody').addEventListener('change', function (e) {
   var el = e.target;
   var b = el.hasAttribute('data-b') ? EDIT.buzzes[Number(el.getAttribute('data-b'))] : null;
   if (el.id === 'gmLevel') { EDIT.level = el.value; return; }
+  if (el.hasAttribute('data-n')) {
+    var n = EDIT.notes[Number(el.getAttribute('data-n'))];
+    if (el.classList.contains('nq')) n.q = el.value === '' ? null : Number(el.value);
+    if (el.classList.contains('nplayer')) n.playerKey = el.value === '' ? null : Number(el.value);
+    return;
+  }
   if (!b) return;
   if (el.classList.contains('bq')) {
     b.q = el.value === '' ? null : Number(el.value);
@@ -1914,12 +2046,21 @@ $('gmBody').addEventListener('click', function (e) {
   } else if (el.classList.contains('bdel')) {
     EDIT.buzzes.splice(Number(el.getAttribute('data-b')), 1);
     renderEditor();
+  } else if (el.id === 'gmAddNote') {
+    EDIT.notes.push({ key: newKey(), q: null, playerKey: null, text: '' });
+    renderEditor();
+    var noteRows = $('gmBody').querySelectorAll('.ntext');
+    noteRows[noteRows.length - 1].focus();
+  } else if (el.classList.contains('ndel')) {
+    EDIT.notes.splice(Number(el.getAttribute('data-n')), 1);
+    renderEditor();
   } else if (el.classList.contains('pdel')) {
     var team = EDIT.teams[Number(el.getAttribute('data-t'))];
     var p = team.players[Number(el.getAttribute('data-p'))];
     var theirs = EDIT.buzzes.filter(function (b) { return b.playerKey === p.key; }).length;
     if (theirs && !confirm('Take ' + p.name + ' out of this game along with their ' + theirs + ' buzz(es)?')) return;
     EDIT.buzzes = EDIT.buzzes.filter(function (b) { return b.playerKey !== p.key; });
+    EDIT.notes.forEach(function (n) { if (n.playerKey === p.key) n.playerKey = null; });
     team.players = team.players.filter(function (x) { return x !== p; });
     renderEditor();
   } else if (el.classList.contains('tdel')) {
@@ -1929,6 +2070,7 @@ $('gmBody').addEventListener('click', function (e) {
     if ((t.players.length || lost) && !confirm('Remove ' + t.name + ', its ' + t.players.length +
       ' player(s) and ' + lost + ' buzz(es) from this game?')) return;
     EDIT.buzzes = EDIT.buzzes.filter(function (b) { return keys.indexOf(b.playerKey) === -1; });
+    EDIT.notes.forEach(function (n) { if (keys.indexOf(n.playerKey) !== -1) n.playerKey = null; });
     EDIT.teams = EDIT.teams.filter(function (x) { return x !== t; });
     renderEditor();
   }
@@ -1949,6 +2091,10 @@ $('gmSave').onclick = function () {
         value: b.value,
         wordIndex: b.wordIndex
       };
+    }),
+    notes: EDIT.notes.map(function (n) {
+      var who = n.playerKey == null ? null : playerEntry(n.playerKey);
+      return { questionNumber: n.q, player: who ? who.player.name : null, text: n.text };
     })
   };
   $('gmSave').disabled = true;

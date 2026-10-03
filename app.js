@@ -11,6 +11,7 @@ import kshsaaPlayRouter from './routes/kshsaa-play.js';
 import kshsaaStatsRouter from './routes/kshsaa-stats.js';
 import kshsaaInsightsRouter from './routes/kshsaa-insights.js';
 import kshsaaQuestionsRouter from './routes/kshsaa-questions.js';
+import kshsaaTournamentsRouter from './routes/kshsaa-tournaments.js';
 import kshsaaSpanishRouter from './routes/kshsaa-spanish.js';
 
 import cookieSession from 'cookie-session';
@@ -57,6 +58,7 @@ app.use(ipFilterMiddleware);
 app.use('/kshsaa-stats', kshsaaStatsRouter);
 app.use('/kshsaa-insights', kshsaaInsightsRouter);
 app.use('/kshsaa-questions', kshsaaQuestionsRouter);
+app.use('/kshsaa-tournaments', kshsaaTournamentsRouter);
 app.use('/kshsaa-spanish', kshsaaSpanishRouter);
 app.use(indexRouter);
 

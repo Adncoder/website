@@ -27,11 +27,12 @@ const roster = qbreader.collection('kshsaa_roster');
 router.get('/data', requireAuth, async (req, res) => {
   try {
     const filters = readFilters(req.query);
-    const [all, rosterList, squads] = await Promise.all([
+    const [everything, rosterList, squads] = await Promise.all([
       games.find({}).sort({ playedAt: 1 }).toArray(),
       roster.find({}).toArray(),
       getSquads()
     ]);
+    const all = everything.filter(filters.inKind);
 
     // what each recorded question was, for the difficulty table
     const ids = new Set();
@@ -49,6 +50,9 @@ router.get('/data', requireAuth, async (req, res) => {
     const insights = computeInsights(all, filters, questionInfo);
     const byName = {};
     for (const r of rosterList) byName[r.name.trim().toLowerCase()] = r;
+    // coaches who joined a practice game still count as being in the room for
+    // the numbers above, but are never offered as players
+    insights.players = insights.players.filter(p => !byName[p.name.trim().toLowerCase()]?.coach);
     for (const p of insights.players) {
       const r = byName[p.name.trim().toLowerCase()];
       p.squad = r?.squad || null;
@@ -65,7 +69,7 @@ router.get('/data', requireAuth, async (req, res) => {
       squads,
       // everyone on the roster, so the team builder can place rated players
       // who have no games yet and keep permanent players on their squads
-      roster: rosterList.map(r => ({
+      roster: rosterList.filter(r => !r.coach).map(r => ({
         name: r.name,
         grade: r.grade ?? null,
         squad: r.squad || null,
@@ -141,6 +145,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Stats</a></li>
       <li class="nav-item"><a class="nav-link active" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats#roster">Roster</a></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-tournaments">Tournaments</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-questions">Question bank</a></li>
     </ul>
 
@@ -149,6 +154,9 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
         <select class="form-select form-select-sm" id="fMonth"></select></div>
       <div><label class="form-label mb-1" for="fLevel">Level</label>
         <select class="form-select form-select-sm" id="fLevel"></select></div>
+      <div><label class="form-label mb-1" for="fKind">Games</label>
+        <select class="form-select form-select-sm" id="fKind"><option value="all">Practice and tournaments</option>
+          <option value="practice">Practice only</option><option value="tournament">Tournaments only</option></select></div>
       <div class="note mb-1" id="filterNote"></div>
     </div>
 
@@ -215,7 +223,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 <script>
 var $ = function (id) { return document.getElementById(id); };
 var DATA = null;
-var FILTER = { month: 'season', level: 'all' };
+var FILTER = { month: 'season', level: 'all', kind: 'all' };
 var AVAILABLE = {};
 var TEAMS = [];
 var HABITS = {
@@ -261,7 +269,8 @@ $('loginBtn').onclick = function () {
 $('pw').onkeydown = function (e) { if (e.key === 'Enter') $('loginBtn').click(); };
 
 function load () {
-  fetch('/kshsaa-insights/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level))
+  fetch('/kshsaa-insights/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level) +
+    '&kind=' + encodeURIComponent(FILTER.kind))
     .then(function (r) { return r.json(); })
     .then(function (d) {
       if (d.error) { $('filterNote').textContent = d.error; return; }
@@ -289,6 +298,7 @@ function fillFilters (d) {
 }
 $('fMonth').onchange = function () { FILTER.month = $('fMonth').value; load(); };
 $('fLevel').onchange = function () { FILTER.level = $('fLevel').value; load(); };
+$('fKind').onchange = function () { FILTER.kind = $('fKind').value; load(); };
 
 // ---------- team building ----------
 // A team's strength is how many of a round's 16 questions at least one of its

@@ -147,6 +147,7 @@ document describes the upstream codebase and still applies.
 | `routes/kshsaa-stats.js` | Password-gated practice stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
 | `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
+| `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording |
 | `server/kshsaa/giveaway.js` | Turns a middle-school tossup into a Beginner question (its giveaway line) |
@@ -190,8 +191,9 @@ practice page is a static file and keeps its own copy, and the QBReader navbar's
 KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has three
 sections; the other pages are tabs inside one, and pass that section's path to
 `kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
-(`readTabs()` from `nav.js`), and Insights and the question bank are tabs under
-Practice stats, whose tab lists are written out in each of those pages.
+(`readTabs()` from `nav.js`), and Insights, Tournaments, and the question bank
+are tabs under Practice stats, whose tab lists are written out in each of those
+pages.
 
 The stats page has two sortable tables, the players and the roster. Attach each
 one's header handlers through a selector scoped to that table (`#content
@@ -237,11 +239,17 @@ touching the reader:
   the last question. It must return `{ isError, status }` — MODAQ shows
   `status` only on errors, and a fixed "Export succeeded." otherwise. Saves carry
   the round's `roundId`, and the server refuses a second save with 409.
+- MODAQ listens for its keyboard shortcuts across the whole document and does
+  not skip text boxes outside its own root: typing "n" or "p" anywhere moves
+  the question. Anything the moderator types into (the note panel) has to stop
+  `keydown`, `keypress`, and `keyup` from propagating.
+- Notes written in the reader go out with the save (`notes`), or, once the game
+  is saved, to `POST /kshsaa-stats/notes` with the `roundId`.
 
 ### Sign-in
 
 Two passwords, both server environment variables. `STATS_PASSWORD` opens
-everything: stats, roster, insights, the question bank. `READER_PASSWORD`, if
+everything: stats, roster, insights, tournaments, the question bank. `READER_PASSWORD`, if
 set, is what moderators type into the reader; it only loads names and lineups
 and saves games (`requireReader`), so reading rounds never shows players the
 stats. Use `requireAuth` for anything else. A session stores an HMAC
@@ -293,6 +301,13 @@ Permanent players are only ever placed on their own squad. The first squad
 takes the strongest individuals and the rest maximize category coverage,
 unless that checkbox is cleared.
 
+The roster paste box takes, after a name, any of grade, squad, email, a past
+rating written as `7/10`, `N/A` (clears it), and `coach`. Pasting a name already
+on the roster changes only what that line gives. A `coach` entry is on the
+roster for autocomplete and may play in practice games, but is left out of
+player counts, and the Insights route drops coaches from its players and
+roster, so the team builder and player focus never see them.
+
 Roster entries can also carry an `email`, set on the Roster tab (edit row, or
 a fourth comma part when pasting). Player focus then offers an "Email" button
 that opens the viewer's own mail app through a `mailto:` link with the drafted
@@ -300,6 +315,30 @@ message; the site never sends mail itself. The export leaves emails out.
 "Print focus sheet" prints only `#printSheet` (everyone in the current filters,
 by squad, with a notes column) by toggling `body.printing-focus` around
 `window.print()`.
+
+Games carry `notes: [{ questionNumber, player, text }]` (player and question
+optional). They are checked by `cleanNotes()` in `server/kshsaa/game-stats.js`,
+edited in the game editor, carried through player renames, and shown on the
+player's card, including "Show to player".
+
+### Tournaments
+
+KSHSAA allows no electronic devices during a competition round, so tournament
+games are typed in afterwards from a paper scoresheet. The printed sheet and
+the entry grid share one layout (a row per question, our players by number),
+and the grid takes a key per question. Tournament games live in `kshsaa_games`
+with `kind: 'tournament'`, `tournament`, `round`, `opponent`, and `lineup`
+(`[{ name, from, to }]`, so a sub's questions heard are right). The opposing
+team is marked `opponent: true` and has no players, and **its buzzes have
+`player: null`**. Code that walks buzzes for player stats must skip those. The
+insights scale fit uses practice games only, since half of a tournament room is
+another school. The `kind` filter (`readFilters`, `inKind`) is on the stats and
+Insights pages. Tournament games are edited on the Tournaments tab, never in
+the stats page's game editor, which refuses them.
+
+In the entry grid, the grid redraws as the lineup is typed (`input`), not on
+`change`. A `change` fires when a name box loses focus, which is in the middle
+of the click on a grid row, and redrawing there drops the click.
 
 A `per-tossup-data` document must exist for a tossup or `recordTossupData`
 silently drops the buzz. `publishQuestion()` writes one; if stats look empty,

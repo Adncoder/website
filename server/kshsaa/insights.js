@@ -10,7 +10,7 @@
 // game does not make anyone a specialist.
 
 import { CATEGORIES, CATEGORY_BY_QUESTION } from '../../routes/kshsaa-round.js';
-import { celerityOf, monthKeyOf, playersInGame } from './game-stats.js';
+import { celerityOf, kindOf, monthKeyOf, playersInGame } from './game-stats.js';
 
 /** Questions per category in a 16-question round. */
 export const WEIGHTS = Object.fromEntries(CATEGORIES.map(c => [c, CATEGORY_BY_QUESTION.filter(x => x === c).length]));
@@ -54,13 +54,15 @@ const median = list => {
  * Picks the number that turns rates into rough chances of knowing an answer.
  * Ten people compete for every question, so a player who knows something still
  * only answers it some of the time; the scale is fitted so that "someone in the
- * room knew it" matches how often questions actually got answered.
+ * room knew it" matches how often questions actually got answered. Only
+ * practice games say that: at a tournament half the room is another school.
  */
 function fitScale (games, rateOf) {
+  const practice = games.filter(g => kindOf(g) === 'practice');
   let best = { scale: 1, loss: Infinity };
   for (let scale = 1; scale <= 20; scale += 0.5) {
     let loss = 0;
-    for (const g of games) {
+    for (const g of practice) {
       const players = [...playersInGame(g).keys()];
       const cats = (g.categories && g.categories.length ? g.categories : CATEGORY_BY_QUESTION).slice(0, g.tossupsRead || 16);
       cats.forEach((c, i) => {
@@ -102,6 +104,7 @@ export function computeInsights (allGames, filters, questionInfo) {
       }
     }
     for (const b of g.buzzes || []) {
+      if (!b.player) continue; // the other school, in a tournament game
       const p = playerFor(b.player);
       addBuzz(p, b);
       addBuzz(p.byCategory[b.category] ||= blank(), b);
@@ -123,7 +126,7 @@ export function computeInsights (allGames, filters, questionInfo) {
       (players[name].byMonth[month] ||= blank()).heard += heard;
     }
     for (const b of g.buzzes || []) {
-      if (players[b.player]) addBuzz(players[b.player].byMonth[month] ||= blank(), b);
+      if (b.player && players[b.player]) addBuzz(players[b.player].byMonth[month] ||= blank(), b);
     }
   }
 
