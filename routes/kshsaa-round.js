@@ -96,7 +96,10 @@ export function sourceOf (setName) {
 //
 // Math and World Language are also sorted into tiers (math-tier.js,
 // language-tier.js), and each level reads only its own: `math` and `language`
-// below. The reader's math menu can override `math`.
+// below. The reader's math menu can override `math`. Year in Review questions
+// written for the question bank carry the level they were written for
+// (`kshsaa_level`), and each level reads its own plus the ones written for
+// none, which is every imported one.
 export const LEVELS = {
   varsity: {
     label: 'Varsity',
@@ -118,10 +121,17 @@ export const LEVELS = {
   }
 };
 
+/**
+ * The level a Year in Review question was written for, or 'any'.
+ * @param {{kshsaa_level?: string}} d
+ * @returns {'beginner'|'jv'|'varsity'|'any'}
+ */
+export const yearInReviewLevelOf = d => (Object.hasOwn(LEVELS, d.kshsaa_level ?? '') ? d.kshsaa_level : 'any');
+
 // Where a question sits by difficulty, for the question bank's counts and
-// review queue: math and World Language by tier, everything else by the level
-// whose own pool it comes from. Year in Review, and question bank questions
-// outside math and World Language, are read at every level.
+// review queue: math and World Language by tier, Year in Review by the level it
+// was written for, everything else by the level whose own pool it comes from.
+// Question bank questions outside those three are read at every level.
 const LEVEL_OF_TIER = { basic: 'beginner', intermediate: 'jv', advanced: 'varsity' };
 const LEVEL_OF_SOURCE = {
   beginner: 'beginner', jv: 'jv', varsity: 'varsity', kshsaa: 'varsity', converted: 'varsity', generated: 'any', current: 'any'
@@ -129,13 +139,13 @@ const LEVEL_OF_SOURCE = {
 
 /**
  * @param {string} label - the round slot (category label)
- * @param {{question?: string, timed_seconds?: number, set?: {name?: string}}} d
+ * @param {{question?: string, timed_seconds?: number, set?: {name?: string}, kshsaa_level?: string}} d
  * @returns {'beginner'|'jv'|'varsity'|'any'}
  */
 export function difficultyOf (label, d) {
   if (label === 'Mathematics') return LEVEL_OF_TIER[mathTierOf(d.question, d.timed_seconds)];
   if (label === 'World Language') return LEVEL_OF_TIER[languageTierOf(d.question)];
-  if (label === 'Year in Review') return 'any';
+  if (label === 'Year in Review') return yearInReviewLevelOf(d);
   return LEVEL_OF_SOURCE[sourceOf(d.set?.name)] || 'varsity';
 }
 
@@ -157,7 +167,9 @@ const yearInReviewFrom = () => new Date().getFullYear() - 1;
  * "2024-25 State") gives its spring year, when the packets were played;
  * otherwise the latest year in the set name. Imported sets store a placeholder
  * year when their name has none, so the stored year is trusted only for
- * question-bank questions, which record the year they were written.
+ * question-bank questions, which record the year they were written (Year in
+ * Review ones written by tools/seed-year-in-review.js, the year the event
+ * happened, so a January 2025 story leaves rounds in January 2027).
  * @param {{set?: {name?: string, year?: number}, sjaGenerated?: boolean}} doc
  * @returns {?number}
  */
@@ -270,17 +282,18 @@ const projectionFor = label => (label === 'Mathematics'
   ? { set: 1, question: 1, timed_seconds: 1 }
   : label === 'World Language'
     ? { set: 1, question: 1 }
-    : label === 'Year in Review' ? { set: 1, sjaGenerated: 1 } : { 'set.name': 1 });
+    : label === 'Year in Review' ? { set: 1, sjaGenerated: 1, kshsaa_level: 1 } : { 'set.name': 1 });
 
 /**
  * The slots sorted into tiers, with the tier of a candidate and the tiers a
- * round at this level reads.
+ * round at this level reads (`name` says them in the round's notes).
  * @param {keyof LEVELS} level
  * @param {string[]} mathTiers
  */
 const tieredSlots = (level, mathTiers) => ({
   Mathematics: { tierOf: d => mathTierOf(d.question, d.timed_seconds), wanted: mathTiers, what: 'math' },
-  'World Language': { tierOf: d => languageTierOf(d.question), wanted: LEVELS[level].language, what: 'World Language' }
+  'World Language': { tierOf: d => languageTierOf(d.question), wanted: LEVELS[level].language, what: 'World Language' },
+  'Year in Review': { tierOf: yearInReviewLevelOf, wanted: [level, 'any'], name: LEVELS[level].label, what: 'Year in Review' }
 });
 
 /**
@@ -331,7 +344,7 @@ async function buildRound ({ level, math, drill }) {
       if (result.chosen.length < count) {
         // a thin tier should not leave the round a question short
         const extra = pick(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed);
-        notes.push(label + ': only ' + result.chosen.length + ' ' + tiers.wanted.join('/') +
+        notes.push(label + ': only ' + result.chosen.length + ' ' + (tiers.name || tiers.wanted.join('/')) +
           ' question(s) available, so ' + extra.chosen.length + ' came from another tier.');
         result = { chosen: result.chosen.concat(extra.chosen), repeats: result.repeats + extra.repeats };
       }
@@ -343,7 +356,7 @@ async function buildRound ({ level, math, drill }) {
       plan.push({ id: d._id, label });
     }
     if (result.repeats) {
-      const what = tiers ? tiers.wanted.join('/') + ' ' + tiers.what : label;
+      const what = tiers ? (tiers.name || tiers.wanted.join('/')) + ' ' + tiers.what : label;
       notes.push(label + ': ' + result.repeats + ' question(s) repeated - every other ' + what +
         ' question at this level has already been read.');
     }
@@ -362,7 +375,11 @@ async function buildRound ({ level, math, drill }) {
   }
 
   const full = await tossups.find({ _id: { $in: plan.map(p => p.id) } }).toArray();
-  const tierOf = (label, d) => (tiered[label] ? { tier: tiered[label].tierOf(d) } : {});
+  // Year in Review written for no level in particular has nothing to show
+  const tierOf = (label, d) => {
+    const tier = tiered[label]?.tierOf(d);
+    return tier && tier !== 'any' ? { tier } : {};
+  };
   const byId = new Map(full.map(d => [String(d._id), d]));
   const round = plan.map(({ id, label }) => {
     const d = byId.get(String(id));
