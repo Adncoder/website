@@ -149,8 +149,9 @@ document describes the upstream codebase and still applies.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
-| `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording |
-| `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner or JV question (its giveaway line) |
+| `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit |
+| `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
+| `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line) or a JV one (the giveaway and the clue before it) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
@@ -169,11 +170,23 @@ for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
 (`import-current-events.js`, recent Year in Review only), anything else real
 KSHSAA. `LEVELS` in `kshsaa-round.js` lists the pools each level draws from in
 order of preference, ordered by how hard the clues are. Beginner reads the
-giveaway lines of middle school quizbowl, JV those of easy high school
-quizbowl, and Varsity converted quizbowl and the KSHSAA archive, which is past
-state and regional rounds and too hard for JV. Later pools fill slots the
-earlier ones cannot (the giveaway and converted sets have no World Language and
-next to no math, so those come from the archive at every level). Until
+giveaway lines of middle school quizbowl, JV the last two sentences of easy high
+school quizbowl (the giveaway and the clue before it, so JV stays pyramidal;
+`lastTwoOf` in `giveaway.js`), and Varsity converted quizbowl and the KSHSAA
+archive, which is past state and regional rounds and too hard for JV. Later
+pools fill slots the earlier ones cannot (the giveaway and converted sets have
+no World Language and next to no math, so those come from the archive at every
+level). Approved question bank questions sit alongside the archive at every
+level; there is no switch for them.
+
+Math and World Language are sorted into tiers at round-building time, and each
+level reads its own (`math` and `language` in `LEVELS`; the reader's math menu
+can override `math`). `math-tier.js` goes by wording and time limit: anything
+given 45 seconds or more takes several steps and is never basic.
+`language-tier.js` goes by the Spanish sentence: up to 5 words basic, 6 to 8
+intermediate, 9 or more advanced, with stacked object pronouns and the
+compound or subjunctive forms of haber pushing a sentence up. A level short of
+its tiers takes from the others and says so in the round's notes. Until
 `import-jv.js` has been run, JV rounds fall back to the archive and say so in
 the round's notes; Beginner does the same. `import-kshsaa.js` wipes every
 `kshsaaImport` set except the `QB Beginner`, `QB JV`, and `QB Current Events`

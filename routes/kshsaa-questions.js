@@ -23,8 +23,9 @@ import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 const router = Router();
 const pending = qbreader.collection('kshsaa_pending_questions');
 
-// Anything under this prefix is opt-in on the round pages, the same way the
-// converted quizbowl sets are. Keep it in sync with kshsaa-round.js.
+// Approved questions live under this prefix, and the round pages read them
+// alongside the KSHSAA archive at every level. Keep it in sync with
+// kshsaa-round.js.
 const GENERATED_SET_PREFIX = 'SJA Generated';
 
 // KSHSAA subject -> the site's own [category, subcategory, alternate_subcategory].
@@ -333,8 +334,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
     <h2>Review queue <span class="badge text-bg-secondary" id="pendingCount">0</span></h2>
     <p class="note">Approving writes the question into the live collection immediately, along with
-    its stats document. Generated questions land in a <code>SJA Generated</code> set, so the round
-    pages leave them out unless you tick the box for them.</p>
+    its stats document. Approved questions go straight into rounds at every level; math and World
+    Language ones are matched to each level by difficulty.</p>
     <div class="mb-2">
       <button class="btn btn-sm btn-outline-success" id="approveAll">Approve everything below</button>
       <span class="ms-2 small" id="bulkMsg"></span>

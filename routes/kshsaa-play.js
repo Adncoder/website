@@ -124,12 +124,7 @@ ${kshsaaNav('/kshsaa-play', 1100)}
       <div id="lineupTeams"></div>
     </div>
 
-    ${levelControls()}
-
-    <div class="form-check mb-3">
-      <input class="form-check-input" type="checkbox" id="gen">
-      <label class="form-check-label small" for="gen">Include question bank questions</label>
-    </div>
+    <div class="mb-3">${levelControls()}</div>
 
     <div class="row g-4">
       <div class="col-md-6">
@@ -395,7 +390,6 @@ function currentSetup () {
     label: $('label').value.trim(),
     level: document.querySelector('input[name="level"]:checked').value,
     math: $('mathTier').value,
-    generated: $('gen').checked,
     teams: [side('p1', 't1'), side('p2', 't2')]
   };
 }
@@ -411,7 +405,6 @@ function restoreNextRound () {
   const radio = document.querySelector('input[name="level"][value="' + setup.level + '"]');
   if (radio) radio.checked = true;
   if (setup.math) $('mathTier').value = setup.math;
-  $('gen').checked = Boolean(setup.generated);
   fillSide('p1', 't1', setup.teams[0].name, setup.teams[0].players);
   fillSide('p2', 't2', setup.teams[1].name, setup.teams[1].players);
 }
@@ -953,9 +946,9 @@ $('go').onclick = async () => {
   $('go').disabled = true;
   $('status').textContent = 'building round...';
   try {
+    // kept for "Next round with these teams"
     const setup = currentSetup();
-    const res = await fetch('/kshsaa-round/generate?' + levelQuery() +
-      '&generated=' + (setup.generated ? '1' : '0'));
+    const res = await fetch('/kshsaa-round/generate?' + levelQuery());
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 

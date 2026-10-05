@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { basename } from 'path';
 import { MongoClient, ObjectId } from 'mongodb';
-import { giveawayOf } from './giveaway.js';
+import { giveawayOf, lastTwoOf } from './giveaway.js';
 
 // overridable only so the fetching can be exercised against a local stand-in
 const API = process.env.QBREADER_API || 'https://www.qbreader.org/api/query';
@@ -78,16 +78,18 @@ async function fetchCategory (params, category, minYear, maxYear) {
 /**
  * @param {object[]} raw - qbreader tossups
  * @param {function(object): ?object} slotOf
+ * @param {number} sentences - 1 for the giveaway alone, 2 for the clue before it too
  * @returns {{questions: object[], skipped: object}}
  */
-function convert (raw, slotOf) {
+function convert (raw, slotOf, sentences) {
+  const shorten = sentences === 2 ? lastTwoOf : giveawayOf;
   const questions = [];
   const skipped = { category: 0, cannotStandAlone: 0, duplicate: 0 };
   const seen = new Set();
   for (const t of raw) {
     const slot = slotOf(t);
     if (!slot) { skipped.category++; continue; }
-    const question = giveawayOf(t.question_sanitized || t.question, slot.label === 'Mathematics');
+    const question = shorten(t.question_sanitized || t.question, slot.label === 'Mathematics');
     if (!question) { skipped.cannotStandAlone++; continue; }
     const key = question.toLowerCase();
     if (seen.has(key)) { skipped.duplicate++; continue; }
@@ -188,6 +190,7 @@ async function save (questions, { what, setPrefix, difficulty }) {
  * @param {function(object): ?{label: string, category: string, subcategory: string, alternate_subcategory: ?string}} o.slotOf
  *   where a qbreader tossup goes in a round, or null to skip it
  * @param {string} o.preview - file --dry-run writes
+ * @param {number} [o.sentences] - 2 to keep the clue before the giveaway too
  */
 export async function runImport (o) {
   const args = process.argv.slice(2);
@@ -220,11 +223,11 @@ export async function runImport (o) {
     console.log(`Saved the raw tossups to ${saveRaw}`);
   }
 
-  const { questions, skipped } = convert(raw, o.slotOf);
+  const { questions, skipped } = convert(raw, o.slotOf, o.sentences || 1);
   const byLabel = {};
   for (const q of questions) { byLabel[q.label] = (byLabel[q.label] || 0) + 1; }
   console.log(`Kept ${questions.length} of ${raw.length}:`, byLabel);
-  console.log(`Skipped ${skipped.cannotStandAlone} whose last line needs the earlier clues, ` +
+  console.log(`Skipped ${skipped.cannotStandAlone} whose last ${o.sentences === 2 ? 'two sentences need' : 'line needs'} the earlier clues, ` +
     `${skipped.category} in categories a round has no slot for, ${skipped.duplicate} duplicates.`);
 
   if (args.includes('--dry-run')) {

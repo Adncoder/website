@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
 import mathTierOf, { MATH_TIERS } from '../server/kshsaa/math-tier.js';
+import languageTierOf from '../server/kshsaa/language-tier.js';
 import { KSHSAA_HEAD, kshsaaNav, readTabs } from '../server/kshsaa/nav.js';
 
 const router = Router();
@@ -88,11 +89,31 @@ export function sourceOf (setName) {
 // converted sets have no World Language and next to no math, so those slots
 // come from the KSHSAA archive at every level. The current-events import
 // (import-current-events.js) holds nothing but recent Year in Review
-// questions, so every level reads it first.
+// questions, so every level reads it first. Approved question bank questions
+// (mostly computed math) sit alongside the archive at every level.
+//
+// Math and World Language are also sorted into tiers (math-tier.js,
+// language-tier.js), and each level reads only its own: `math` and `language`
+// below. The reader's math menu can override `math`.
 export const LEVELS = {
-  varsity: { label: 'Varsity', pools: [['converted', 'current'], ['kshsaa']], math: ['basic', 'intermediate', 'advanced'] },
-  jv: { label: 'JV', pools: [['jv', 'current'], ['kshsaa'], ['converted']], math: ['basic', 'intermediate'] },
-  beginner: { label: 'Beginner', pools: [['beginner', 'current'], ['jv'], ['kshsaa'], ['converted']], math: ['basic'] }
+  varsity: {
+    label: 'Varsity',
+    pools: [['converted', 'current'], ['kshsaa', 'generated']],
+    math: ['basic', 'intermediate', 'advanced'],
+    language: ['intermediate', 'advanced']
+  },
+  jv: {
+    label: 'JV',
+    pools: [['jv', 'current'], ['kshsaa', 'generated'], ['converted']],
+    math: ['basic', 'intermediate'],
+    language: ['basic', 'intermediate']
+  },
+  beginner: {
+    label: 'Beginner',
+    pools: [['beginner', 'current'], ['jv'], ['kshsaa', 'generated'], ['converted']],
+    math: ['basic'],
+    language: ['basic']
+  }
 };
 
 // Current events go stale: Year in Review uses only questions written this year
@@ -187,14 +208,26 @@ function oneAtATime (task) {
 
 // what each slot's candidates need for picking, beyond their id
 const projectionFor = label => (label === 'Mathematics'
-  ? { set: 1, question: 1 }
-  : label === 'Year in Review' ? { set: 1, sjaGenerated: 1 } : { 'set.name': 1 });
+  ? { set: 1, question: 1, timed_seconds: 1 }
+  : label === 'World Language'
+    ? { set: 1, question: 1 }
+    : label === 'Year in Review' ? { set: 1, sjaGenerated: 1 } : { 'set.name': 1 });
+
+/**
+ * The slots sorted into tiers, with the tier of a candidate and the tiers a
+ * round at this level reads.
+ * @param {keyof LEVELS} level
+ * @param {string[]} mathTiers
+ */
+const tieredSlots = (level, mathTiers) => ({
+  Mathematics: { tierOf: d => mathTierOf(d.question, d.timed_seconds), wanted: mathTiers, what: 'math' },
+  'World Language': { tierOf: d => languageTierOf(d.question), wanted: LEVELS[level].language, what: 'World Language' }
+});
 
 /**
  * @param {object} options
  * @param {keyof LEVELS} options.level
  * @param {string} options.math - a key of MATH_CHOICES, or 'auto'
- * @param {boolean} options.includeGenerated - whether to draw on the SJA Generated sets too
  * @param {{label: string, count: number}} [options.drill] - a practice set of
  *   one category instead of a round. Practice sets are not counted as read, so
  *   studying never uses up the questions rounds draw on.
@@ -202,11 +235,10 @@ const projectionFor = label => (label === 'Mathematics'
  * round, a label for each category the archive could not fill, and anything
  * else worth telling the moderator
  */
-async function buildRound ({ level, math, includeGenerated, drill }) {
-  const { pools: basePools } = LEVELS[level];
+async function buildRound ({ level, math, drill }) {
+  const { pools } = LEVELS[level];
   const mathTiers = MATH_CHOICES[math] || LEVELS[level].math;
-  // generated questions sit alongside whatever each pool already holds
-  const pools = includeGenerated ? basePools.map(p => p.concat('generated')) : basePools;
+  const tiered = tieredSlots(level, mathTiers);
   const setFilter = setFilterFor([...new Set(pools.flat())]);
 
   const slots = drill
@@ -232,13 +264,14 @@ async function buildRound ({ level, math, includeGenerated, drill }) {
     const docs = candidates[i].filter(d => !picked.has(String(d._id)) &&
       (label !== 'Year in Review' || questionYear(d) >= recentFrom));
     let result;
-    if (label === 'Mathematics') {
-      const inTier = new Set(docs.filter(d => mathTiers.includes(mathTierOf(d.question))));
+    const tiers = tiered[label];
+    if (tiers) {
+      const inTier = new Set(docs.filter(d => tiers.wanted.includes(tiers.tierOf(d))));
       result = pickLeastUsed([...inTier], count, pools, lastUsed);
       if (result.chosen.length < count) {
         // a thin tier should not leave the round a question short
         const extra = pickLeastUsed(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed);
-        notes.push('Mathematics: only ' + result.chosen.length + ' ' + mathTiers.join('/') +
+        notes.push(label + ': only ' + result.chosen.length + ' ' + tiers.wanted.join('/') +
           ' question(s) available, so ' + extra.chosen.length + ' came from another tier.');
         result = { chosen: result.chosen.concat(extra.chosen), repeats: result.repeats + extra.repeats };
       }
@@ -250,7 +283,7 @@ async function buildRound ({ level, math, includeGenerated, drill }) {
       plan.push({ id: d._id, label });
     }
     if (result.repeats) {
-      const what = label === 'Mathematics' ? mathTiers.join('/') + ' math' : label;
+      const what = tiers ? tiers.wanted.join('/') + ' ' + tiers.what : label;
       notes.push(label + ': ' + result.repeats + ' question(s) repeated - every other ' + what +
         ' question at this level has already been read.');
     }
@@ -268,6 +301,7 @@ async function buildRound ({ level, math, includeGenerated, drill }) {
   }
 
   const full = await tossups.find({ _id: { $in: plan.map(p => p.id) } }).toArray();
+  const tierOf = (label, d) => (tiered[label] ? { tier: tiered[label].tierOf(d) } : {});
   const byId = new Map(full.map(d => [String(d._id), d]));
   const round = plan.map(({ id, label }) => {
     const d = byId.get(String(id));
@@ -278,7 +312,7 @@ async function buildRound ({ level, math, includeGenerated, drill }) {
       question: (secs ? `[${secs} sec] ` : '') + d.question,
       answer: d.answer,
       source: `${d.set?.name ?? '?'} ${d.packet?.name ?? ''}`.trim(),
-      ...(label === 'Mathematics' ? { tier: mathTierOf(d.question) } : {})
+      ...tierOf(label, d)
     };
   });
 
@@ -300,8 +334,7 @@ router.get('/generate', async (req, res) => {
     ? { label: req.query.drill, count: Math.min(40, Math.max(5, parseInt(req.query.count) || 20)) }
     : null;
   try {
-    const { round, short, notes } = await oneAtATime(() =>
-      buildRound({ level, math, includeGenerated: req.query.generated === '1', drill }));
+    const { round, short, notes } = await oneAtATime(() => buildRound({ level, math, drill }));
     // identifies this round when its game is saved, so a second save of the
     // same game can be refused rather than counted twice
     res.json({ roundId: randomUUID(), level, round, short, notes });
@@ -343,13 +376,14 @@ export async function poolSummary () {
         if (label === 'Year in Review' && !(questionYear(d) >= recentFrom)) { older++; continue; }
         const source = sourceOf(d.set?.name);
         tally(bySource, source, d);
-        if (label === 'Mathematics') tally(byTier, source + ' ' + mathTierOf(d.question), d);
+        if (label === 'Mathematics') tally(byTier, source + ' ' + mathTierOf(d.question, d.timed_seconds), d);
+        if (label === 'World Language') tally(byTier, source + ' ' + languageTierOf(d.question), d);
       }
       return {
         category: label,
         perRound,
         bySource,
-        ...(label === 'Mathematics' ? { byTier } : {}),
+        ...(label === 'Mathematics' || label === 'World Language' ? { byTier } : {}),
         ...(label === 'Year in Review' ? { olderLeftOut: older } : {})
       };
     })
@@ -410,13 +444,7 @@ ${kshsaaNav('/kshsaa-play', 900)}
   other question it competes with has been, whichever page built the round.</p>
 
   <div class="card mb-3 no-print"><div class="card-body">
-    ${levelControls()}
-    <div class="form-check mb-3">
-      <input class="form-check-input" type="checkbox" id="gen">
-      <label class="form-check-label" for="gen">
-        Include <a href="/kshsaa-questions">question bank</a> questions
-      </label>
-    </div>
+    <div class="mb-3">${levelControls()}</div>
     <button class="btn btn-primary" id="go">Generate a round</button>
     <button class="btn btn-outline-secondary" id="pdf" disabled>Download PDF</button>
     <button class="btn btn-outline-secondary" id="txt" disabled>Download text</button>
@@ -469,7 +497,6 @@ $('go').onclick = async () => {
   $('go').disabled = true;
   try {
     const r = await fetch('/kshsaa-round/generate?' + levelQuery() +
-      '&generated=' + ($('gen').checked ? '1' : '0') +
       (DRILL ? '&drill=' + encodeURIComponent(DRILL) : ''));
     const data = await r.json();
     if (data.error) throw new Error(data.error);
