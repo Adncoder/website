@@ -16,7 +16,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { packets, sets, tossups } from '../database/qbreader/collections.js';
 import { perTossupData } from '../database/account-info/collections.js';
-import { difficultyOf, poolSummary } from './kshsaa-round.js';
+import { LEVELS, difficultyOf, poolSummary } from './kshsaa-round.js';
 import { requireAuth } from './kshsaa-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -96,7 +96,11 @@ async function ensureSetAndPacket (subject) {
  * Both documents matter: recordTossupData only $pushes onto an existing
  * per-tossup-data document, so a tossup without one silently drops every buzz
  * ever played on it.
- * @param {{subject: string, question: string, answer: string, timedSeconds: ?number}} q
+ *
+ * A Year in Review question may carry the level it was written for, which
+ * rounds read it at, and the year its story happened, which decides when it
+ * stops being read (see questionYear in kshsaa-round.js).
+ * @param {{subject: string, question: string, answer: string, timedSeconds: ?number, level?: ?string, year?: ?number}} q
  * @returns {Promise<ObjectId>} the new tossup's id
  */
 async function publishQuestion (q) {
@@ -104,7 +108,9 @@ async function publishQuestion (q) {
   const { setId, setName, packetId } = await ensureSetAndPacket(q.subject);
   const number = await tossups.countDocuments({ 'set._id': setId }) + 1;
   const tossupId = new ObjectId();
-  const year = new Date().getFullYear();
+  const yearInReview = q.subject === 'Year in Review';
+  const year = yearInReview && Number.isInteger(q.year) ? q.year : new Date().getFullYear();
+  const level = yearInReview ? cleanLevel(q.level) : null;
 
   await tossups.insertOne({
     _id: tossupId,
@@ -116,6 +122,7 @@ async function publishQuestion (q) {
     subcategory,
     alternate_subcategory: alternateSubcategory,
     kshsaa_category: q.subject,
+    ...(level && { kshsaa_level: level }),
     timed_seconds: q.timedSeconds ?? null,
     number,
     difficulty: DIFFICULTY,
@@ -146,14 +153,22 @@ const cleanSeconds = (v) => {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 && n <= 600 ? Math.round(n) : null;
 };
+// a LEVELS key, or null for a question read at every level
+const cleanLevel = v => (Object.hasOwn(LEVELS, String(v ?? '')) ? String(v) : null);
 
 /**
  * The level a question bank question would be read at, worked out the way the
  * round builder does it.
+ * @param {string} subject
+ * @param {string} question
+ * @param {?number} timedSeconds
+ * @param {?string} [level] - the level a Year in Review question was written for
  * @returns {'beginner'|'jv'|'varsity'|'any'}
  */
-const levelOf = (subject, question, timedSeconds) =>
-  difficultyOf(subject, { question, timed_seconds: timedSeconds, set: { name: GENERATED_SET_PREFIX } });
+const levelOf = (subject, question, timedSeconds, level) =>
+  difficultyOf(subject, {
+    question, timed_seconds: timedSeconds, set: { name: GENERATED_SET_PREFIX }, kshsaa_level: cleanLevel(level)
+  });
 
 // ---------- endpoints ----------
 
@@ -178,7 +193,8 @@ router.get('/list', requireAuth, async (req, res) => {
       answer: r.answer,
       solution: r.solution ?? null,
       timedSeconds: r.timedSeconds ?? null,
-      level: levelOf(r.subject, r.question, r.timedSeconds)
+      level: levelOf(r.subject, r.question, r.timedSeconds, r.level),
+      year: r.year ?? null
     }))
   });
 });
@@ -189,6 +205,7 @@ router.post('/update', requireAuth, async (req, res) => {
     if (typeof req.body.question === 'string') { set.question = req.body.question.trim(); }
     if (typeof req.body.answer === 'string') { set.answer = req.body.answer.trim(); }
     if ('timedSeconds' in req.body) { set.timedSeconds = cleanSeconds(req.body.timedSeconds); }
+    if ('level' in req.body) { set.level = cleanLevel(req.body.level); }
     if (cleanSubject(req.body.subject)) { set.subject = req.body.subject; }
     if (!Object.keys(set).length) { return res.status(400).json({ error: 'nothing to update' }); }
     if (set.question === '' || set.answer === '') {
@@ -249,7 +266,7 @@ router.post('/add', requireAuth, async (req, res) => {
     if (!subject) { return res.status(400).json({ error: 'pick a subject' }); }
     if (!question || !answer) { return res.status(400).json({ error: 'question and answer are required' }); }
     const tossupId = await publishQuestion({
-      subject, question, answer, timedSeconds: cleanSeconds(req.body.timedSeconds)
+      subject, question, answer, timedSeconds: cleanSeconds(req.body.timedSeconds), level: req.body.level
     });
     res.json({ ok: true, tossupId: String(tossupId) });
   } catch (e) {
@@ -279,7 +296,7 @@ router.get('/pool', requireAuth, async (req, res) => {
 router.get('/level', requireAuth, (req, res) => {
   const subject = cleanSubject(req.query.subject);
   if (!subject) return res.status(400).json({ error: 'pick a subject' });
-  res.json({ level: levelOf(subject, String(req.query.question || ''), cleanSeconds(req.query.seconds)) });
+  res.json({ level: levelOf(subject, String(req.query.question || ''), cleanSeconds(req.query.seconds), req.query.level) });
 });
 
 // ---------- page ----------
@@ -336,10 +353,11 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
     <h2 class="mt-3">Questions by level</h2>
     <p class="note">How many questions each subject has at each level, and how many of those have not been
-    read in a round yet (red under ten rounds' worth). Math and World Language go by difficulty; the rest by
-    where they came from: middle school quizbowl for Beginner, easy high school for JV, and regular high
-    school, converted quizbowl, and the KSHSAA archive for Varsity. A level reads easier questions too when
-    its own run short.</p>
+    read in a round yet (red under ten rounds' worth). Math and World Language go by difficulty, Year in
+    Review by the level it was written for (and only from last year on); the rest by where they came from:
+    middle school quizbowl for Beginner, easy high school for JV, and regular high school, converted
+    quizbowl, and the KSHSAA archive for Varsity. A level reads easier questions too when its own run
+    short.</p>
     <div class="card"><div class="card-body p-0"><div class="table-responsive">
       <table class="table table-sm mb-0"><thead><tr>
         <th>Subject</th><th class="num">Per round</th><th class="num">Beginner</th><th class="num">JV</th>
@@ -350,7 +368,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     <h2>Review queue <span class="badge text-bg-secondary" id="pendingCount">0</span></h2>
     <p class="note">Approving writes the question into the live collection immediately, along with
     its stats document. Approved questions go straight into rounds at every level; math and World
-    Language ones are matched to each level by difficulty.</p>
+    Language ones are matched to each level by difficulty, and Year in Review ones are read at the level
+    picked on the card.</p>
     <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
       <select class="form-select form-select-sm w-auto" id="queueLevel" aria-label="Show questions at"></select>
       <button class="btn btn-sm btn-outline-success" id="approveAll">Approve all shown</button>
@@ -368,6 +387,13 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
         <div class="col-sm-3">
           <label class="form-label small fw-semibold">Time limit (seconds)</label>
           <input class="form-control form-control-sm" id="addSeconds" type="number" min="1" max="600" placeholder="blank = 10s">
+        </div>
+        <div class="col-sm-3 d-none" id="addLevelBox">
+          <label class="form-label small fw-semibold" for="addLevelPick">Read at</label>
+          <select class="form-select form-select-sm" id="addLevelPick">
+            <option value="any">Every level</option><option value="beginner">Beginner</option>
+            <option value="jv">JV</option><option value="varsity">Varsity</option>
+          </select>
         </div>
       </div>
       <label class="form-label small fw-semibold mt-2">Question <span id="addLevel"></span></label>
@@ -388,6 +414,14 @@ var LEVEL_KEYS = ['beginner', 'jv', 'varsity', 'any'];
 
 function levelBadge (level) {
   return '<span class="lvl lvl-' + level + '">' + LEVEL_NAMES[level] + '</span>';
+}
+
+// Year in Review is read at the level it was written for, so it can be changed
+function levelPicker (level, cls) {
+  return '<select class="form-select form-select-sm w-auto d-inline-block ms-2 py-0 ' + cls + '" aria-label="Level">' +
+    LEVEL_KEYS.map(function (k) {
+      return '<option value="' + k + '"' + (k === level ? ' selected' : '') + '>' + LEVEL_NAMES[k] + '</option>';
+    }).join('') + '</select>';
 }
 
 function esc (s) {
@@ -470,7 +504,7 @@ function loadQueue () {
       return '<div class="card qcard mb-2" data-id="' + q.id + '" data-level="' + q.level + '"><div class="card-body">' +
         '<div class="d-flex justify-content-between align-items-start">' +
         '<span><span class="subj">' + esc(q.subject) + (q.topic ? ' &middot; ' + esc(q.topic) : '') + '</span>' +
-        levelBadge(q.level) + '</span>' +
+        (q.subject === 'Year in Review' ? levelPicker(q.level, 'ql') : levelBadge(q.level)) + '</span>' +
         '<span class="small text-secondary">' + (q.timedSeconds || 10) + 's</span></div>' +
         '<textarea class="form-control form-control-sm mt-2 qq" rows="3">' + esc(q.question) + '</textarea>' +
         '<label class="form-label small fw-semibold mt-2 mb-1">Answer</label>' +
@@ -494,12 +528,17 @@ function loadQueue () {
         $('pendingCount').textContent = Math.max(0, Number($('pendingCount').textContent) - 1);
         loadPool();
       };
+      var picker = card.querySelector('.ql');
+      if (picker) {
+        picker.onchange = function () { card.setAttribute('data-level', picker.value); };
+      }
       card.querySelector('.approve').onclick = function () {
         var body = {
           id: id,
           question: card.querySelector('.qq').value,
           answer: card.querySelector('.qa').value
         };
+        if (picker) { body.level = picker.value; }
         // save any edits first, then publish
         fetch('/kshsaa-questions/update', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -560,21 +599,27 @@ function showAddLevel () {
   levelTimer = setTimeout(function () {
     if (!$('addQuestion').value.trim()) { $('addLevel').innerHTML = ''; return; }
     fetch('/kshsaa-questions/level?subject=' + encodeURIComponent($('addSubject').value) +
-      '&question=' + encodeURIComponent($('addQuestion').value) + '&seconds=' + encodeURIComponent($('addSeconds').value))
+      '&question=' + encodeURIComponent($('addQuestion').value) + '&seconds=' + encodeURIComponent($('addSeconds').value) +
+      '&level=' + encodeURIComponent($('addLevelPick').value))
       .then(function (r) { return r.json(); })
       .then(function (d) { $('addLevel').innerHTML = d.level ? 'counts as ' + levelBadge(d.level) : ''; });
   }, 300);
 }
 $('addQuestion').oninput = showAddLevel;
 $('addSeconds').oninput = showAddLevel;
-$('addSubject').onchange = showAddLevel;
+$('addLevelPick').onchange = showAddLevel;
+$('addSubject').onchange = function () {
+  $('addLevelBox').classList.toggle('d-none', $('addSubject').value !== 'Year in Review');
+  showAddLevel();
+};
 
 $('addBtn').onclick = function () {
   var body = {
     subject: $('addSubject').value,
     question: $('addQuestion').value,
     answer: $('addAnswer').value,
-    timedSeconds: $('addSeconds').value
+    timedSeconds: $('addSeconds').value,
+    level: $('addLevelPick').value
   };
   fetch('/kshsaa-questions/add', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)

@@ -156,6 +156,7 @@ document describes the upstream codebase and still applies.
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
+| `tools/seed-generated-questions.js`, `tools/seed-year-in-review.js` | Load the question bank's review queue: computed math and science, and hand-written Year in Review by level. Dry run unless `--write` |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -194,8 +195,8 @@ math question in six, `pickMath` holds it to that. The archive runs about 3%
 theory, so there it changes nothing.
 
 `difficultyOf` in `kshsaa-round.js` puts every question at the level it suits
-(math and World Language by tier, the rest by source; Year in Review and
-question bank questions outside math and World Language at any level). The
+(math and World Language by tier, Year in Review by `kshsaa_level`, the rest by
+source; question bank questions outside those three at any level). The
 question bank's table, review queue filter, and "counts as" label all use it. Question bank text
 already starts with its "[45 sec]", so rounds do not add a second one, and
 rounds correct the "2th"-style ordinals the first generated batch was written
@@ -213,6 +214,18 @@ comes from the set name (the spring year of a `24-25` season, else the latest
 year in the name), because imported sets store a placeholder `set.year`; only
 question-bank tossups (`sjaGenerated`) are trusted to carry a real one. A set
 whose name has no year is never used for Year in Review.
+
+Year in Review is also matched to the level. `tools/seed-year-in-review.js`
+holds hand-written, fact-checked questions, each with the level it was written
+for and the month its story happened, and loads them into the review queue
+(`level`, `year`, and the source as the card's "Check" line). Approving one
+stores `kshsaa_level` on the tossup and the story's year as `set.year`, so a
+story leaves rounds two Januaries after it happened, not after it was approved.
+A round reads Year in Review at its own level plus anything with no
+`kshsaa_level` (every qbreader import). The review card and "Write your own"
+both let the level be changed. `import-current-events.js` skips the qbreader
+giveaway lines listed in `NOT_CURRENT` (general knowledge, or no longer true);
+add to it when a re-import brings in more.
 
 Rounds avoid repeats through `kshsaa_question_usage` (one document per question
 used, keyed by the tossup id as a string): unread questions first, then the ones
