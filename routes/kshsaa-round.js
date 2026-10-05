@@ -16,7 +16,7 @@ import { Router } from 'express';
 import { randomUUID } from 'crypto';
 import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
-import mathTierOf, { MATH_TIERS } from '../server/kshsaa/math-tier.js';
+import mathTierOf, { MATH_TIERS, isComputation } from '../server/kshsaa/math-tier.js';
 import languageTierOf from '../server/kshsaa/language-tier.js';
 import { KSHSAA_HEAD, kshsaaNav, readTabs } from '../server/kshsaa/nav.js';
 
@@ -68,23 +68,25 @@ const SET_PREFIX = {
   generated: 'SJA Generated',
   beginner: 'QB Beginner',
   jv: 'QB JV',
+  varsity: 'QB Varsity',
   current: 'QB Current Events'
 };
 
 /**
  * @param {string} [setName]
- * @returns {'kshsaa'|'converted'|'generated'|'beginner'|'jv'|'current'}
+ * @returns {'kshsaa'|'converted'|'generated'|'beginner'|'jv'|'varsity'|'current'}
  */
 export function sourceOf (setName) {
   const name = String(setName || '');
   return Object.keys(SET_PREFIX).find(key => name.startsWith(SET_PREFIX[key])) || 'kshsaa';
 }
 
-// Question pools for each level, most preferred first. Every level is short,
-// buzzer-race questions; what rises is how hard the clues are: the giveaway
-// lines of middle school quizbowl (Beginner), then of easy high school
-// quizbowl (JV), then the real KSHSAA archive -- past state and regional
-// rounds -- and converted quizbowl (Varsity). A later pool is used only once
+// Question pools for each level, most preferred first. What rises is how hard
+// the clues are and how many of them there are: the giveaway lines of middle
+// school quizbowl (Beginner), the last two sentences of easy high school
+// quizbowl (JV), and the last two to four of regular high school quizbowl,
+// with converted quizbowl and then the real KSHSAA archive -- past state and
+// regional rounds -- behind them (Varsity). A later pool is used only once
 // the earlier ones have nothing unread left in a category: the giveaway and
 // converted sets have no World Language and next to no math, so those slots
 // come from the KSHSAA archive at every level. The current-events import
@@ -98,7 +100,7 @@ export function sourceOf (setName) {
 export const LEVELS = {
   varsity: {
     label: 'Varsity',
-    pools: [['converted', 'current'], ['kshsaa', 'generated']],
+    pools: [['varsity', 'converted', 'current'], ['kshsaa', 'generated']],
     math: ['basic', 'intermediate', 'advanced'],
     language: ['intermediate', 'advanced']
   },
@@ -115,6 +117,36 @@ export const LEVELS = {
     language: ['basic']
   }
 };
+
+// Where a question sits by difficulty, for the question bank's counts and
+// review queue: math and World Language by tier, everything else by the level
+// whose own pool it comes from. Year in Review, and question bank questions
+// outside math and World Language, are read at every level.
+const LEVEL_OF_TIER = { basic: 'beginner', intermediate: 'jv', advanced: 'varsity' };
+const LEVEL_OF_SOURCE = {
+  beginner: 'beginner', jv: 'jv', varsity: 'varsity', kshsaa: 'varsity', converted: 'varsity', generated: 'any', current: 'any'
+};
+
+/**
+ * @param {string} label - the round slot (category label)
+ * @param {{question?: string, timed_seconds?: number, set?: {name?: string}}} d
+ * @returns {'beginner'|'jv'|'varsity'|'any'}
+ */
+export function difficultyOf (label, d) {
+  if (label === 'Mathematics') return LEVEL_OF_TIER[mathTierOf(d.question, d.timed_seconds)];
+  if (label === 'World Language') return LEVEL_OF_TIER[languageTierOf(d.question)];
+  if (label === 'Year in Review') return 'any';
+  return LEVEL_OF_SOURCE[sourceOf(d.set?.name)] || 'varsity';
+}
+
+// "x to the 2th power": the first batch of generated math wrote every ordinal
+// with "th". Shown right in rounds rather than rewritten in the database.
+const ordinal = n => {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] || 'th';
+  return n + suffix;
+};
+const fixOrdinals = text => String(text || '').replace(/\b(\d+)th\b/g, (m, n) => ordinal(Number(n)));
 
 // Current events go stale: Year in Review uses only questions written this year
 // or last year, so the cutoff moves forward on its own every January.
@@ -197,6 +229,33 @@ function pickLeastUsed (docs, count, pools, lastUsed) {
   return { chosen, repeats: chosen.length - unread };
 }
 
+// KSHSAA math is mostly computation. Where a level's math would lean on theory
+// (definitions, terms) more than about one question in six, theory is held
+// to that; where it is already rarer, as in the archive, picks are left alone.
+const THEORY_SHARE = 1 / 6;
+
+/** pickLeastUsed for math, with theory held to about THEORY_SHARE of it. */
+function pickMath (docs, count, pools, lastUsed) {
+  const theory = docs.filter(d => !isComputation(d.question));
+  if (!theory.length || theory.length / docs.length <= THEORY_SHARE) {
+    return pickLeastUsed(docs, count, pools, lastUsed);
+  }
+  const computed = docs.filter(d => isComputation(d.question));
+  let wanted = 0;
+  for (let i = 0; i < count; i++) { if (Math.random() < THEORY_SHARE) wanted++; }
+  const some = pickLeastUsed(theory, wanted, pools, lastUsed);
+  const rest = pickLeastUsed(computed, count - some.chosen.length, pools, lastUsed);
+  const chosen = some.chosen.concat(rest.chosen);
+  let repeats = some.repeats + rest.repeats;
+  if (chosen.length < count) {
+    // not enough computation: theory fills the rest
+    const fill = pickLeastUsed(theory.filter(d => !some.chosen.includes(d)), count - chosen.length, pools, lastUsed);
+    chosen.push(...fill.chosen);
+    repeats += fill.repeats;
+  }
+  return { chosen: shuffle(chosen), repeats };
+}
+
 // Two tryout rooms generating at the same moment would otherwise both see the
 // same questions as unread. Builds are quick, so run them one at a time.
 let lastBuild = Promise.resolve();
@@ -266,11 +325,12 @@ async function buildRound ({ level, math, drill }) {
     let result;
     const tiers = tiered[label];
     if (tiers) {
+      const pick = label === 'Mathematics' ? pickMath : pickLeastUsed;
       const inTier = new Set(docs.filter(d => tiers.wanted.includes(tiers.tierOf(d))));
-      result = pickLeastUsed([...inTier], count, pools, lastUsed);
+      result = pick([...inTier], count, pools, lastUsed);
       if (result.chosen.length < count) {
         // a thin tier should not leave the round a question short
-        const extra = pickLeastUsed(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed);
+        const extra = pick(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed);
         notes.push(label + ': only ' + result.chosen.length + ' ' + tiers.wanted.join('/') +
           ' question(s) available, so ' + extra.chosen.length + ' came from another tier.');
         result = { chosen: result.chosen.concat(extra.chosen), repeats: result.repeats + extra.repeats };
@@ -293,11 +353,12 @@ async function buildRound ({ level, math, drill }) {
     }
   });
 
-  // a level whose own questions were never imported quietly reads harder ones
-  const missing = { beginner: 'import-beginner.js', jv: 'import-jv.js' }[level];
+  // a level whose own questions were never imported quietly reads others
+  const missing = { beginner: 'import-beginner.js', jv: 'import-jv.js', varsity: 'import-varsity.js' }[level];
   if (missing && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === level))) {
-    notes.push('No ' + LEVELS[level].label + ' questions have been imported yet, so this round used harder ones. ' +
-      'Run "node ' + missing + '" from the website folder to add them.');
+    notes.push('No ' + LEVELS[level].label + ' questions have been imported yet, so this round used ' +
+      (level === 'varsity' ? 'the converted sets and the KSHSAA archive' : 'harder ones') +
+      '. Run "node ' + missing + '" from the website folder to add them.');
   }
 
   const full = await tossups.find({ _id: { $in: plan.map(p => p.id) } }).toArray();
@@ -306,11 +367,14 @@ async function buildRound ({ level, math, drill }) {
   const round = plan.map(({ id, label }) => {
     const d = byId.get(String(id));
     const secs = d.timed_seconds || (label === 'Mathematics' ? 30 : null);
+    // question bank questions already open with their "[45 sec]"
+    const tagged = /^\[\d+\s*sec\]/i.test(d.question);
+    const generated = sourceOf(d.set?.name) === 'generated';
     return {
       id: String(d._id),
       category: label,
-      question: (secs ? `[${secs} sec] ` : '') + d.question,
-      answer: d.answer,
+      question: (secs && !tagged ? `[${secs} sec] ` : '') + (generated ? fixOrdinals(d.question) : d.question),
+      answer: generated ? fixOrdinals(d.answer) : d.answer,
       source: `${d.set?.name ?? '?'} ${d.packet?.name ?? ''}`.trim(),
       ...tierOf(label, d)
     };
@@ -371,11 +435,13 @@ export async function poolSummary () {
     categories: DISTRIBUTION.map(([label, perRound], i) => {
       const bySource = {};
       const byTier = {};
+      const byLevel = {};
       let older = 0;
       for (const d of candidates[i]) {
         if (label === 'Year in Review' && !(questionYear(d) >= recentFrom)) { older++; continue; }
         const source = sourceOf(d.set?.name);
         tally(bySource, source, d);
+        tally(byLevel, difficultyOf(label, d), d);
         if (label === 'Mathematics') tally(byTier, source + ' ' + mathTierOf(d.question, d.timed_seconds), d);
         if (label === 'World Language') tally(byTier, source + ' ' + languageTierOf(d.question), d);
       }
@@ -383,6 +449,7 @@ export async function poolSummary () {
         category: label,
         perRound,
         bySource,
+        byLevel,
         ...(label === 'Mathematics' || label === 'World Language' ? { byTier } : {}),
         ...(label === 'Year in Review' ? { olderLeftOut: older } : {})
       };

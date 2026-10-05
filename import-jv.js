@@ -30,6 +30,7 @@ await runImport({
   categories: ['Literature', 'Mythology', 'Science', 'History', 'Geography', 'Social Science', 'Religion', 'Philosophy', 'Fine Arts'],
   minYear: 2010,
   slotOf: giveawaySlotOf,
-  sentences: 2,
+  // the giveaway and the clue before it
+  sentences: { least: 2, most: 2, maxWords: 80 },
   preview: 'jv-preview.json'
 });

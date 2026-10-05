@@ -149,13 +149,13 @@ document describes the upstream codebase and still applies.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
-| `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit |
+| `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
-| `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line) or a JV one (the giveaway and the clue before it) |
+| `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
-| `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. The last three share `server/kshsaa/qbreader-import.js` |
+| `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -166,17 +166,18 @@ packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
 Every question the pages use carries `kshsaaImport: true`; the **set name
 prefix** says where it came from: `QB Converted` (varsity quizbowl rewritten
 for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
-(`import-beginner.js`), `QB JV` (`import-jv.js`), `QB Current Events`
-(`import-current-events.js`, recent Year in Review only), anything else real
-KSHSAA. `LEVELS` in `kshsaa-round.js` lists the pools each level draws from in
+(`import-beginner.js`), `QB JV` (`import-jv.js`), `QB Varsity`
+(`import-varsity.js`), `QB Current Events` (`import-current-events.js`, recent
+Year in Review only), anything else real KSHSAA. `LEVELS` in `kshsaa-round.js` lists the pools each level draws from in
 order of preference, ordered by how hard the clues are. Beginner reads the
 giveaway lines of middle school quizbowl, JV the last two sentences of easy high
-school quizbowl (the giveaway and the clue before it, so JV stays pyramidal;
-`lastTwoOf` in `giveaway.js`), and Varsity converted quizbowl and the KSHSAA
-archive, which is past state and regional rounds and too hard for JV. Later
-pools fill slots the earlier ones cannot (the giveaway and converted sets have
-no World Language and next to no math, so those come from the archive at every
-level). Approved question bank questions sit alongside the archive at every
+school quizbowl (the giveaway and the clue before it), and Varsity the last two
+to four of regular high school quizbowl alongside converted quizbowl, then the
+KSHSAA archive, which is past state and regional rounds and too hard for JV.
+`lastSentencesOf` in `giveaway.js` builds the JV and Varsity pyramids, adding
+clues back to front while each one is about the answer. Later pools fill slots
+the earlier ones cannot (the giveaway and converted sets have no World Language
+and next to no math, so those come from the archive at every level). Approved question bank questions sit alongside the archive at every
 level; there is no switch for them.
 
 Math and World Language are sorted into tiers at round-building time, and each
@@ -186,11 +187,26 @@ given 45 seconds or more takes several steps and is never basic.
 `language-tier.js` goes by the Spanish sentence: up to 5 words basic, 6 to 8
 intermediate, 9 or more advanced, with stacked object pronouns and the
 compound or subjunctive forms of haber pushing a sentence up. A level short of
-its tiers takes from the others and says so in the round's notes. Until
-`import-jv.js` has been run, JV rounds fall back to the archive and say so in
-the round's notes; Beginner does the same. `import-kshsaa.js` wipes every
-`kshsaaImport` set except the `QB Beginner`, `QB JV`, and `QB Current Events`
-ones, so a new giveaway import needs adding to that exception too.
+its tiers takes from the others and says so in the round's notes. KSHSAA math
+is mostly computation: `isComputation` in `math-tier.js` tells it from theory
+(names, terms, definitions), and wherever theory would be more than about one
+math question in six, `pickMath` holds it to that. The archive runs about 3%
+theory, so there it changes nothing.
+
+`difficultyOf` in `kshsaa-round.js` puts every question at the level it suits
+(math and World Language by tier, the rest by source; Year in Review and
+question bank questions outside math and World Language at any level). The
+question bank's table, review queue filter, and "counts as" label all use it. Question bank text
+already starts with its "[45 sec]", so rounds do not add a second one, and
+rounds correct the "2th"-style ordinals the first generated batch was written
+with.
+
+Until a level's import (`import-beginner.js`, `import-jv.js`,
+`import-varsity.js`) has been run, its rounds fall back to the other pools and
+say so in the round's notes. `import-kshsaa.js` wipes
+every `kshsaaImport` set except the `QB Beginner`, `QB JV`, `QB Varsity`, and
+`QB Current Events` ones, so a new giveaway import needs adding to that
+exception too.
 
 Year in Review uses only questions written this calendar year or last. The year
 comes from the set name (the spring year of a `24-25` season, else the latest

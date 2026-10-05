@@ -16,7 +16,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { packets, sets, tossups } from '../database/qbreader/collections.js';
 import { perTossupData } from '../database/account-info/collections.js';
-import { CATEGORY_BY_QUESTION } from './kshsaa-round.js';
+import { difficultyOf, poolSummary } from './kshsaa-round.js';
 import { requireAuth } from './kshsaa-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -147,6 +147,14 @@ const cleanSeconds = (v) => {
   return Number.isFinite(n) && n > 0 && n <= 600 ? Math.round(n) : null;
 };
 
+/**
+ * The level a question bank question would be read at, worked out the way the
+ * round builder does it.
+ * @returns {'beginner'|'jv'|'varsity'|'any'}
+ */
+const levelOf = (subject, question, timedSeconds) =>
+  difficultyOf(subject, { question, timed_seconds: timedSeconds, set: { name: GENERATED_SET_PREFIX } });
+
 // ---------- endpoints ----------
 
 router.get('/list', requireAuth, async (req, res) => {
@@ -169,7 +177,8 @@ router.get('/list', requireAuth, async (req, res) => {
       question: r.question,
       answer: r.answer,
       solution: r.solution ?? null,
-      timedSeconds: r.timedSeconds ?? null
+      timedSeconds: r.timedSeconds ?? null,
+      level: levelOf(r.subject, r.question, r.timedSeconds)
     }))
   });
 });
@@ -248,33 +257,29 @@ router.post('/add', requireAuth, async (req, res) => {
   }
 });
 
-// how thin each subject's pool actually is, so it is obvious where to write next
+// how thin each subject's pool is at each level, so it is obvious where to
+// write next. The round builder's own summary, so these are the real pools.
 router.get('/pool', requireAuth, async (req, res) => {
-  const perRound = {};
-  CATEGORY_BY_QUESTION.forEach(c => { perRound[c] = (perRound[c] ?? 0) + 1; });
+  try {
+    const summary = await poolSummary();
+    res.json({
+      pools: summary.categories.map(c => ({
+        subject: c.category,
+        perRound: c.perRound,
+        byLevel: c.byLevel,
+        generated: c.bySource.generated?.total ?? 0
+      }))
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
 
-  const pools = await Promise.all(Object.entries(SUBJECTS).map(async ([subject, triple]) => {
-    const [category] = triple;
-    // mirror the filters DISTRIBUTION uses, so these counts are the real pools
-    let filter;
-    if (subject === 'Mathematics') {
-      filter = { alternate_subcategory: 'Math' };
-    } else if (subject === 'World Language') {
-      filter = { kshsaa_category: { $regex: 'foreign language|world language', $options: 'i' } };
-    } else if (subject === 'Science/Health') {
-      filter = { category: 'Science', alternate_subcategory: { $ne: 'Math' } };
-    } else {
-      filter = { category };
-    }
-    const base = { kshsaaImport: true, ...filter };
-    const [all, generated] = await Promise.all([
-      tossups.countDocuments(base),
-      tossups.countDocuments({ ...base, 'set.name': { $regex: '^' + GENERATED_SET_PREFIX } })
-    ]);
-    return { subject, perRound: perRound[subject] ?? 0, all, generated };
-  }));
-
-  res.json({ pools });
+// what level a question being written would count as
+router.get('/level', requireAuth, (req, res) => {
+  const subject = cleanSubject(req.query.subject);
+  if (!subject) return res.status(400).json({ error: 'pick a subject' });
+  res.json({ level: levelOf(subject, String(req.query.question || ''), cleanSeconds(req.query.seconds)) });
 });
 
 // ---------- page ----------
@@ -298,6 +303,13 @@ ${KSHSAA_HEAD}
  table{font-size:.9rem}
  .num{text-align:right;font-variant-numeric:tabular-nums}
  .thin{color:#a4262c;font-weight:600}
+ .unread{display:block;font-size:.75rem;color:#6b7280;font-weight:400}
+ .thin .unread{color:#a4262c}
+ .lvl{display:inline-block;padding:.08rem .45rem;border-radius:.3rem;font-size:.75rem;font-weight:600;margin-left:.4rem}
+ .lvl-beginner{background:#e6f2ea;color:#1d6b40}
+ .lvl-jv{background:#fbf1de;color:#8a6116}
+ .lvl-varsity{background:#fbe9e5;color:#9b3a24}
+ .lvl-any{background:#eef1f7;color:#33415c}
 </style>
 </head><body>
 
@@ -322,13 +334,16 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <li class="nav-item"><a class="nav-link active" href="/kshsaa-questions">Question bank</a></li>
     </ul>
 
-    <h2 class="mt-3">Pool sizes</h2>
-    <p class="note">How many questions each subject can draw on, and how many of those you have
-    written. A round needs the "per round" count from each.</p>
+    <h2 class="mt-3">Questions by level</h2>
+    <p class="note">How many questions each subject has at each level, and how many of those have not been
+    read in a round yet (red under ten rounds' worth). Math and World Language go by difficulty; the rest by
+    where they came from: middle school quizbowl for Beginner, easy high school for JV, and regular high
+    school, converted quizbowl, and the KSHSAA archive for Varsity. A level reads easier questions too when
+    its own run short.</p>
     <div class="card"><div class="card-body p-0"><div class="table-responsive">
       <table class="table table-sm mb-0"><thead><tr>
-        <th>Subject</th><th class="num">Per round</th><th class="num">Pool</th>
-        <th class="num">Yours</th><th class="num">Rounds before repeats</th>
+        <th>Subject</th><th class="num">Per round</th><th class="num">Beginner</th><th class="num">JV</th>
+        <th class="num">Varsity</th><th class="num">Any level</th><th class="num">Yours</th>
       </tr></thead><tbody id="poolBody"></tbody></table>
     </div></div></div>
 
@@ -336,9 +351,10 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     <p class="note">Approving writes the question into the live collection immediately, along with
     its stats document. Approved questions go straight into rounds at every level; math and World
     Language ones are matched to each level by difficulty.</p>
-    <div class="mb-2">
-      <button class="btn btn-sm btn-outline-success" id="approveAll">Approve everything below</button>
-      <span class="ms-2 small" id="bulkMsg"></span>
+    <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+      <select class="form-select form-select-sm w-auto" id="queueLevel" aria-label="Show questions at"></select>
+      <button class="btn btn-sm btn-outline-success" id="approveAll">Approve all shown</button>
+      <span class="small" id="bulkMsg"></span>
     </div>
     <div id="queue"></div>
 
@@ -354,7 +370,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <input class="form-control form-control-sm" id="addSeconds" type="number" min="1" max="600" placeholder="blank = 10s">
         </div>
       </div>
-      <label class="form-label small fw-semibold mt-2">Question</label>
+      <label class="form-label small fw-semibold mt-2">Question <span id="addLevel"></span></label>
       <textarea class="form-control form-control-sm" id="addQuestion" rows="3"></textarea>
       <label class="form-label small fw-semibold mt-2">Answer</label>
       <input class="form-control form-control-sm" id="addAnswer">
@@ -367,6 +383,12 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 <script>
 var $ = function (id) { return document.getElementById(id); };
 var SUBJECTS = [];
+var LEVEL_NAMES = { beginner: 'Beginner', jv: 'JV', varsity: 'Varsity', any: 'Any level' };
+var LEVEL_KEYS = ['beginner', 'jv', 'varsity', 'any'];
+
+function levelBadge (level) {
+  return '<span class="lvl lvl-' + level + '">' + LEVEL_NAMES[level] + '</span>';
+}
 
 function esc (s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
@@ -399,16 +421,26 @@ $('pw').onkeydown = function (e) { if (e.key === 'Enter') { $('loginBtn').click(
 function loadPool () {
   fetch('/kshsaa-questions/pool').then(function (r) { return r.json(); }).then(function (d) {
     $('poolBody').innerHTML = (d.pools || []).map(function (p) {
-      var rounds = p.perRound ? Math.floor(p.all / p.perRound) : 0;
-      var thin = rounds < 100 ? ' class="thin"' : '';
-      return '<tr><td>' + esc(p.subject) + '</td>' +
-        '<td class="num">' + p.perRound + '</td>' +
-        '<td class="num">' + p.all + '</td>' +
-        '<td class="num">' + p.generated + '</td>' +
-        '<td class="num"' + thin + '>' + rounds + '</td></tr>';
+      var cell = function (key) {
+        var t = (p.byLevel || {})[key];
+        if (!t || !t.total) return '<td class="num text-secondary">&ndash;</td>';
+        var thin = t.unread < p.perRound * 10 ? ' thin' : '';
+        return '<td class="num' + thin + '">' + t.total + '<span class="unread">' + t.unread + ' unread</span></td>';
+      };
+      return '<tr><td>' + esc(p.subject) + '</td><td class="num">' + p.perRound + '</td>' +
+        LEVEL_KEYS.map(cell).join('') + '<td class="num">' + p.generated + '</td></tr>';
     }).join('');
   });
 }
+
+// the review queue at one level, or all of them
+function filterQueue () {
+  var want = $('queueLevel').value;
+  Array.prototype.forEach.call(document.querySelectorAll('.qcard'), function (card) {
+    card.classList.toggle('d-none', want !== 'all' && card.getAttribute('data-level') !== want);
+  });
+}
+$('queueLevel').onchange = filterQueue;
 
 function loadQueue () {
   fetch('/kshsaa-questions/list?status=pending').then(function (r) { return r.json(); }).then(function (d) {
@@ -419,6 +451,14 @@ function loadQueue () {
     $('pendingCount').textContent = (d.counts && d.counts.pending) || 0;
 
     var list = d.questions || [];
+    var counts = {};
+    list.forEach(function (q) { counts[q.level] = (counts[q.level] || 0) + 1; });
+    var keep = $('queueLevel').value || 'all';
+    $('queueLevel').innerHTML = '<option value="all">All levels (' + list.length + ')</option>' +
+      LEVEL_KEYS.filter(function (k) { return counts[k]; }).map(function (k) {
+        return '<option value="' + k + '">' + LEVEL_NAMES[k] + ' (' + counts[k] + ')</option>';
+      }).join('');
+    $('queueLevel').value = counts[keep] || keep === 'all' ? keep : 'all';
     if (!list.length) {
       $('queue').innerHTML = '<div class="card"><div class="card-body text-center py-4">' +
         '<p class="mb-1 fw-semibold">Nothing waiting for review</p>' +
@@ -427,9 +467,10 @@ function loadQueue () {
       return;
     }
     $('queue').innerHTML = list.map(function (q) {
-      return '<div class="card qcard mb-2" data-id="' + q.id + '"><div class="card-body">' +
+      return '<div class="card qcard mb-2" data-id="' + q.id + '" data-level="' + q.level + '"><div class="card-body">' +
         '<div class="d-flex justify-content-between align-items-start">' +
-        '<span class="subj">' + esc(q.subject) + (q.topic ? ' &middot; ' + esc(q.topic) : '') + '</span>' +
+        '<span><span class="subj">' + esc(q.subject) + (q.topic ? ' &middot; ' + esc(q.topic) : '') + '</span>' +
+        levelBadge(q.level) + '</span>' +
         '<span class="small text-secondary">' + (q.timedSeconds || 10) + 's</span></div>' +
         '<textarea class="form-control form-control-sm mt-2 qq" rows="3">' + esc(q.question) + '</textarea>' +
         '<label class="form-label small fw-semibold mt-2 mb-1">Answer</label>' +
@@ -441,6 +482,7 @@ function loadQueue () {
         '<span class="ms-2 small msg"></span></div>' +
         '</div></div>';
     }).join('');
+    filterQueue();
 
     Array.prototype.forEach.call(document.querySelectorAll('.qcard'), function (card) {
       var id = card.getAttribute('data-id');
@@ -480,9 +522,9 @@ function loadQueue () {
 }
 
 $('approveAll').onclick = function () {
-  var cards = [].slice.call(document.querySelectorAll('.qcard:not(.done)'));
+  var cards = [].slice.call(document.querySelectorAll('.qcard:not(.done):not(.d-none)'));
   if (!cards.length) { $('bulkMsg').textContent = 'nothing to approve'; return; }
-  if (!window.confirm('Approve all ' + cards.length + ' questions below? Each is written straight into the question bank.')) { return; }
+  if (!window.confirm('Approve all ' + cards.length + ' questions shown? Each is written straight into the question bank.')) { return; }
   $('approveAll').disabled = true;
   var done = 0;
   var failed = 0;
@@ -511,6 +553,22 @@ $('approveAll').onclick = function () {
   step(0);
 };
 
+// while writing: which level the question will count as
+var levelTimer = null;
+function showAddLevel () {
+  clearTimeout(levelTimer);
+  levelTimer = setTimeout(function () {
+    if (!$('addQuestion').value.trim()) { $('addLevel').innerHTML = ''; return; }
+    fetch('/kshsaa-questions/level?subject=' + encodeURIComponent($('addSubject').value) +
+      '&question=' + encodeURIComponent($('addQuestion').value) + '&seconds=' + encodeURIComponent($('addSeconds').value))
+      .then(function (r) { return r.json(); })
+      .then(function (d) { $('addLevel').innerHTML = d.level ? 'counts as ' + levelBadge(d.level) : ''; });
+  }, 300);
+}
+$('addQuestion').oninput = showAddLevel;
+$('addSeconds').oninput = showAddLevel;
+$('addSubject').onchange = showAddLevel;
+
 $('addBtn').onclick = function () {
   var body = {
     subject: $('addSubject').value,
@@ -527,6 +585,7 @@ $('addBtn').onclick = function () {
         $('addQuestion').value = '';
         $('addAnswer').value = '';
         $('addSeconds').value = '';
+        $('addLevel').innerHTML = '';
         loadPool();
       } else {
         $('addMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'failed') + '</span>';
