@@ -5,13 +5,13 @@
 // QBReader navbar's KSHSAA menu (client/ssi/nav.html) lists the same sections.
 //
 // Pages that belong to a section without being its first page pass that
-// section's path: the packet download sits under Read a round, and Insights
-// and the question bank under Practice stats, each as a tab.
+// section's path: the packet download sits under Read a round, and Insights,
+// the roster, tournaments, and the question bank under Stats, each as a tab.
 
 const SECTIONS = [
   ['/kshsaa-play', 'Read a round'],
-  ['/kshsaa-stats', 'Practice stats'],
-  ['/kshsaa-spanish/', 'Spanish Practice']
+  ['/kshsaa-stats', 'Stats'],
+  ['/kshsaa-spanish/', 'Spanish practice']
 ];
 
 export const KSHSAA_HEAD = `<link rel="icon" href="/kshsaa/logo.svg" type="image/svg+xml">

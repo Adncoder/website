@@ -1049,7 +1049,7 @@ $('go').onclick = async () => {
           // counts, and the server refuses a repeat as well.
           onExport: async (match) => {
             if (SAVED) {
-              return { isError: true, status: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Practice stats page' };
+              return { isError: true, status: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Stats page' };
             }
             if (SAVING) return { isError: true, status: 'this game is still being saved' };
             const post = () => fetch('/kshsaa-stats/upload', {

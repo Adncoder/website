@@ -1,4 +1,4 @@
-// Insights: what the practice stats say to do next. Builds teams of five
+// Insights: what the stats say to do next. Builds teams of five
 // starters and a sub, lists what each player should work on (with a message to
 // send them and a practice set for the category), and shows how hard each
 // level's questions really played. Stats password only.
@@ -131,7 +131,7 @@ ${KSHSAA_HEAD}
 ${kshsaaNav('/kshsaa-stats', 1100)}
 
 <div class="container pb-5" style="max-width:1100px">
-  <h1 class="h4 mb-0">Practice stats</h1>
+  <h1 class="h4 mb-0">Stats</h1>
 
   <div id="login" class="card mt-3 d-none" style="max-width:420px"><div class="card-body">
     <label class="form-label" for="pw">Stats password</label>
@@ -142,7 +142,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
   <div id="app" class="d-none">
     <ul class="nav nav-tabs mt-3">
-      <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Stats</a></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Overview</a></li>
       <li class="nav-item"><a class="nav-link active" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats#roster">Roster</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-tournaments">Tournaments</a></li>
@@ -232,7 +232,7 @@ var HABITS = {
   quiet: ['rarely buzzes', 'Do not be afraid to buzz when you have a good guess. A wrong answer at the end of a question costs nothing.']
 };
 var SOURCES = {
-  kshsaa: 'KSHSAA', converted: 'Converted quizbowl', beginner: 'Middle school',
+  kshsaa: 'KSHSAA archive', converted: 'Converted quizbowl', beginner: 'Middle school', jv: 'Easy high school',
   current: 'Current events', generated: 'Question bank', unknown: 'Unknown'
 };
 

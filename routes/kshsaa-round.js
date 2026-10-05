@@ -66,12 +66,13 @@ const SET_PREFIX = {
   converted: 'QB Converted',
   generated: 'SJA Generated',
   beginner: 'QB Beginner',
+  jv: 'QB JV',
   current: 'QB Current Events'
 };
 
 /**
  * @param {string} [setName]
- * @returns {'kshsaa'|'converted'|'generated'|'beginner'|'current'}
+ * @returns {'kshsaa'|'converted'|'generated'|'beginner'|'jv'|'current'}
  */
 export function sourceOf (setName) {
   const name = String(setName || '');
@@ -79,18 +80,19 @@ export function sourceOf (setName) {
 }
 
 // Question pools for each level, most preferred first. Every level is short,
-// buzzer-race questions; what rises is how hard the clues are: middle-school
-// giveaways, then the real KSHSAA archive (easy clues), then converted
-// quizbowl (harder ones). A later pool is used only once the earlier ones have
-// nothing unread left in a category -- the converted sets have no World
-// Language or math at all, and the Beginner set has no Year in Review, so those
-// slots always come from further down the list. The current-events import
+// buzzer-race questions; what rises is how hard the clues are: the giveaway
+// lines of middle school quizbowl (Beginner), then of easy high school
+// quizbowl (JV), then the real KSHSAA archive -- past state and regional
+// rounds -- and converted quizbowl (Varsity). A later pool is used only once
+// the earlier ones have nothing unread left in a category: the giveaway and
+// converted sets have no World Language and next to no math, so those slots
+// come from the KSHSAA archive at every level. The current-events import
 // (import-current-events.js) holds nothing but recent Year in Review
 // questions, so every level reads it first.
 export const LEVELS = {
   varsity: { label: 'Varsity', pools: [['converted', 'current'], ['kshsaa']], math: ['basic', 'intermediate', 'advanced'] },
-  jv: { label: 'JV', pools: [['kshsaa', 'current'], ['converted']], math: ['basic', 'intermediate'] },
-  beginner: { label: 'Beginner', pools: [['beginner', 'current'], ['kshsaa'], ['converted']], math: ['basic'] }
+  jv: { label: 'JV', pools: [['jv', 'current'], ['kshsaa'], ['converted']], math: ['basic', 'intermediate'] },
+  beginner: { label: 'Beginner', pools: [['beginner', 'current'], ['jv'], ['kshsaa'], ['converted']], math: ['basic'] }
 };
 
 // Current events go stale: Year in Review uses only questions written this year
@@ -258,9 +260,11 @@ async function buildRound ({ level, math, includeGenerated, drill }) {
     }
   });
 
-  if (level === 'beginner' && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === 'beginner'))) {
-    notes.push('No Beginner questions have been imported yet, so this round used JV questions. ' +
-      'Run "node import-beginner.js" from the website folder to add them.');
+  // a level whose own questions were never imported quietly reads harder ones
+  const missing = { beginner: 'import-beginner.js', jv: 'import-jv.js' }[level];
+  if (missing && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === level))) {
+    notes.push('No ' + LEVELS[level].label + ' questions have been imported yet, so this round used harder ones. ' +
+      'Run "node ' + missing + '" from the website folder to add them.');
   }
 
   const full = await tossups.find({ _id: { $in: plan.map(p => p.id) } }).toArray();
@@ -388,7 +392,7 @@ export function levelControls () {
 
 const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Download a packet - SJA Scholars Bowl</title>
+<title>Download packet</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 ${KSHSAA_HEAD}
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
@@ -410,7 +414,7 @@ ${kshsaaNav('/kshsaa-play', 900)}
     <div class="form-check mb-3">
       <input class="form-check-input" type="checkbox" id="gen">
       <label class="form-check-label" for="gen">
-        Include generated questions (<a href="/kshsaa-questions">question bank</a>)
+        Include <a href="/kshsaa-questions">question bank</a> questions
       </label>
     </div>
     <button class="btn btn-primary" id="go">Generate a round</button>

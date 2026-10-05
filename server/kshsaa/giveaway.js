@@ -88,10 +88,11 @@ export function giveawayOf (text, isMath) {
  * @param {{category: string, subcategory: string, alternate_subcategory?: string}} tossup
  * @returns {?{label: string, category: string, subcategory: string, alternate_subcategory: ?string}}
  * null for categories a scholars bowl round has no slot for. Current events are
- * skipped too: middle-school "current" events are years out of date, so Year
- * in Review falls through to the other pools.
+ * skipped too: "current" events in these older sets are years out of date, so
+ * Year in Review falls through to the other pools.
+ * Used by the Beginner and JV imports.
  */
-export function beginnerCategoryOf ({ category, subcategory, alternate_subcategory: alt }) {
+export function giveawaySlotOf ({ category, subcategory, alternate_subcategory: alt }) {
   switch (category) {
     case 'Literature':
       return { label: 'Language Arts', category, subcategory, alternate_subcategory: alt ?? null };
