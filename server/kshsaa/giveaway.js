@@ -1,11 +1,13 @@
-// Turns a middle-school quizbowl tossup into a Beginner scholars bowl question
-// by keeping only its giveaway -- the "For 10 points, name this..." sentence
-// that quizbowl saves for last because it is the easiest clue -- and dropping
-// the "For 10 points" itself, which scholars bowl does not use.
+// Turns a quizbowl tossup into a short scholars bowl question by keeping its
+// giveaway -- the "For 10 points, name this..." sentence that quizbowl saves
+// for last because it is the easiest clue -- and dropping the "For 10 points"
+// itself, which scholars bowl does not use. Beginner questions are the
+// giveaway alone (giveawayOf); JV questions keep the clue before it too
+// (lastTwoOf), so they still run from harder to easier.
 //
 // Many giveaways lean on the clues before them ("For 10 points, name this
 // American poet.") and are unanswerable alone, so those are rejected rather
-// than kept: a Beginner round is only useful if every question can be answered.
+// than kept: a round is only useful if every question can be answered.
 
 // the quizbowl point-value phrase, wherever it sits in the sentence
 const FOR_POINTS = /\s*,?\s*\b(?:for\s+(?:10|ten|15|fifteen|20|twenty)\s+points|ftp)\b(?:\s+each)?\s*[,:;.—–-]*\s*/i;
@@ -35,12 +37,17 @@ const MATH_BACK_REFERENCE = /\b(it|its|this|that|these|those|they|their|them|he|
  * @returns {?string} the giveaway as a standalone question, or null if it
  * cannot stand alone
  */
-export function giveawayOf (text, isMath) {
-  const clean = String(text || '')
-    .replace(/\((\*|\+)\)/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+const cleaned = text => String(text || '')
+  .replace(/\((\*|\+)\)/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
 
+/**
+ * Where the giveaway sentence starts, and where the sentence before it does.
+ * @param {string} clean
+ * @returns {?{start: number, prev: ?number}} null without a "for 10 points"
+ */
+function giveawaySpan (clean) {
   // where the last "for 10 points" itself begins, past any comma before it
   let at = -1;
   for (const m of clean.matchAll(FOR_POINTS_ALL)) { at = m.index + m[0].search(/[^\s,]/); }
@@ -49,21 +56,35 @@ export function giveawayOf (text, isMath) {
   // back up to the start of the sentence the phrase sits in, so "This poet,
   // for 10 points, wrote 'The Raven.'" keeps its subject
   let start = 0;
+  let prev = null;
   for (const m of clean.matchAll(SENTENCE_END)) {
     const end = m.index + m[0].length;
     if (end > at) { break; }
-    if (!ABBREVIATION.test(clean.slice(0, m.index))) { start = end; }
+    if (!ABBREVIATION.test(clean.slice(0, m.index))) { prev = start; start = end; }
   }
+  return { start, prev };
+}
 
-  let q = clean.slice(start)
+/** One sentence, without "for 10 points", capitalized and punctuated. */
+function tidy (sentence) {
+  let q = sentence
     .replace(FOR_POINTS, ' ')
     .replace(/\s+([.,?!;:])/g, '$1')
     .replace(/^[\s,;:.—–-]+/, '')
     .replace(/\s+/g, ' ')
     .trim();
-  if (!q) { return null; }
+  if (!q) { return ''; }
   q = q.charAt(0).toUpperCase() + q.slice(1);
   if (!/[.?!]["'”’)\]]*$/.test(q)) { q += '.'; }
+  return q;
+}
+
+export function giveawayOf (text, isMath) {
+  const clean = cleaned(text);
+  const span = giveawaySpan(clean);
+  if (!span) { return null; }
+  const q = tidy(clean.slice(span.start));
+  if (!q) { return null; }
 
   const words = q.split(' ').length;
   if (words < 5 || words > 70) { return null; }
@@ -79,6 +100,33 @@ export function giveawayOf (text, isMath) {
   // Emancipation Proclamation.") is its own clue.
   const directive = /^(name|identify|give|what is|what are|who is|who was|what was)\s+(this|these|the)\s+/i;
   if (directive.test(q) && !CLUE_LINK.test(q.replace(directive, ''))) { return null; }
+  return q;
+}
+
+/**
+ * The giveaway and the clue just before it: two sentences that still run from
+ * harder to easier, for JV. The earlier clue has to be about the answer itself
+ * ("This poet...", "In this novel...") rather than about something an even
+ * earlier clue brought up, and with it in front, a giveaway like "Name this
+ * American poet." is answerable after all. Math stays a single standalone
+ * computation, as in giveawayOf.
+ * @param {string} text - the tossup's question_sanitized
+ * @param {boolean} isMath
+ * @returns {?string} null when the tossup cannot give two standalone sentences
+ */
+export function lastTwoOf (text, isMath) {
+  if (isMath) { return giveawayOf(text, true); }
+  const clean = cleaned(text);
+  const span = giveawaySpan(clean);
+  if (!span || span.prev == null) { return null; }
+  const clue = tidy(clean.slice(span.prev, span.start));
+  const last = tidy(clean.slice(span.start));
+  if (!clue || !last) { return null; }
+  if (!/\b(this|these)\b/i.test(clue)) { return null; }
+  if (BACK_REFERENCE.test(clue) || BACK_REFERENCE.test(last)) { return null; }
+  const q = clue + ' ' + last;
+  const words = q.split(' ').length;
+  if (words < 8 || words > 80) { return null; }
   return q;
 }
 

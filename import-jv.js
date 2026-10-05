@@ -1,10 +1,10 @@
-// Import JV-level questions: the giveaway line of every easy high school
-// tossup on qbreader.org since 2010, minus "For 10 points". It is the same
-// conversion as import-beginner.js, one step up in difficulty: middle school
-// giveaways for Beginner, easy high school giveaways for JV, and the KSHSAA
-// state and regional archive and converted quizbowl for Varsity. See
-// server/kshsaa/giveaway.js for how the line is picked and which questions are
-// skipped because their last line cannot stand alone.
+// Import JV-level questions: the last two sentences of every easy high school
+// tossup on qbreader.org since 2010 -- the giveaway and the clue before it --
+// minus "For 10 points". Two sentences keep JV pyramidal, harder clue first,
+// where Beginner (import-beginner.js) reads middle school giveaways alone and
+// Varsity the KSHSAA state and regional archive and converted quizbowl. See
+// server/kshsaa/giveaway.js for how the sentences are picked and which
+// questions are skipped because they cannot stand alone.
 //
 // Run from the website folder (the same place as import-kshsaa.js):
 //   node import-jv.js              fetch, convert, and import
@@ -30,5 +30,6 @@ await runImport({
   categories: ['Literature', 'Mythology', 'Science', 'History', 'Geography', 'Social Science', 'Religion', 'Philosophy', 'Fine Arts'],
   minYear: 2010,
   slotOf: giveawaySlotOf,
+  sentences: 2,
   preview: 'jv-preview.json'
 });
