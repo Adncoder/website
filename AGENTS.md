@@ -144,17 +144,17 @@ document describes the upstream codebase and still applies.
 | --- | --- |
 | `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, lineup reuse, next round with the same teams, and save-once stats export |
 | `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out; exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
-| `routes/kshsaa-stats.js` | Password-gated practice stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
+| `routes/kshsaa-stats.js` | Password-gated stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
 | `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording |
-| `server/kshsaa/giveaway.js` | Turns a middle-school tossup into a Beginner question (its giveaway line) |
+| `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner or JV question (its giveaway line) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
-| `import-kshsaa.js`, `import-beginner.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. The last two share `server/kshsaa/qbreader-import.js` |
+| `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. The last three share `server/kshsaa/qbreader-import.js` |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -165,13 +165,19 @@ packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
 Every question the pages use carries `kshsaaImport: true`; the **set name
 prefix** says where it came from: `QB Converted` (varsity quizbowl rewritten
 for scholars bowl), `SJA Generated` (question bank), `QB Beginner`
-(`import-beginner.js`), `QB Current Events` (`import-current-events.js`, recent
-Year in Review only), anything else real KSHSAA. `LEVELS` in
-`kshsaa-round.js` lists the pools each level draws from in order of preference,
-ordered by how hard the clues are: Beginner reads the middle-school giveaways,
-JV the real KSHSAA archive (whose clues are easy), Varsity converted quizbowl.
-Later pools fill slots the earlier ones cannot (the converted and Beginner sets
-have no World Language, and the converted sets no math).
+(`import-beginner.js`), `QB JV` (`import-jv.js`), `QB Current Events`
+(`import-current-events.js`, recent Year in Review only), anything else real
+KSHSAA. `LEVELS` in `kshsaa-round.js` lists the pools each level draws from in
+order of preference, ordered by how hard the clues are. Beginner reads the
+giveaway lines of middle school quizbowl, JV those of easy high school
+quizbowl, and Varsity converted quizbowl and the KSHSAA archive, which is past
+state and regional rounds and too hard for JV. Later pools fill slots the
+earlier ones cannot (the giveaway and converted sets have no World Language and
+next to no math, so those come from the archive at every level). Until
+`import-jv.js` has been run, JV rounds fall back to the archive and say so in
+the round's notes; Beginner does the same. `import-kshsaa.js` wipes every
+`kshsaaImport` set except the `QB Beginner`, `QB JV`, and `QB Current Events`
+ones, so a new giveaway import needs adding to that exception too.
 
 Year in Review uses only questions written this calendar year or last. The year
 comes from the set name (the spring year of a `24-25` season, else the latest
@@ -192,7 +198,7 @@ KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has three
 sections; the other pages are tabs inside one, and pass that section's path to
 `kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
 (`readTabs()` from `nav.js`), and Insights, Tournaments, and the question bank
-are tabs under Practice stats, whose tab lists are written out in each of those
+are tabs under Stats, whose tab lists are written out in each of those
 pages.
 
 The stats page has two sortable tables, the players and the roster. Attach each

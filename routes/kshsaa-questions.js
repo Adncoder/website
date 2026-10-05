@@ -303,7 +303,7 @@ ${KSHSAA_HEAD}
 ${kshsaaNav('/kshsaa-stats', 1100)}
 
 <div class="container pb-5" style="max-width:1100px">
-  <h1 class="h4 mb-0">Practice stats</h1>
+  <h1 class="h4 mb-0">Stats</h1>
 
   <div id="login" class="card mt-3 d-none" style="max-width:420px"><div class="card-body">
     <label class="form-label">Stats password</label>
@@ -314,7 +314,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
   <div id="app" class="d-none">
     <ul class="nav nav-tabs mt-3">
-      <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Stats</a></li>
+      <li class="nav-item"><a class="nav-link" href="/kshsaa-stats">Overview</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-stats#roster">Roster</a></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-tournaments">Tournaments</a></li>

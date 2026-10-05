@@ -1,4 +1,4 @@
-// KSHSAA practice stats: upload MODAQ exports, get season-long team analytics.
+// KSHSAA stats: upload MODAQ exports, get season-long team analytics.
 //
 // INSTALL
 //   1. Save as   routes/kshsaa-stats.js
@@ -506,7 +506,7 @@ router.post('/upload', requireReader, async (req, res) => {
     if (!game) return res.status(400).json({ error: 'no game data' });
     if (roundId && await games.findOne({ roundId }, { projection: { _id: 1 } })) {
       return res.status(409).json({
-        error: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Practice stats page'
+        error: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Stats page'
       });
     }
     const cats = Array.isArray(categories)
@@ -866,7 +866,7 @@ router.get('/data', requireAuth, async (req, res) => {
 
 const PAGE = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Practice stats</title>
+<title>Stats</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 ${KSHSAA_HEAD}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
@@ -924,7 +924,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
 <div class="container pb-5" style="max-width:1100px">
   <div class="d-flex justify-content-between align-items-center">
-    <h1 class="h4 mb-0">Practice stats</h1>
+    <h1 class="h4 mb-0">Stats</h1>
     <button class="btn btn-sm btn-outline-secondary d-none" id="logout">Log out</button>
   </div>
 
@@ -937,7 +937,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
   <div id="app" class="d-none">
     <ul class="nav nav-tabs mt-3" id="tabs">
-      <li class="nav-item"><button class="nav-link active" data-tab="stats" type="button">Stats</button></li>
+      <li class="nav-item"><button class="nav-link active" data-tab="stats" type="button">Overview</button></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-insights">Insights</a></li>
       <li class="nav-item"><button class="nav-link" data-tab="roster" type="button">Roster</button></li>
       <li class="nav-item"><a class="nav-link" href="/kshsaa-tournaments">Tournaments</a></li>
@@ -978,7 +978,6 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
     <div id="tabRoster" class="d-none">
     <div class="card mt-3"><div class="card-body">
-      <h2 class="mt-0">Roster</h2>
       <p class="note mb-2" style="margin-top:0">Names here autocomplete when setting up a round, even before
       anyone has played, and the squad you assign is what shows in the stats table. One player per line;
       grade, squad, email, and past rating after commas are optional (<code>Max Chen, 11, JV Blue, max@school.org, 7/10</code>;
@@ -1458,7 +1457,7 @@ function gamesTable (d) {
 function render (d) {
   if (!d.totalGames) {
     $('content').innerHTML = '<div class="card mt-3"><div class="card-body text-center py-5">' +
-      '<p class="mb-1 fw-semibold">No practices recorded yet</p>' +
+      '<p class="mb-1 fw-semibold">No games recorded yet</p>' +
       '<p class="text-secondary small mb-3">Read a round on this site and click &ldquo;Save to team stats&rdquo; ' +
       'when the game ends &mdash; the numbers show up here.</p>' +
       '<a class="btn btn-primary btn-sm" href="/kshsaa-play">Read a round</a></div></div>';

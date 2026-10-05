@@ -52,9 +52,9 @@ const oldRefMatch = {
     { 'set.name': /^\d{2}-\d{2}\s.*(Reg|State|Question)/i }
   ]
 };
-// the Beginner and current-events questions carry kshsaaImport too, but come
-// from import-beginner.js and import-current-events.js
-const notBeginner = { $not: /^QB (Beginner|Current Events)/ };
+// the Beginner, JV, and current-events questions carry kshsaaImport too, but
+// come from import-beginner.js, import-jv.js, and import-current-events.js
+const notBeginner = { $not: /^QB (Beginner|JV|Current Events)/ };
 const wiped = await Promise.all([
   tossupsCol.deleteMany({ $and: [oldRefMatch, { 'set.name': notBeginner }] }),
   packetsCol.deleteMany({ $and: [oldRefMatch, { 'set.name': notBeginner }] }),

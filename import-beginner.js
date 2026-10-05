@@ -14,7 +14,7 @@
 // nothing else. Needs MONGODB_URI in .env (not for --dry-run).
 
 import 'dotenv/config';
-import { beginnerCategoryOf } from './server/kshsaa/giveaway.js';
+import { giveawaySlotOf } from './server/kshsaa/giveaway.js';
 import { runImport } from './server/kshsaa/qbreader-import.js';
 
 await runImport({
@@ -26,6 +26,6 @@ await runImport({
   difficulties: [1],
   categories: ['Literature', 'Mythology', 'Science', 'History', 'Geography', 'Social Science', 'Religion', 'Philosophy', 'Fine Arts'],
   minYear: 2000,
-  slotOf: beginnerCategoryOf,
+  slotOf: giveawaySlotOf,
   preview: 'beginner-preview.json'
 });
