@@ -232,7 +232,7 @@ var HABITS = {
   quiet: ['rarely buzzes', 'Do not be afraid to buzz when you have a good guess. A wrong answer at the end of a question costs nothing.']
 };
 var SOURCES = {
-  kshsaa: 'KSHSAA archive', converted: 'Converted quizbowl', beginner: 'Middle school', jv: 'Easy high school',
+  kshsaa: 'KSHSAA archive', converted: 'Converted quizbowl', beginner: 'Middle school', jv: 'Easy high school', varsity: 'Regular high school',
   current: 'Current events', generated: 'Question bank', unknown: 'Unknown'
 };
 

@@ -2,8 +2,9 @@
 // giveaway -- the "For 10 points, name this..." sentence that quizbowl saves
 // for last because it is the easiest clue -- and dropping the "For 10 points"
 // itself, which scholars bowl does not use. Beginner questions are the
-// giveaway alone (giveawayOf); JV questions keep the clue before it too
-// (lastTwoOf), so they still run from harder to easier.
+// giveaway alone (giveawayOf). JV questions keep the clue before it too, and
+// Varsity questions up to three clues before it (lastSentencesOf), so they
+// still run from harder to easier.
 //
 // Many giveaways lean on the clues before them ("For 10 points, name this
 // American poet.") and are unanswerable alone, so those are rejected rather
@@ -43,11 +44,12 @@ const cleaned = text => String(text || '')
   .trim();
 
 /**
- * Where the giveaway sentence starts, and where the sentence before it does.
+ * Where each sentence starts, up to and including the giveaway sentence.
  * @param {string} clean
- * @returns {?{start: number, prev: ?number}} null without a "for 10 points"
+ * @returns {?number[]} null without a "for 10 points"; the last entry is
+ *   where the giveaway starts
  */
-function giveawaySpan (clean) {
+function sentenceStarts (clean) {
   // where the last "for 10 points" itself begins, past any comma before it
   let at = -1;
   for (const m of clean.matchAll(FOR_POINTS_ALL)) { at = m.index + m[0].search(/[^\s,]/); }
@@ -55,14 +57,13 @@ function giveawaySpan (clean) {
 
   // back up to the start of the sentence the phrase sits in, so "This poet,
   // for 10 points, wrote 'The Raven.'" keeps its subject
-  let start = 0;
-  let prev = null;
+  const starts = [0];
   for (const m of clean.matchAll(SENTENCE_END)) {
     const end = m.index + m[0].length;
     if (end > at) { break; }
-    if (!ABBREVIATION.test(clean.slice(0, m.index))) { prev = start; start = end; }
+    if (!ABBREVIATION.test(clean.slice(0, m.index))) { starts.push(end); }
   }
-  return { start, prev };
+  return starts;
 }
 
 /** One sentence, without "for 10 points", capitalized and punctuated. */
@@ -81,9 +82,9 @@ function tidy (sentence) {
 
 export function giveawayOf (text, isMath) {
   const clean = cleaned(text);
-  const span = giveawaySpan(clean);
-  if (!span) { return null; }
-  const q = tidy(clean.slice(span.start));
+  const starts = sentenceStarts(clean);
+  if (!starts) { return null; }
+  const q = tidy(clean.slice(starts[starts.length - 1]));
   if (!q) { return null; }
 
   const words = q.split(' ').length;
@@ -104,30 +105,38 @@ export function giveawayOf (text, isMath) {
 }
 
 /**
- * The giveaway and the clue just before it: two sentences that still run from
- * harder to easier, for JV. The earlier clue has to be about the answer itself
- * ("This poet...", "In this novel...") rather than about something an even
- * earlier clue brought up, and with it in front, a giveaway like "Name this
- * American poet." is answerable after all. Math stays a single standalone
+ * The giveaway and the clues just before it: a short pyramid that still runs
+ * from harder to easier. Clues are added back to front, as many as fit, and
+ * each has to be about the answer itself ("This poet...", "In this novel...")
+ * rather than about something an even earlier clue brought up -- the first
+ * one that is not ends the run. With a clue in front, a giveaway like "Name
+ * this American poet." is answerable after all. Math stays a single standalone
  * computation, as in giveawayOf.
  * @param {string} text - the tossup's question_sanitized
  * @param {boolean} isMath
- * @returns {?string} null when the tossup cannot give two standalone sentences
+ * @param {number} least - fewest sentences, giveaway included
+ * @param {number} most - most sentences, giveaway included
+ * @param {number} maxWords - longest the whole question may run
+ * @returns {?string} null when the tossup cannot give `least` standalone sentences
  */
-export function lastTwoOf (text, isMath) {
+export function lastSentencesOf (text, isMath, least, most, maxWords) {
   if (isMath) { return giveawayOf(text, true); }
   const clean = cleaned(text);
-  const span = giveawaySpan(clean);
-  if (!span || span.prev == null) { return null; }
-  const clue = tidy(clean.slice(span.prev, span.start));
-  const last = tidy(clean.slice(span.start));
-  if (!clue || !last) { return null; }
-  if (!/\b(this|these)\b/i.test(clue)) { return null; }
-  if (BACK_REFERENCE.test(clue) || BACK_REFERENCE.test(last)) { return null; }
-  const q = clue + ' ' + last;
-  const words = q.split(' ').length;
-  if (words < 8 || words > 80) { return null; }
-  return q;
+  const starts = sentenceStarts(clean);
+  if (!starts) { return null; }
+  const g = starts.length - 1;
+  const last = tidy(clean.slice(starts[g]));
+  if (!last || BACK_REFERENCE.test(last)) { return null; }
+  const clues = [];
+  for (let i = g - 1; i >= 0 && clues.length < most - 1; i--) {
+    const clue = tidy(clean.slice(starts[i], starts[i + 1]));
+    if (!clue || !/\b(this|these)\b/i.test(clue) || BACK_REFERENCE.test(clue)) { break; }
+    if ([clue, ...clues, last].join(' ').split(' ').length > maxWords) { break; }
+    clues.unshift(clue);
+  }
+  if (clues.length + 1 < least) { return null; }
+  const q = [...clues, last].join(' ');
+  return q.split(' ').length < 8 ? null : q;
 }
 
 /**
