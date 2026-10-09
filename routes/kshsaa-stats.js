@@ -892,6 +892,8 @@ ${KSHSAA_HEAD}
  .heat{display:inline-block;min-width:3rem;padding:.15rem .4rem;border-radius:.25rem;
    text-align:center;font-size:.85rem}
  .rowlink{cursor:pointer}
+ .dayrow td{background:#f8f9fb}
+ .daycaret{display:inline-block;width:.8rem;color:#6b7280}
  tr.selected td{background:#eef4ff !important}
  .res{display:inline-block;padding:.12rem .5rem;border-radius:.3rem;font-size:.85rem;margin-right:.35rem}
  .res-win{background:#e6f2ea;color:#1d6b40;font-weight:600}
@@ -1143,9 +1145,9 @@ function fillFilters (d) {
     ? d.totalGames + ' games'
     : d.games.length + ' of ' + d.totalGames + ' games';
 }
-$('fMonth').onchange = function () { FILTER.month = $('fMonth').value; load(); };
-$('fLevel').onchange = function () { FILTER.level = $('fLevel').value; load(); };
-$('fKind').onchange = function () { FILTER.kind = $('fKind').value; load(); };
+$('fMonth').onchange = function () { FILTER.month = $('fMonth').value; DAYS_SHOWN = DAYS_STEP; load(); };
+$('fLevel').onchange = function () { FILTER.level = $('fLevel').value; DAYS_SHOWN = DAYS_STEP; load(); };
+$('fKind').onchange = function () { FILTER.kind = $('fKind').value; DAYS_SHOWN = DAYS_STEP; load(); };
 
 function load () {
   fetch('/kshsaa-stats/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level) +
@@ -1431,27 +1433,91 @@ function playerByName (n) {
   return null;
 }
 
+// Games are grouped by the day they were played. Days opened or closed by hand
+// stay that way across re-renders; only the newest day starts open.
+var DAYS_STEP = 10;
+var DAYS_SHOWN = DAYS_STEP, DAY_OPEN = {};
+
+function gameDays (games) {
+  var days = [], byKey = {};
+  games.slice().reverse().forEach(function (g) {
+    var when = new Date(g.playedAt);
+    var key = when.toDateString();
+    if (!byKey[key]) {
+      byKey[key] = { key: key, when: when, games: [] };
+      days.push(byKey[key]);
+    }
+    byKey[key].games.push(g);
+  });
+  return days;
+}
+
+function gameRow (g, hidden) {
+  var best = Math.max.apply(null, g.teams.map(function (t) { return t.score; }));
+  var tied = g.teams.filter(function (t) { return t.score === best; }).length > 1;
+  var score = g.teams.map(function (t) {
+    var cls = tied && t.score === best ? 'res-tie' : (t.score === best ? 'res-win' : 'res-loss');
+    return '<span class="res ' + cls + '">' + esc(t.name) + ': <span class="sc">' + t.score + '</span></span>';
+  }).join('');
+  return '<tr class="rowlink grow"' + (hidden ? ' hidden' : '') + ' data-id="' + g.id + '" title="See scorers, rename, or fix this game">' +
+    '<td class="text-secondary ps-4">' + new Date(g.playedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</td>' +
+    '<td>' + esc(g.label) + (g.kind === 'tournament' ? ' <span class="lvl">Tournament</span>' : '') +
+    (g.notes ? ' <span class="small text-secondary" title="Notes on this game">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
+    '<td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
+    '<td class="num">' + g.tossupsRead + '</td>' +
+    '<td class="text-end text-secondary small text-nowrap">open &rsaquo;</td></tr>';
+}
+
 function gamesTable (d) {
   if (!d.games.length) return '<p class="note">No games match these filters.</p>';
+  var days = gameDays(d.games);
   var h = '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
     '<table class="table table-sm table-hover mb-0"><thead><tr><th>Date</th><th>Game</th><th>Level</th><th>Result</th>' +
-    '<th class="num">Tossups</th><th></th></tr></thead><tbody>';
-  d.games.slice().reverse().forEach(function (g) {
-    var best = Math.max.apply(null, g.teams.map(function (t) { return t.score; }));
-    var tied = g.teams.filter(function (t) { return t.score === best; }).length > 1;
-    var score = g.teams.map(function (t) {
-      var cls = tied && t.score === best ? 'res-tie' : (t.score === best ? 'res-win' : 'res-loss');
-      return '<span class="res ' + cls + '">' + esc(t.name) + ': <span class="sc">' + t.score + '</span></span>';
-    }).join('');
-    h += '<tr class="rowlink grow" data-id="' + g.id + '" title="See scorers, rename, or fix this game">' +
-      '<td class="text-secondary">' + new Date(g.playedAt).toLocaleDateString() + '</td>' +
-      '<td>' + esc(g.label) + (g.kind === 'tournament' ? ' <span class="lvl">Tournament</span>' : '') +
-      (g.notes ? ' <span class="small text-secondary" title="Notes on this game">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
-      '<td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
-      '<td class="num">' + g.tossupsRead + '</td>' +
-      '<td class="text-end text-secondary small text-nowrap">open &rsaquo;</td></tr>';
+    '<th class="num">Tossups</th><th></th></tr></thead>';
+  days.slice(0, DAYS_SHOWN).forEach(function (day, i) {
+    var open = day.key in DAY_OPEN ? DAY_OPEN[day.key] : i === 0;
+    var levels = [];
+    day.games.forEach(function (g) {
+      var name = levelName(g.level);
+      if (levels.indexOf(name) === -1) levels.push(name);
+    });
+    h += '<tbody><tr class="rowlink dayrow" data-day="' + esc(day.key) + '" aria-expanded="' + open + '">' +
+      '<td class="fw-semibold text-nowrap"><span class="daycaret">' + (open ? '&#9662;' : '&#9656;') + '</span> ' +
+      day.when.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) + '</td>' +
+      '<td colspan="5" class="text-secondary">' + day.games.length + (day.games.length === 1 ? ' game' : ' games') +
+      ' &middot; ' + esc(levels.join(', ')) + '</td></tr>';
+    day.games.forEach(function (g) { h += gameRow(g, !open); });
+    h += '</tbody>';
   });
-  return h + '</tbody></table></div></div></div>';
+  h += '</table></div></div></div>';
+  if (days.length > DAYS_SHOWN) {
+    var left = days.length - DAYS_SHOWN;
+    h += '<button class="btn btn-sm btn-outline-secondary mt-2" id="moreDays" type="button">Show older days (' +
+      left + ' more)</button>';
+  }
+  return h;
+}
+
+function wireGames () {
+  Array.prototype.forEach.call(document.querySelectorAll('.grow'), function (row) {
+    row.onclick = function () { openGame(row.getAttribute('data-id')); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.dayrow'), function (row) {
+    row.onclick = function () {
+      var open = row.getAttribute('aria-expanded') !== 'true';
+      DAY_OPEN[row.getAttribute('data-day')] = open;
+      row.setAttribute('aria-expanded', open);
+      row.querySelector('.daycaret').innerHTML = open ? '&#9662;' : '&#9656;';
+      Array.prototype.forEach.call(row.parentNode.querySelectorAll('.grow'), function (g) { g.hidden = !open; });
+    };
+  });
+  if ($('moreDays')) {
+    $('moreDays').onclick = function () {
+      DAYS_SHOWN += DAYS_STEP;
+      $('gamesBox').innerHTML = gamesTable(DATA);
+      wireGames();
+    };
+  }
 }
 
 function render (d) {
@@ -1525,14 +1591,12 @@ function render (d) {
   }
 
   // ---- games ----
-  h += '<h2>Games</h2>' + gamesTable(d) +
-    '<p class="note">Click a game to see who scored, rename it, set its level, or fix a buzz.</p>';
+  h += '<h2>Games</h2><div id="gamesBox">' + gamesTable(d) + '</div>' +
+    '<p class="note">Click a day to show its games, and a game to see who scored, rename it, set its level, or fix a buzz.</p>';
 
   $('content').innerHTML = h;
 
-  Array.prototype.forEach.call(document.querySelectorAll('.grow'), function (row) {
-    row.onclick = function () { openGame(row.getAttribute('data-id')); };
-  });
+  wireGames();
   if (!d.players.length) return;
 
   $('search').value = SEARCH;
