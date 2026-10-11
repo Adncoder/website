@@ -20,6 +20,7 @@ import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
+import { formatSquadPlan, parseSquadPlan } from '../server/kshsaa/squad-plan.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
@@ -36,10 +37,19 @@ const categoryFor = (n, explicit) =>
 // squads a rostered player can belong to until the Roster tab saves its own list
 const DEFAULT_SQUADS = ['Varsity Blue', 'Varsity Crimson', 'JV Blue', 'JV Crimson', 'JV Silver', 'Rotating / sub'];
 
-/** @returns {Promise<string[]>} the squads, in the order teams are filled */
-export async function getSquads () {
+/**
+ * Squads and the pools that fill their rotating spots (see squad-plan.js).
+ * @returns {Promise<import('../server/kshsaa/squad-plan.js').SquadPlan>}
+ */
+export async function getSquadPlan () {
   const doc = await settings.findOne({ _id: 'squads' });
-  return doc?.list?.length ? doc.list : DEFAULT_SQUADS;
+  if (!doc?.list?.length) return { list: DEFAULT_SQUADS, pools: [], spots: {} };
+  return { list: doc.list, pools: doc.pools || [], spots: doc.spots || {} };
+}
+
+/** @returns {Promise<string[]>} the squads and pools, squads in the order teams are filled */
+export async function getSquads () {
+  return (await getSquadPlan()).list;
 }
 
 // ---------- auth ----------
@@ -172,8 +182,11 @@ router.get('/roster', requireAuth, async (req, res) => {
   const played = await playedNames();
   const playedSet = {};
   played.forEach(n => { playedSet[String(n).trim().toLowerCase()] = true; });
+  const plan = await getSquadPlan();
   res.json({
-    squads: await getSquads(),
+    squads: plan.list,
+    pools: plan.pools,
+    squadText: formatSquadPlan(plan),
     roster: list.map(r => ({
       id: String(r._id),
       name: r.name,
@@ -187,6 +200,9 @@ router.get('/roster', requireAuth, async (req, res) => {
       email: r.email || null,
       // a coach who sometimes plays in practice: kept out of counts and team building
       coach: Boolean(r.coach),
+      captain: Boolean(r.captain),
+      // short code for scoresheets and tight spaces, e.g. "GG2" for a second Gavin G.
+      initials: r.initials || null,
       hasPlayed: Boolean(playedSet[r.name.trim().toLowerCase()])
     }))
   });
@@ -197,67 +213,122 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RATING = /^(10|[1-9](\.5)?)\s*\/\s*10$/;
 const NO_RATING = /^n\/?a$/i;
 const COACH = /^(assistant |head )?coach$/i;
+const CAPTAIN = /^capt(ain)?\.?$/i;
+const PERMANENT = /^permanent$/i;
+// written in capitals, so a squad or a word is never mistaken for initials
+const INITIALS = /^[A-Z]{1,3}[0-9]?$/;
+// "Ben Thill (Capt)", the way a roster sheet writes it
+const CAPTAIN_SUFFIX = /\s*\(capt(ain)?\.?\)\s*$/i;
 
-// bulk add: one player per line, then any of grade, squad, email, past rating,
-// and "coach" after commas
+/**
+ * Initials as stored: capitals and a digit, at most four characters.
+ * @returns {?string}
+ */
+const cleanInitials = value => {
+  const v = String(value ?? '').trim().toUpperCase();
+  return INITIALS.test(v) ? v : null;
+};
+
+// Bulk add: one player per line, then any of grade, squad or pool, email, past
+// rating, initials, "captain", "permanent", and "coach" after commas.
+//
+// With `replace`, the paste is the whole roster: each line sets the player's
+// squad, permanent, captain, and initials outright (left out means cleared),
+// and every player not listed is removed. Coaches are never removed. Grade,
+// email, and rating are still only changed when a line gives them.
 router.post('/roster/add', requireAuth, async (req, res) => {
   try {
     const text = String((req.body && req.body.text) || '');
+    const replace = Boolean(req.body?.replace);
     const existing = await roster.find({}).toArray();
-    const squads = await getSquads();
+    const plan = await getSquadPlan();
     const byKey = {};
     existing.forEach(r => { byKey[r.name.trim().toLowerCase()] = r; });
 
     // one round trip for the whole paste rather than one per line
     const ops = [];
+    const listed = new Set();
+    const ignored = [];
+    const initialsOf = {};
     let added = 0; let updated = 0;
     for (const rawLine of text.split('\n')) {
       const line = rawLine.trim();
       if (!line) continue;
 
       // "Name", "Name, 11", "Name, 11, JV 2", "Name, JV 2, name@school.org",
-      // "Name, 7/10", "Name, N/A", "Name, coach" all work
+      // "Name, 7/10", "Name, N/A", "Name, coach", "Name, BT, captain" all work
       const parts = line.split(',').map(s => s.trim()).filter(Boolean);
-      const name = (parts.shift() || '').replace(/[,-]+$/, '').trim();
+      let name = (parts.shift() || '').replace(/[,-]+$/, '').trim();
+      let captain = CAPTAIN_SUFFIX.test(name);
+      name = name.replace(CAPTAIN_SUFFIX, '').trim();
       if (!name) continue;
-      let grade = null; let squad = null; let email = null;
+      let grade = null; let squad = null; let email = null; let initials = null;
       // undefined: not given, so an existing rating is left alone
-      let rating; let coach = false;
+      let rating; let coach = false; let permanent = false;
       for (const part of parts) {
+        const squadHit = plan.list.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') ===
+          part.toLowerCase().replace(/[^a-z0-9]/g, ''));
         if (/^(9|10|11|12)(th)?$/i.test(part)) grade = Number(part.replace(/\D/g, ''));
         else if (EMAIL.test(part)) email = part.slice(0, 120);
         else if (RATING.test(part)) rating = Number(part.match(RATING)[1]);
         else if (NO_RATING.test(part)) rating = null;
         else if (COACH.test(part)) coach = true;
-        else {
-          const hit = squads.find(s => s.toLowerCase().replace(/[^a-z0-9]/g, '') ===
-            part.toLowerCase().replace(/[^a-z0-9]/g, ''));
-          if (hit) squad = hit;
-        }
+        else if (CAPTAIN.test(part)) captain = true;
+        else if (PERMANENT.test(part)) permanent = true;
+        else if (squadHit) squad = squadHit;
+        else if (INITIALS.test(part)) initials = part;
+        else ignored.push(name + ': ' + part);
+      }
+      // a pool is where a player waits for a rotating spot, never a team they are fixed to
+      if (coach || !squad || plan.pools.includes(squad)) permanent = false;
+      if (coach) squad = null;
+      if (initials) {
+        if (initialsOf[initials]) ignored.push(name + ': ' + initials + ' is already ' + initialsOf[initials] + "'s initials");
+        initialsOf[initials] = name;
       }
 
       const key = name.toLowerCase();
+      listed.add(key);
       if (byKey[key]) {
+        const was = byKey[key];
         const set = {};
-        if (grade != null && byKey[key].grade !== grade) set.grade = grade;
-        if (squad && byKey[key].squad !== squad) set.squad = squad;
-        if (email && byKey[key].email !== email) set.email = email;
-        if (rating !== undefined && (byKey[key].rating ?? null) !== rating) set.rating = rating;
-        if (coach && !byKey[key].coach) Object.assign(set, { coach: true, squad: null, permanent: false });
+        if (grade != null && was.grade !== grade) set.grade = grade;
+        if (email && was.email !== email) set.email = email;
+        if (rating !== undefined && (was.rating ?? null) !== rating) set.rating = rating;
+        if (coach && !was.coach) Object.assign(set, { coach: true, squad: null, permanent: false });
+        if (replace) {
+          // a coach stays off every squad, whatever the line says
+          if (was.coach) { squad = null; permanent = false; }
+          if ((was.squad || null) !== squad) set.squad = squad;
+          if (Boolean(was.permanent) !== permanent) set.permanent = permanent;
+          if (Boolean(was.captain) !== captain) set.captain = captain;
+          if ((was.initials || null) !== initials) set.initials = initials;
+        } else {
+          if (squad && was.squad !== squad) Object.assign(set, { squad, permanent });
+          else if (permanent && !was.permanent) set.permanent = true;
+          if (captain && !was.captain) set.captain = true;
+          if (initials && was.initials !== initials) set.initials = initials;
+        }
         if (Object.keys(set).length) {
-          ops.push({ updateOne: { filter: { _id: byKey[key]._id }, update: { $set: set } } });
-          Object.assign(byKey[key], set);
+          ops.push({ updateOne: { filter: { _id: was._id }, update: { $set: set } } });
+          Object.assign(was, set);
           updated++;
         }
       } else {
-        const doc = { name, grade, squad: coach ? null : squad, email, rating: rating ?? null, coach, createdAt: new Date() };
+        const doc = { name, grade, squad, permanent, captain, initials, email, rating: rating ?? null, coach, createdAt: new Date() };
         ops.push({ insertOne: { document: doc } });
         byKey[key] = doc;
         added++;
       }
     }
+    if (replace && !listed.size) return res.status(400).json({ error: 'paste the whole roster to replace it' });
+
+    const removed = replace
+      ? existing.filter(r => !r.coach && !listed.has(r.name.trim().toLowerCase())).map(r => r.name)
+      : [];
+    if (removed.length) ops.push({ deleteMany: { filter: { name: { $in: removed }, coach: { $ne: true } } } });
     if (ops.length) await roster.bulkWrite(ops);
-    res.json({ ok: true, added, updated });
+    res.json({ ok: true, added, updated, removed, ignored });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
@@ -266,17 +337,23 @@ router.post('/roster/add', requireAuth, async (req, res) => {
 router.post('/roster/update', requireAuth, async (req, res) => {
   try {
     const grade = req.body.grade === '' || req.body.grade == null ? null : Number(req.body.grade);
-    const listed = (await getSquads()).includes(req.body.squad) ? req.body.squad : null;
+    const plan = await getSquadPlan();
+    const listed = plan.list.includes(req.body.squad) ? req.body.squad : null;
     const given = Number(req.body.rating);
     const rating = req.body.rating === '' || req.body.rating == null || !Number.isFinite(given)
       ? null
       : Math.round(Math.min(10, Math.max(1, given)) * 2) / 2;
     const coach = Boolean(req.body.coach);
     const squad = coach ? null : listed;
-    const permanent = Boolean(req.body.permanent) && Boolean(squad);
+    const permanent = Boolean(req.body.permanent) && Boolean(squad) && !plan.pools.includes(squad);
+    const captain = Boolean(req.body.captain);
+    const initials = cleanInitials(req.body.initials);
+    if (String(req.body.initials ?? '').trim() && !initials) {
+      return res.status(400).json({ error: 'initials are up to three letters and a digit, like GG2' });
+    }
     const email = String(req.body.email ?? '').trim().slice(0, 120) || null;
     if (email && !EMAIL.test(email)) return res.status(400).json({ error: email + ' does not look like an email address' });
-    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent, email, coach } });
+    await roster.updateOne({ _id: new ObjectId(String(req.body.id)) }, { $set: { grade, squad, rating, permanent, captain, initials, email, coach } });
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
@@ -342,16 +419,18 @@ router.post('/roster/rename', requireAuth, async (req, res) => {
   }
 });
 
-// the squad list itself, edited on the Roster tab
+// the squad plan itself, edited on the Roster tab (format in squad-plan.js)
 router.post('/squads', requireAuth, async (req, res) => {
-  const seen = new Set();
-  const list = (Array.isArray(req.body?.list) ? req.body.list : [])
-    .map(s => String(s ?? '').trim().slice(0, 40))
-    .filter(s => s && !seen.has(s.toLowerCase()) && seen.add(s.toLowerCase()))
-    .slice(0, 24);
-  if (!list.length) return res.status(400).json({ error: 'list at least one squad' });
-  await settings.updateOne({ _id: 'squads' }, { $set: { list } }, { upsert: true });
-  res.json({ ok: true, list });
+  let plan;
+  try {
+    plan = parseSquadPlan(String(req.body?.text ?? '').slice(0, 4000));
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  await settings.updateOne({ _id: 'squads' }, { $set: plan }, { upsert: true });
+  // nobody is fixed to a pool
+  if (plan.pools.length) await roster.updateMany({ squad: { $in: plan.pools }, permanent: true }, { $set: { permanent: false } });
+  res.json({ ok: true, ...plan });
 });
 
 // Put players on squads in one go, from the team builder. Someone who has
@@ -683,15 +762,15 @@ router.get('/export', async (req, res) => {
     return res.status(401).json({ error: 'not allowed' });
   }
   try {
-    const [allGames, rosterList, squads, questionPool] = await Promise.all([
+    const [allGames, rosterList, plan, questionPool] = await Promise.all([
       games.find({}).sort({ playedAt: 1 }).toArray(),
       // emails stay on the site: the export is for numbers, not contacting anyone
       roster.find({}, { projection: { email: 0 } }).sort({ name: 1 }).toArray(),
-      getSquads(),
+      getSquadPlan(),
       poolSummary()
     ]);
     res.set('Cache-Control', 'no-store');
-    res.json({ exportedAt: new Date(), squads, roster: rosterList, games: allGames, questionPool });
+    res.json({ exportedAt: new Date(), squads: plan.list, pools: plan.pools, spots: plan.spots, roster: rosterList, games: allGames, questionPool });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -982,19 +1061,27 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     <div class="card mt-3"><div class="card-body">
       <p class="note mb-2" style="margin-top:0">Names here autocomplete when setting up a round, even before
       anyone has played, and the squad you assign is what shows in the stats table. One player per line;
-      grade, squad, email, and past rating after commas are optional (<code>Max Chen, 11, JV Blue, max@school.org, 7/10</code>;
-      <code>N/A</code> clears a rating, <code>coach</code> marks a coach). Pasting a name already on the roster changes
-      only what that line gives &mdash; the rest is left alone. Renaming a player updates every game they played in; renaming
-      them to a name already on the roster merges the two.</p>
+      grade, squad or pool, email, past rating, initials, and <code>captain</code> after commas are optional
+      (<code>Max Chen, 11, JV Blue, MC, captain, permanent, max@school.org, 7/10</code>; <code>N/A</code> clears a rating,
+      <code>permanent</code> fixes them to their squad, <code>coach</code> marks a coach). Pasting a name already on the
+      roster changes only what that line gives &mdash; the rest is left alone. Renaming a player updates every game they
+      played in; renaming them to a name already on the roster merges the two.</p>
       <div class="row g-2 align-items-start">
         <div class="col-sm-8"><textarea class="form-control form-control-sm" id="rosterText" rows="4"
-          placeholder="Max Chen, 11&#10;Sarah Kim, 12&#10;Diego Alvarez, 9"></textarea></div>
+          placeholder="Max Chen, 11&#10;Sarah Kim, 12&#10;Diego Alvarez, 9"></textarea>
+          <label class="small mt-1 d-flex align-items-center gap-1"><input type="checkbox" id="rosterReplace">
+            This is the whole roster: remove every player not listed (coaches stay), and take squads, captains, and
+            initials from these lines</label></div>
         <div class="col-sm-4"><button class="btn btn-primary btn-sm w-100" id="rosterAdd">Add to roster</button>
           <div class="small mt-2" id="rosterMsg"></div></div>
       </div>
       <div class="row g-2 align-items-start mt-3">
-        <div class="col-sm-8"><label class="form-label" for="squadText">Squads, one per line, strongest first</label>
-          <textarea class="form-control form-control-sm" id="squadText" rows="4"></textarea></div>
+        <div class="col-sm-8"><label class="form-label" for="squadText">Squads and pools, one per line, strongest squad first</label>
+          <textarea class="form-control form-control-sm" id="squadText" rows="5"></textarea>
+          <p class="note mb-0">A squad's rotating spots come after a colon, each filled from the pools named:
+          <code>Varsity Crimson: 2 from Rotating Varsity Pool; 1 from JV Rotating Pool or JV Crimson Rotators</code>.
+          Mark a pool with no spots yet as <code>Name (pool)</code>. The team builder keeps permanent players on their
+          squad and fills only the spots from the pools.</p></div>
         <div class="col-sm-4 pt-sm-4"><button class="btn btn-outline-primary btn-sm w-100" id="squadSave">Save squads</button>
           <div class="small mt-2" id="squadMsg"></div></div>
       </div>
@@ -1181,6 +1268,7 @@ $('up').onclick = function () {
 // ---------- roster ----------
 
 var ROSTER = [];
+var POOLS = [];
 var ROSTER_SORT = { key: 'name', dir: 1 };
 // the direction each column sorts in first: names A-Z, younger grades first,
 // strongest squad first, highest rating first, players with stats first
@@ -1248,7 +1336,8 @@ function loadRoster () {
   fetch('/kshsaa-stats/roster').then(function (r) { return r.json(); }).then(function (d) {
     ROSTER = d.roster || [];
     SQUADS = d.squads || [];
-    if (document.activeElement !== $('squadText')) $('squadText').value = SQUADS.join('\\n');
+    POOLS = d.pools || [];
+    if (document.activeElement !== $('squadText')) $('squadText').value = d.squadText || SQUADS.join('\\n');
     renderRoster();
   });
 }
@@ -1267,12 +1356,17 @@ function renderRoster () {
     }).join('') + '<th style="width:9rem"></th></tr></thead><tbody>';
   sortedRoster().forEach(function (r) {
     h += '<tr data-row="' + r.id + '"><td class="ncell">' + esc(r.name) +
+      (r.initials ? ' <span class="small text-secondary">' + esc(r.initials) + '</span>' : '') +
+      (r.captain ? ' <span class="badge text-bg-primary">captain</span>' : '') +
       (r.email ? '<div class="small text-secondary">' + esc(r.email) + '</div>' : '') + '</td>' +
       '<td class="gcell">' + (r.grade ? r.grade + 'th' : '<span class="text-secondary">-</span>') + '</td>' +
       '<td class="scell">' + (r.coach
       ? '<span class="badge text-bg-light border">coach</span>'
       : r.squad
-        ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '')
+        ? esc(r.squad) + (r.permanent ? ' <span class="badge text-bg-light border">permanent</span>' : '') +
+          (POOLS.indexOf(r.squad) !== -1 && r.squad.toLowerCase().indexOf('pool') === -1
+            ? ' <span class="badge text-bg-light border">pool</span>'
+            : '')
         : '<span class="text-secondary">unassigned</span>') + '</td>' +
       '<td class="rcell">' + (r.rating == null ? '<span class="text-secondary">N/A</span>' : r.rating + '<span class="text-secondary">/10</span>') + '</td>' +
       '<td class="text-secondary">' + (r.hasPlayed ? 'has stats' : 'no games yet') + '</td>' +
@@ -1311,7 +1405,11 @@ function editRosterRow (id) {
   var acell = row.querySelector('.acell');
 
   ncell.innerHTML = '<input class="form-control form-control-sm nedit" value="' + esc(r.name) + '">' +
-    '<input class="form-control form-control-sm eedit mt-1" type="email" placeholder="email (optional)" value="' + esc(r.email || '') + '">';
+    '<input class="form-control form-control-sm eedit mt-1" type="email" placeholder="email (optional)" value="' + esc(r.email || '') + '">' +
+    '<div class="d-flex align-items-center gap-2 mt-1"><input class="form-control form-control-sm iedit" placeholder="initials" ' +
+    'maxlength="4" style="width:6rem" value="' + esc(r.initials || '') + '">' +
+    '<label class="small d-flex align-items-center gap-1"><input type="checkbox" class="capedit"' +
+    (r.captain ? ' checked' : '') + '> captain</label></div>';
   gcell.innerHTML = '<input class="form-control form-control-sm gedit" type="number" min="9" max="12" ' +
     'style="width:5rem" value="' + (r.grade || '') + '">';
   row.querySelector('.scell').innerHTML = '<select class="form-select form-select-sm sedit">' +
@@ -1320,7 +1418,7 @@ function editRosterRow (id) {
       return '<option value="' + esc(s) + '"' + (s === r.squad ? ' selected' : '') + '>' + esc(s) + '</option>';
     }).join('') + '</select>' +
     '<label class="small mt-1 d-flex align-items-center gap-1"><input type="checkbox" class="pedit"' +
-    (r.permanent ? ' checked' : '') + '> permanent on this squad</label>' +
+    (r.permanent ? ' checked' : '') + '> permanent on this squad (not a pool)</label>' +
     '<label class="small d-flex align-items-center gap-1"><input type="checkbox" class="cedit"' +
     (r.coach ? ' checked' : '') + '> coach, not a player</label>';
   // N/A is for anyone not yet seen play: the team builder goes on their stats alone
@@ -1346,6 +1444,8 @@ function editRosterRow (id) {
         rating: rcell.querySelector('.redit-rating').value,
         permanent: row.querySelector('.pedit').checked,
         coach: row.querySelector('.cedit').checked,
+        captain: ncell.querySelector('.capedit').checked,
+        initials: ncell.querySelector('.iedit').value,
         email: ncell.querySelector('.eedit').value
       }).then(function (res) {
         if (!res.ok) alert(res.d.error || 'could not save');
@@ -1368,7 +1468,7 @@ function editRosterRow (id) {
     } else saveDetails();
   };
   acell.querySelector('.gcancel').onclick = renderRoster;
-  [ncell.querySelector('.nedit'), ncell.querySelector('.eedit'), gcell.querySelector('.gedit'), rcell.querySelector('.redit-rating')].forEach(function (input) {
+  [ncell.querySelector('.nedit'), ncell.querySelector('.eedit'), ncell.querySelector('.iedit'), gcell.querySelector('.gedit'), rcell.querySelector('.redit-rating')].forEach(function (input) {
     input.onkeydown = function (e) {
       if (e.key === 'Enter') acell.querySelector('.gsave').click();
       if (e.key === 'Escape') renderRoster();
@@ -1388,8 +1488,7 @@ Array.prototype.forEach.call(document.querySelectorAll('#tabs [data-tab]'), func
 });
 
 $('squadSave').onclick = function () {
-  var list = $('squadText').value.split('\\n').map(function (x) { return x.trim(); }).filter(Boolean);
-  postJson('/kshsaa-stats/squads', { list: list }).then(function (res) {
+  postJson('/kshsaa-stats/squads', { text: $('squadText').value }).then(function (res) {
     if (!res.ok) { $('squadMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'could not save') + '</span>'; return; }
     $('squadMsg').innerHTML = '<span class="text-success">saved</span>';
     loadRoster();
@@ -1403,15 +1502,58 @@ document.addEventListener('keydown', function (e) {
 // the Insights page links back here with #roster
 if (location.hash === '#roster') document.querySelector('#tabs [data-tab="roster"]').click();
 
+// A rough edit distance, to catch a sheet spelling a returning player's name
+// differently before replacing the roster deletes them.
+function nameDistance (a, b) {
+  var prev = [];
+  for (var j = 0; j <= b.length; j++) prev.push(j);
+  for (var i = 1; i <= a.length; i++) {
+    var cur = [i];
+    for (var k = 1; k <= b.length; k++) {
+      cur.push(Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + (a[i - 1] === b[k - 1] ? 0 : 1)));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// the name a pasted line is for, the way the server reads it
+function pastedName (line) {
+  return line.split(',')[0].replace(/[(]capt(ain)?[.]?[)]/i, '').trim();
+}
+
+function replaceWarning (text) {
+  var names = text.split('\\n').map(pastedName).filter(Boolean);
+  var listed = {};
+  names.forEach(function (n) { listed[n.toLowerCase()] = true; });
+  var gone = ROSTER.filter(function (r) { return !r.coach && !listed[r.name.toLowerCase()]; });
+  if (!gone.length) return 'Replace the roster with these ' + names.length + ' lines? No one will be removed.';
+  return 'Replace the roster with these ' + names.length + ' lines? These ' + gone.length +
+    ' players are not listed and will be removed (their past games are kept):\\n\\n' +
+    gone.map(function (r) {
+      var close = names.filter(function (n) {
+        return !ROSTER.some(function (x) { return x.name.toLowerCase() === n.toLowerCase(); }) &&
+          nameDistance(n.toLowerCase(), r.name.toLowerCase()) <= 2;
+      })[0];
+      return '  ' + r.name + (close ? '   <- the paste has "' + close + '": same person? Rename them first to keep their history' : '');
+    }).join('\\n');
+}
+
 $('rosterAdd').onclick = function () {
   var text = $('rosterText').value;
+  var replace = $('rosterReplace').checked;
   if (!text.trim()) { $('rosterMsg').textContent = 'paste some names first'; return; }
-  postJson('/kshsaa-stats/roster/add', { text: text }).then(function (res) {
+  if (replace && !confirm(replaceWarning(text))) return;
+  postJson('/kshsaa-stats/roster/add', { text: text, replace: replace }).then(function (res) {
     var d = res.d;
     if (d.error) { $('rosterMsg').innerHTML = '<span class="text-danger">' + esc(d.error) + '</span>'; return; }
     $('rosterMsg').innerHTML = '<span class="text-success">added ' + d.added +
-      (d.updated ? ', updated ' + d.updated : '') + '</span>';
+      (d.updated ? ', updated ' + d.updated : '') + (d.removed && d.removed.length ? ', removed ' + d.removed.length : '') + '</span>' +
+      (d.ignored && d.ignored.length
+        ? '<div class="text-warning-emphasis mt-1">Not understood, so left out: ' + esc(d.ignored.join('; ')) + '</div>'
+        : '');
     $('rosterText').value = '';
+    $('rosterReplace').checked = false;
     loadRoster(); loadNames();
   });
 };
