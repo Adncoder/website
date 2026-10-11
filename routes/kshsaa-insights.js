@@ -15,7 +15,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
 import { CATEGORIES, LEVELS, sourceOf } from './kshsaa-round.js';
-import { getSquads, requireAuth } from './kshsaa-stats.js';
+import { getSquadPlan, requireAuth } from './kshsaa-stats.js';
 import { monthKeyOf, monthLabel, readFilters } from '../server/kshsaa/game-stats.js';
 import { computeInsights } from '../server/kshsaa/insights.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
@@ -27,10 +27,10 @@ const roster = qbreader.collection('kshsaa_roster');
 router.get('/data', requireAuth, async (req, res) => {
   try {
     const filters = readFilters(req.query);
-    const [everything, rosterList, squads] = await Promise.all([
+    const [everything, rosterList, plan] = await Promise.all([
       games.find({}).sort({ playedAt: 1 }).toArray(),
       roster.find({}).toArray(),
-      getSquads()
+      getSquadPlan()
     ]);
     const all = everything.filter(filters.inKind);
 
@@ -66,7 +66,10 @@ router.get('/data', requireAuth, async (req, res) => {
       months: [...new Set(all.map(g => monthKeyOf(g.playedAt)))].sort().reverse().map(key => ({ key, label: monthLabel(key) })),
       levels: Object.keys(LEVELS).map(key => ({ key, label: LEVELS[key].label })),
       categories: CATEGORIES,
-      squads,
+      squads: plan.list,
+      // the pools that fill each squad's rotating spots
+      pools: plan.pools,
+      spots: plan.spots,
       // everyone on the roster, so the team builder can place rated players
       // who have no games yet and keep permanent players on their squads
       roster: rosterList.filter(r => !r.coach).map(r => ({
@@ -75,6 +78,8 @@ router.get('/data', requireAuth, async (req, res) => {
         squad: r.squad || null,
         rating: r.rating ?? null,
         permanent: Boolean(r.permanent && r.squad),
+        captain: Boolean(r.captain),
+        initials: r.initials || null,
         email: r.email || null
       }))
     });
@@ -191,7 +196,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <div class="note" id="unplaced"></div>
       <p class="note">"Knows about" is how many of a round&rsquo;s 16 questions at least one starter would likely know.
       Each player blends their stats with your past rating from the roster (&#9733;, out of 10); permanent players stay on
-      their squad. Grayed names have under two rounds of games and no rating.</p>
+      their squad, and a squad's rotating spots are filled only from the pools the Roster tab names for them. Players in a
+      pool stay in it when squads are saved. Grayed names have under two rounds of games and no rating.</p>
     </div></div>
 
     <div class="d-flex justify-content-between align-items-end">
@@ -374,13 +380,13 @@ function buildCandidates () {
   var n = equalRounds();
   var list = DATA.players.map(function (p) {
     var r = rosterBy[p.name.toLowerCase()] || {};
-    return { name: p.name, games: p.games, heard: p.heard, statsKnow: p.know, rating: r.rating ?? null, squad: r.squad || null, permanent: Boolean(r.permanent) };
+    return { name: p.name, games: p.games, heard: p.heard, statsKnow: p.know, rating: r.rating ?? null, squad: r.squad || null, permanent: Boolean(r.permanent), captain: Boolean(r.captain), initials: r.initials || null };
   });
   var seen = {};
   list.forEach(function (c) { seen[c.name.toLowerCase()] = true; });
   DATA.roster.forEach(function (r) {
     if (!seen[r.name.toLowerCase()] && r.rating != null) {
-      list.push({ name: r.name, games: 0, heard: 0, statsKnow: null, rating: r.rating, squad: r.squad || null, permanent: Boolean(r.permanent) });
+      list.push({ name: r.name, games: 0, heard: 0, statsKnow: null, rating: r.rating, squad: r.squad || null, permanent: Boolean(r.permanent), captain: Boolean(r.captain), initials: r.initials || null });
     }
   });
   list.forEach(function (c) {
@@ -405,13 +411,15 @@ function buildCandidates () {
 
 var byLevel = function (a, b) { return b.level - a.level; };
 
-// every way to add k of the pool to the base, best first
-function bestSubset (pool, k, base) {
+// every way to add k of the pool to the base, best first; with ok, only the
+// picks it allows, and null when it allows none
+function bestSubset (pool, k, base, ok) {
   var best = null;
   var bestScore = -1;
   var pick = [];
   (function walk (start) {
     if (pick.length === k) {
+      if (ok && !ok(pick)) return;
       var s = strength(base.concat(pick));
       if (s > bestScore) { bestScore = s; best = pick.slice(); }
       return;
@@ -422,7 +430,7 @@ function bestSubset (pool, k, base) {
       pick.pop();
     }
   })(0);
-  return best || pool.slice(0, k);
+  return best || (ok ? null : pool.slice(0, k));
 }
 
 // five starters around whoever is fixed: either the strongest individuals or
@@ -452,21 +460,83 @@ function benchOrder (starters, bench) {
   }).sort(function (a, b) { return b.value - a.value; }).map(function (x) { return x.p; });
 }
 
+// ---------- rotating spots ----------
+// A squad with spots is its permanent players plus one player per spot, each
+// spot taking someone from the pools the Roster tab names for it.
+
+// squads a team can be built as: everything on the list but the pools
+function teamSquads () {
+  return DATA.squads.filter(function (s) { return DATA.pools.indexOf(s) === -1; });
+}
+
+// one entry per spot: the pools it takes from
+function slotsOf (squad) {
+  var out = [];
+  (DATA.spots[squad] || []).forEach(function (g) { for (var i = 0; i < g.count; i++) out.push(g.from); });
+  return out;
+}
+
+// whether these players can each have a different spot (a bipartite matching)
+function fits (players, slots) {
+  var holder = slots.map(function () { return null; });
+  function place (p, seen) {
+    for (var s = 0; s < slots.length; s++) {
+      if (seen[s] || slots[s].indexOf(p.squad) === -1) continue;
+      seen[s] = true;
+      if (holder[s] === null || place(holder[s], seen)) { holder[s] = p; return true; }
+    }
+    return false;
+  }
+  return players.every(function (p) { return place(p, {}); });
+}
+
+// permanent players start; the spots fill the rest of the five and then the bench
+function lineupWithSpots (fixed, players, squad, overall) {
+  var slots = slotsOf(squad);
+  var mine = fixed.slice().sort(byLevel);
+  var starters = mine.slice(0, 5);
+  var pool = players.filter(function (p) {
+    return slots.some(function (from) { return from.indexOf(p.squad) !== -1; });
+  }).sort(byLevel);
+  // strongest first, as long as everyone so far still has a spot
+  var greedy = [];
+  pool.forEach(function (p) {
+    if (greedy.length < Math.min(5 - starters.length, slots.length) && fits(greedy.concat(p), slots)) greedy.push(p);
+  });
+  var chosen = overall
+    ? greedy
+    : bestSubset(pool.slice(0, 30), greedy.length, starters, function (pick) { return fits(pick, slots); }) || greedy;
+  var subs = [];
+  benchOrder(starters.concat(chosen), pool.filter(function (p) { return chosen.indexOf(p) === -1; })).forEach(function (p) {
+    if (chosen.length + subs.length < slots.length && fits(chosen.concat(subs, p), slots)) subs.push(p);
+  });
+  return { starters: starters.concat(chosen), subs: mine.slice(5).concat(subs) };
+}
+
 function buildStrongest (players, count) {
   var overallFirst = $('firstOverall').checked;
+  var squads = teamSquads();
   // permanent players are kept for their own squad and never placed elsewhere
   var reserved = {};
   players.forEach(function (p) { if (p.permanent && p.squad) (reserved[p.squad] = reserved[p.squad] || []).push(p); });
   var left = players.filter(function (p) { return !(p.permanent && p.squad); });
   var teams = [];
   for (var t = 0; t < count; t++) {
-    var squad = DATA.squads[t] || '';
+    var squad = squads[t] || '';
     var fixed = reserved[squad] || [];
     if (!fixed.length && !left.length) break;
     var overall = overallFirst && t === 0;
+    var members;
+    if (slotsOf(squad).length) {
+      var w = lineupWithSpots(fixed, left, squad, overall);
+      members = w.starters.concat(w.subs);
+      left = left.filter(function (p) { return members.indexOf(p) === -1; });
+      teams.push({ starters: w.starters, subs: w.subs, squad: squad, fixed: fixed });
+      continue;
+    }
     var l = lineup(fixed, left, overall);
     var subs = l.extra.length ? l.extra : (overall ? l.bench : benchOrder(l.starters, l.bench)).slice(0, 1);
-    var members = l.starters.concat(subs);
+    members = l.starters.concat(subs);
     left = left.filter(function (p) { return members.indexOf(p) === -1; });
     teams.push({ starters: l.starters, subs: subs, squad: squad, fixed: fixed });
   }
@@ -597,16 +667,20 @@ function renderTeams () {
       '<div class="d-flex justify-content-between align-items-center gap-2 mb-2">' +
       '<select class="form-select form-select-sm w-auto tsquad" data-t="' + i + '">' +
       '<option value="">Team ' + (i + 1) + ' (no squad)</option>' +
-      DATA.squads.map(function (s) {
+      teamSquads().map(function (s) {
         return '<option' + (s === t.squad ? ' selected' : '') + '>' + esc(s) + '</option>';
       }).join('') + '</select>' +
       '<span class="fw-semibold text-nowrap">knows about ' + knows.toFixed(1) + ' of 16</span></div>' +
       '<table class="table table-sm mb-2"><thead><tr><th class="small">Player</th><th class="small">Past rating</th>' +
       '<th class="small num">Games</th><th class="small">Best at</th></tr></thead><tbody>';
     var row = function (p, sub) {
-      var tags = (sub ? ' <span class="small">(sub)</span>' : '') +
-        (t.fixed.indexOf(p) !== -1 ? ' <span class="small text-secondary">permanent</span>' : '');
-      return '<tr><td' + (sub ? ' class="text-secondary"' : '') + '>' + esc(p.name) + tags + '</td>' + playerCells(p) + '</tr>';
+      var tags = (p.captain ? ' <span class="badge text-bg-primary">C</span>' : '') +
+        (sub ? ' <span class="small">(sub)</span>' : '') +
+        (t.fixed.indexOf(p) !== -1
+          ? ' <span class="small text-secondary">permanent</span>'
+          : DATA.pools.indexOf(p.squad) !== -1 ? ' <span class="small text-secondary">from ' + esc(p.squad) + '</span>' : '');
+      return '<tr><td' + (sub ? ' class="text-secondary"' : '') + '>' + esc(p.name) +
+        (p.initials ? ' <span class="small text-secondary">' + esc(p.initials) + '</span>' : '') + tags + '</td>' + playerCells(p) + '</tr>';
     };
     t.starters.forEach(function (p) { h += row(p, false); });
     t.subs.forEach(function (p) { h += row(p, true); });
@@ -631,12 +705,23 @@ function renderTeams () {
 
 $('assign').onclick = function () {
   var assignments = [];
+  var rotating = 0;
   TEAMS.forEach(function (t) {
     if (!t.squad) return;
-    t.starters.concat(t.subs).forEach(function (p) { assignments.push({ name: p.name, squad: t.squad }); });
+    t.starters.concat(t.subs).forEach(function (p) {
+      // someone in a rotating spot belongs to their pool, not the squad they filled in for
+      if (DATA.pools.indexOf(p.squad) !== -1) { rotating++; return; }
+      assignments.push({ name: p.name, squad: t.squad });
+    });
   });
-  if (!assignments.length) { $('assignMsg').textContent = 'Pick a squad for at least one team first.'; return; }
-  if (!confirm('Set the squad on the roster for these ' + assignments.length + ' players?')) return;
+  if (!assignments.length) {
+    $('assignMsg').textContent = rotating
+      ? 'Everyone not already permanent here is in a rotating spot, and stays in their pool.'
+      : 'Pick a squad for at least one team first.';
+    return;
+  }
+  if (!confirm('Set the squad on the roster for these ' + assignments.length + ' players?' +
+    (rotating ? ' The ' + rotating + ' in rotating spots stay in their pools.' : ''))) return;
   postJson('/kshsaa-stats/roster/assign', { assignments: assignments }).then(function (res) {
     $('assignMsg').innerHTML = res.ok
       ? '<span class="text-success">Done. Squads are updated on the roster.</span>'
@@ -647,7 +732,8 @@ $('assign').onclick = function () {
 // ---------- player focus ----------
 
 function drillLevel (p) {
-  if (p.squad && p.squad.toLowerCase().indexOf('varsity') === 0) return 'varsity';
+  // "Varsity Blue", and the "Rotating Varsity Pool" that fills its spots
+  if (p.squad && p.squad.toLowerCase().indexOf('varsity') !== -1) return 'varsity';
   return FILTER.level === 'varsity' || FILTER.level === 'beginner' ? FILTER.level : 'jv';
 }
 

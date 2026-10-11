@@ -154,6 +154,7 @@ document describes the upstream codebase and still applies.
 | `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
+| `server/kshsaa/squad-plan.js` | Reads and writes the Roster tab's squad plan: squads, pools, and which pools fill each squad's rotating spots |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
 | `tools/seed-generated-questions.js`, `tools/seed-year-in-review.js` | Load the question bank's review queue: computed math and science, and hand-written Year in Review by level. Dry run unless `--write` |
@@ -310,6 +311,17 @@ summary of the question pools. It answers a stats session or
 unset. Squads live in `kshsaa_settings` (`_id: 'squads'`), edited on the Roster
 tab, strongest first: the team builder fills them in that order.
 
+That document is a squad plan (`server/kshsaa/squad-plan.js`): `list` (squads
+and pools, in order), `pools`, and `spots` (`{ squad: [{ count, from: [pool] }] }`).
+The Roster tab writes it one line per entry, `Varsity Crimson: 2 from Rotating
+Varsity Pool; 1 from JV Rotating Pool or JV Crimson Rotators`, with `Name (pool)`
+for a pool. A player's `squad` can be a pool; nobody is `permanent` on a pool.
+For a squad with spots, the team builder starts its permanent players and fills
+exactly its spots from those pools (`lineupWithSpots`, a small bipartite
+matching in `fits`); a squad without spots fills from everyone, as before.
+"Put these players on these squads" leaves pool players in their pool.
+`getSquads()` still returns the whole `list`, pools included.
+
 `/kshsaa-round?drill=<category>&level=<level>` builds a practice set of one
 category. Practice sets are not recorded in `kshsaa_question_usage`, so
 studying never uses up questions for rounds.
@@ -349,9 +361,14 @@ Permanent players are only ever placed on their own squad. The first squad
 takes the strongest individuals and the rest maximize category coverage,
 unless that checkbox is cleared.
 
-The roster paste box takes, after a name, any of grade, squad, email, a past
-rating written as `7/10`, `N/A` (clears it), and `coach`. Pasting a name already
-on the roster changes only what that line gives. A `coach` entry is on the
+The roster paste box takes, after a name, any of grade, squad or pool, email, a past
+rating written as `7/10`, `N/A` (clears it), initials in capitals (`GG2`),
+`captain` (or `(Capt)` after the name), `permanent`, and `coach`. Pasting a name already
+on the roster changes only what that line gives. Its "whole roster" checkbox
+(`replace`) instead takes squad, permanent, captain, and initials from each line
+outright and deletes every non-coach not listed; the page's confirm lists who
+goes and flags near-miss spellings, since a rename keeps game history and a
+delete-and-add does not. A `coach` entry is on the
 roster for autocomplete and may play in practice games, but is left out of
 player counts, and the Insights route drops coaches from its players and
 roster, so the team builder and player focus never see them.
