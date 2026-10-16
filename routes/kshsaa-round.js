@@ -300,9 +300,10 @@ const tieredSlots = (level, mathTiers) => ({
  * @param {object} options
  * @param {keyof LEVELS} options.level
  * @param {string} options.math - a key of MATH_CHOICES, or 'auto'
- * @param {{label: string, count: number}} [options.drill] - a practice set of
- *   one category instead of a round. Practice sets are not counted as read, so
- *   studying never uses up the questions rounds draw on.
+ * @param {{labels: string[], count: number}} [options.drill] - a practice set
+ *   instead of a round: count questions of each category in labels (one for a
+ *   study set, several for the Octopus Arcade). Practice sets are not counted
+ *   as read, so studying and fun rounds never use up the questions rounds draw on.
  * @returns {Promise<{round: object[], short: string[], notes: string[]}>} the
  * round, a label for each category the archive could not fill, and anything
  * else worth telling the moderator
@@ -314,7 +315,7 @@ async function buildRound ({ level, math, drill }) {
   const setFilter = setFilterFor([...new Set(pools.flat())]);
 
   const slots = drill
-    ? DISTRIBUTION.filter(([label]) => label === drill.label).map(([label, , filter]) => [label, drill.count, filter])
+    ? DISTRIBUTION.filter(([label]) => drill.labels.includes(label)).map(([label, , filter]) => [label, drill.count, filter])
     : DISTRIBUTION;
 
   const [candidates, usageDocs] = await Promise.all([
@@ -411,8 +412,11 @@ async function buildRound ({ level, math, drill }) {
 router.get('/generate', async (req, res) => {
   const level = Object.hasOwn(LEVELS, req.query.level) ? req.query.level : 'varsity';
   const math = Object.hasOwn(MATH_CHOICES, req.query.math) ? req.query.math : 'auto';
-  const drill = CATEGORIES.includes(req.query.drill)
-    ? { label: req.query.drill, count: Math.min(40, Math.max(5, parseInt(req.query.count) || 20)) }
+  // drill may repeat (?drill=Fine%20Arts&drill=Mathematics), and count is per
+  // category; a drill naming no real category reads a full round, as before
+  const labels = [].concat(req.query.drill ?? []).filter(label => CATEGORIES.includes(label));
+  const drill = labels.length
+    ? { labels: [...new Set(labels)], count: Math.min(40, Math.max(5, parseInt(req.query.count) || 20)) }
     : null;
   try {
     const { round, short, notes } = await oneAtATime(() => buildRound({ level, math, drill }));

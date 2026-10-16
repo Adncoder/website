@@ -136,9 +136,10 @@ Lint must pass (`npm run lint` — it auto-fixes most issues). Then actually exe
 ## KSHSAA Fork (this checkout only)
 
 `Adncoder/website` is a fork adding KSHSAA Scholars Bowl practice tooling.
-Everything under `routes/kshsaa-*.js`, `server/kshsaa/`, and the root
-`import-*.js` scripts is fork-only and does not exist upstream; the rest of this
-document describes the upstream codebase and still applies.
+Everything under `routes/kshsaa-*.js`, `server/kshsaa/`, `client/kshsaa/`,
+`test/`, and the root `import-*.js` scripts is fork-only and does not exist
+upstream; the rest of this document describes the upstream codebase and still
+applies.
 
 | File | Page |
 | --- | --- |
@@ -149,6 +150,9 @@ document describes the upstream codebase and still applies.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
+| `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round) and the projector scoreboard (`/kshsaa-arcade/board`). Serves the two pages only |
+| `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board.js` (scoreboard), `store.js`, `clock.js`, `questions.js` |
+| `test/kshsaa-arcade.test.js` | `npm test`: the arcade engine under `node --test` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it) |
@@ -301,6 +305,47 @@ touching the reader:
   `keydown`, `keypress`, and `keyup` from propagating.
 - Notes written in the reader go out with the save (`notes`), or, once the game
   is saved, to `POST /kshsaa-stats/notes` with the `roundId`.
+
+### Octopus Arcade
+
+Last Team Standing, Bounty Hunter, Lightning Round, and Chaos Mode, for two to
+eight teams. It does not use MODAQ: MODAQ has no callbacks, saves every wrong
+answer after the first as 0, and owns its buzz menu, so it can neither count
+lives nor shut an eliminated team out. Nothing here talks to buzzer hardware
+either, because the lockout boxes are standalone. Each team gets a key (1 to 8
+by default, changeable for a USB buzzer system that types keys), which the
+moderator presses when that team's light comes on. `whyNoBuzz` in `engine.js`
+refuses a key while the game is paused, after another team's buzz, from a team
+that already missed the question, or from a team that is out. It refuses an
+eliminated team even though its buzzer is still plugged in, except on a
+Resurrection question.
+
+Unlike the other pages, the game is real client files, not a template literal,
+so the backslash trap above does not apply and lint reads it as code. A game is
+its setup plus a list of events; `replay()` rebuilds lives, points, and who may
+buzz from them, and undo drops the last one. Only `act()` adds events, and a
+power-up drawn for a question is stored in that question's event, so replays
+always agree. The clocks and pause are not events: they sit on the game as
+`{ limit, left, since }`. To add a mode, write a file in `modes/` and list it
+in `modes/index.js`. Its `correct` and `wrong` change the teams only through
+`ops`, which applies shields and the lives cap. Power-ups are hooks in
+`modifiers.js`.
+
+Games live in this browser only: `localStorage` by game id, with the tab's own
+game and its scoreboard channel in `sessionStorage`. The scoreboard window
+follows its channel through the `storage` event, so it has to run in the same
+browser on the same computer, typically a laptop with the projector as a second
+screen. A refresh or a closed tab leaves the game paused with its clocks
+stopped. Questions come from `/kshsaa-round/generate` with `drill` repeated once
+per category (`count` is per category). Like practice sets they are not counted
+as read, and arcade games are never saved to stats.
+
+To test it in Claude's built-in browser pane, note that the pane opens
+`window.open` in the same tab: "Open scoreboard window" turns the console tab
+into the scoreboard. Go back (the game resumes, paused) and open that
+scoreboard URL, channel and all, in a second tab. Background tabs tick their
+timers once a second, so a clock in the background tab can lag the other one
+by that much.
 
 ### Sign-in
 
