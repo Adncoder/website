@@ -5,7 +5,8 @@
 // QBReader navbar's KSHSAA menu (client/ssi/nav.html) lists the same sections.
 //
 // Pages that belong to a section without being its first page pass that
-// section's path: the packet download sits under Read a round, and Insights,
+// section's path: the packet download and the Octopus Arcade sit under Read a
+// round, and Insights,
 // the roster, tournaments, and the question bank under Stats, each as a tab.
 
 const SECTIONS = [
@@ -59,13 +60,14 @@ export function kshsaaNav (active, maxWidth = 1100) {
 
 /**
  * The tabs under the Read a round heading: reading on this screen with MODAQ,
- * or downloading the packet to read somewhere else.
- * @param {string} active - '/kshsaa-play' or '/kshsaa-round'
+ * downloading the packet to read somewhere else, or the Octopus Arcade's fun
+ * rounds.
+ * @param {string} active - '/kshsaa-play', '/kshsaa-round', or '/kshsaa-arcade'
  * @returns {string} HTML
  */
 export function readTabs (active) {
   return `<ul class="nav nav-tabs mb-3" id="readTabs">
-    ${[['/kshsaa-play', 'Read on this screen'], ['/kshsaa-round', 'Download packet']]
+    ${[['/kshsaa-play', 'Read on this screen'], ['/kshsaa-round', 'Download packet'], ['/kshsaa-arcade', 'Octopus Arcade']]
       .map(([href, label]) => `<li class="nav-item"><a class="nav-link${href === active ? ' active' : ''}" href="${href}">${label}</a></li>`)
       .join('\n    ')}
   </ul>`;

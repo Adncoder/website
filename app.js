@@ -8,6 +8,7 @@ import hostnameRedirection from './server/hostname-redirection.js';
 import httpsEnforcement from './server/https-enforcement.js';
 import kshsaaRoundRouter from './routes/kshsaa-round.js';
 import kshsaaPlayRouter from './routes/kshsaa-play.js';
+import kshsaaArcadeRouter from './routes/kshsaa-arcade.js';
 import kshsaaStatsRouter from './routes/kshsaa-stats.js';
 import kshsaaInsightsRouter from './routes/kshsaa-insights.js';
 import kshsaaQuestionsRouter from './routes/kshsaa-questions.js';
@@ -44,6 +45,7 @@ app.use('/api/webhook', express.raw({ type: '*/*' }), webhookRouter);
 app.use(express.json());
 app.use('/kshsaa-round', kshsaaRoundRouter);
 app.use('/kshsaa-play', kshsaaPlayRouter);
+app.use('/kshsaa-arcade', kshsaaArcadeRouter);
 
 app.use(cookieSession({
   name: 'session',
