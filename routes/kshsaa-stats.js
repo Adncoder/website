@@ -669,6 +669,8 @@ router.get('/game/:id', requireAuth, async (req, res) => {
 });
 
 const BUZZ_VALUES = [10, -5, 0];
+// an octopus game puts three or more teams on one lockout system
+const MAX_TEAMS = 8;
 
 /**
  * Checks an edited game from the stats page and turns it into the stored
@@ -682,8 +684,8 @@ const BUZZ_VALUES = [10, -5, 0];
 function editedGame (body, g, fix) {
   const label = String(body.label || '').trim().slice(0, 120);
   if (!label) throw new Error('the game needs a name');
-  if (!Array.isArray(body.teams) || !body.teams.length || body.teams.length > 4) {
-    throw new Error('a game has one to four teams');
+  if (!Array.isArray(body.teams) || !body.teams.length || body.teams.length > MAX_TEAMS) {
+    throw new Error('a game has one to ' + MAX_TEAMS + ' teams');
   }
 
   const teamOf = {};
@@ -2086,7 +2088,7 @@ function renderEditor () {
       '" placeholder="+ add a player (type, then Enter)"></div></div></div>';
   });
   h += '</div>';
-  if (EDIT.teams.length < 4) {
+  if (EDIT.teams.length < ${MAX_TEAMS}) {
     h += '<button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="gmAddTeam">+ Add a team</button>';
   }
 

@@ -126,17 +126,10 @@ ${kshsaaNav('/kshsaa-play', 1100)}
 
     <div class="mb-3">${levelControls()}</div>
 
-    <div class="row g-4">
-      <div class="col-md-6">
-        <input class="form-control mb-2 fw-semibold" id="t1" placeholder="Team 1" aria-label="Team 1 name">
-        <div id="p1"></div>
-        <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p1">+ Add player</button>
-      </div>
-      <div class="col-md-6">
-        <input class="form-control mb-2 fw-semibold" id="t2" placeholder="Team 2" aria-label="Team 2 name">
-        <div id="p2"></div>
-        <button class="btn btn-sm btn-outline-secondary mt-1" data-add="p2">+ Add player</button>
-      </div>
+    <div class="row g-4" id="teams"></div>
+    <div class="mt-3">
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="addTeam"
+        title="For an octopus: three or more teams buzzing on one system">+ Add a team</button>
     </div>
 
     <div id="nameCheck" class="alert alert-warning mt-3 d-none"></div>
@@ -224,20 +217,22 @@ let SAVING = false;
 // to the saved game when written after that
 const NOTES = [];
 let ROUND_ID = null;
+// Fridays run octopus games: three or more teams on one lockout system
+const MAX_TEAMS = 8;
 
-function renumber (boxId) {
-  Array.from($(boxId).querySelectorAll('.pname')).forEach((input, i) => {
+function renumber (box) {
+  Array.from(box.querySelectorAll('.pname')).forEach((input, i) => {
     input.placeholder = 'Player ' + (i + 1);
   });
 }
 
-function addPlayerBox (boxId) {
+function addPlayerBox (box) {
   const wrap = document.createElement('div');
   wrap.className = 'input-group input-group-sm mb-1';
 
   const input = document.createElement('input');
   input.className = 'form-control pname';
-  input.placeholder = 'Player ' + ($(boxId).querySelectorAll('.pname').length + 1);
+  input.placeholder = 'Player ' + (box.querySelectorAll('.pname').length + 1);
   attachNameAutocomplete(input, {
     names: () => KNOWN,
     taken: self => allNameInputs().filter(i => i !== self).map(i => i.value),
@@ -250,83 +245,146 @@ function addPlayerBox (boxId) {
   remove.title = 'Remove this player';
   remove.textContent = '\\u00d7';
   remove.onclick = () => {
-    if ($(boxId).querySelectorAll('.pname').length <= 1) { input.value = ''; return; }
+    if (box.querySelectorAll('.pname').length <= 1) { input.value = ''; return; }
     wrap.remove();
-    renumber(boxId);
+    renumber(box);
   };
 
   wrap.appendChild(input);
   wrap.appendChild(remove);
-  $(boxId).appendChild(wrap);
+  box.appendChild(wrap);
   return input;
 }
 
-const allNameInputs = () => Array.from(document.querySelectorAll('#p1 .pname, #p2 .pname'));
+const teamCols = () => Array.from(document.querySelectorAll('#teams .team'));
+const allNameInputs = () => Array.from(document.querySelectorAll('#teams .pname'));
+const typedNames = col => Array.from(col.querySelectorAll('.pname')).map(i => i.value.trim()).filter(Boolean);
 
-// Enter moves down the lineup, then on to the other team, then to the button
+// Enter moves down the lineup, then on to the next team, then to the button
 function focusAfter (input) {
   const all = allNameInputs();
   const next = all[all.indexOf(input) + 1];
   (next || $('go')).focus();
 }
 
-document.querySelectorAll('[data-add]').forEach(btn => {
-  btn.onclick = () => addPlayerBox(btn.getAttribute('data-add')).focus();
-});
+// numbers the teams by position, and lets one go only while two would remain
+function renumberTeams () {
+  const cols = teamCols();
+  cols.forEach((col, i) => {
+    const name = col.querySelector('.tname');
+    name.placeholder = 'Team ' + (i + 1);
+    name.setAttribute('aria-label', 'Team ' + (i + 1) + ' name');
+    col.querySelector('.tdel').classList.toggle('d-none', cols.length <= 2);
+  });
+  $('addTeam').classList.toggle('d-none', cols.length >= MAX_TEAMS);
+  renderLineupChoices();
+}
 
-// Enter on a team name goes to that team's first player
-[['t1', 'p1'], ['t2', 'p2']].forEach(([team, box]) => {
-  $(team).addEventListener('keydown', e => {
+function addTeam () {
+  const col = document.createElement('div');
+  col.className = 'col-md-6 team';
+
+  const head = document.createElement('div');
+  head.className = 'input-group mb-2';
+  const name = document.createElement('input');
+  name.className = 'form-control fw-semibold tname';
+  // Enter on a team name goes to that team's first player
+  name.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
     e.preventDefault();
-    const first = $(box).querySelector('.pname');
+    const first = col.querySelector('.pname');
     if (first) first.focus();
   });
-});
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'btn btn-outline-secondary tdel';
+  del.title = 'Remove this team';
+  del.textContent = '\\u00d7';
+  del.onclick = () => {
+    if (teamCols().length <= 2) return;
+    const label = name.value.trim() || name.placeholder;
+    if (typedNames(col).length && !window.confirm('Remove ' + label + ' and its players?')) return;
+    col.remove();
+    renumberTeams();
+  };
+  head.appendChild(name);
+  head.appendChild(del);
+
+  const box = document.createElement('div');
+  box.className = 'pbox';
+  const add = document.createElement('button');
+  add.type = 'button';
+  add.className = 'btn btn-sm btn-outline-secondary mt-1';
+  add.textContent = '+ Add player';
+  add.onclick = () => addPlayerBox(box).focus();
+
+  col.appendChild(head);
+  col.appendChild(box);
+  col.appendChild(add);
+  $('teams').appendChild(col);
+  for (let i = 0; i < 5; i++) addPlayerBox(box);
+  renumberTeams();
+  return col;
+}
+
+// adds or drops teams from the end until there are n, never fewer than two
+function setTeamCount (n) {
+  const want = Math.max(2, Math.min(MAX_TEAMS, n));
+  while (teamCols().length < want) addTeam();
+  while (teamCols().length > want) teamCols().pop().remove();
+  renumberTeams();
+}
 
 let LINEUPS = [];
 
-// replace one side's roster wholesale, keeping a few blank rows to add to
-function fillSide (boxId, teamInputId, teamName, playerNames) {
-  $(teamInputId).value = teamName || '';
-  const box = $(boxId);
+// replace one team's roster wholesale, keeping a few blank rows to add to
+function fillTeam (col, teamName, playerNames) {
+  col.querySelector('.tname').value = teamName || '';
+  const box = col.querySelector('.pbox');
   box.innerHTML = '';
-  for (const name of playerNames.slice(0, 12)) { addPlayerBox(boxId).value = name; }
-  while (box.querySelectorAll('.pname').length < 5) { addPlayerBox(boxId); }
-  renumber(boxId);
+  for (const name of playerNames.slice(0, 12)) { addPlayerBox(box).value = name; }
+  while (box.querySelectorAll('.pname').length < 5) { addPlayerBox(box); }
+  renumber(box);
 }
 
 function renderLineupChoices () {
   const game = LINEUPS[Number($('lineupGame').value)];
   const box = $('lineupTeams');
   if (!game) { box.innerHTML = ''; return; }
+  const count = teamCols().length;
+  // past two teams the buttons drop the word "Team" so a row still fits
+  const target = k => count > 2 ? String(k) : 'Team ' + k;
   let h = '';
   game.teams.forEach((t, i) => {
     h += '<div class="d-flex align-items-center gap-2 mb-1">' +
       '<span class="small flex-grow-1"><strong>' + esc(t.name) + '</strong> &mdash; ' +
-      esc(t.players.join(', ')) + '</span>' +
-      '<button type="button" class="btn btn-sm btn-outline-secondary loadSide" data-team="' + i +
-      '" data-side="1">&rarr; Team 1</button>' +
-      '<button type="button" class="btn btn-sm btn-outline-secondary loadSide" data-team="' + i +
-      '" data-side="2">&rarr; Team 2</button></div>';
+      esc(t.players.join(', ')) + '</span>';
+    for (let k = 1; k <= count; k++) {
+      h += '<button type="button" class="btn btn-sm btn-outline-secondary loadSide" data-team="' + i +
+        '" data-side="' + k + '" title="Put this lineup in as Team ' + k + '">&rarr; ' + target(k) + '</button>';
+    }
+    h += '</div>';
   });
   if (game.teams.length >= 2) {
-    h += '<button type="button" class="btn btn-sm btn-outline-primary mt-1" id="loadBoth">Load both sides</button>';
+    h += '<button type="button" class="btn btn-sm btn-outline-primary mt-1" id="loadBoth">' +
+      (game.teams.length === 2 ? 'Load both sides' : 'Load all ' + game.teams.length + ' teams') + '</button>';
   }
   box.innerHTML = h;
 
   Array.from(box.querySelectorAll('.loadSide')).forEach(btn => {
     btn.onclick = () => {
       const t = game.teams[Number(btn.dataset.team)];
-      const side = btn.dataset.side === '1' ? ['p1', 't1'] : ['p2', 't2'];
-      fillSide(side[0], side[1], t.name, t.players);
+      fillTeam(teamCols()[Number(btn.dataset.side) - 1], t.name, t.players);
     };
   });
   const both = box.querySelector('#loadBoth');
   if (both) {
     both.onclick = () => {
-      fillSide('p1', 't1', game.teams[0].name, game.teams[0].players);
-      fillSide('p2', 't2', game.teams[1].name, game.teams[1].players);
+      setTeamCount(game.teams.length);
+      teamCols().forEach((col, i) => {
+        const t = game.teams[i];
+        if (t) fillTeam(col, t.name, t.players);
+      });
     };
   }
 }
@@ -348,11 +406,7 @@ function loadLineups () {
 function startApp () {
   $('gate').classList.add('d-none');
   $('setup').classList.remove('d-none');
-  for (const box of ['p1', 'p2']) {
-    if (!$(box).querySelectorAll('.pname').length) {
-      for (let i = 0; i < 5; i++) addPlayerBox(box);
-    }
-  }
+  while (teamCols().length < 2) addTeam();
   // a round started before the roster arrives would flag every player as new,
   // so hold the button until the fetch settles either way
   $('go').disabled = true;
@@ -382,15 +436,11 @@ function nextLabel (label) {
 }
 
 function currentSetup () {
-  const side = (box, team) => ({
-    name: $(team).value.trim(),
-    players: Array.from($(box).querySelectorAll('.pname')).map(i => i.value.trim()).filter(Boolean)
-  });
   return {
     label: $('label').value.trim(),
     level: document.querySelector('input[name="level"]:checked').value,
     math: $('mathTier').value,
-    teams: [side('p1', 't1'), side('p2', 't2')]
+    teams: teamCols().map(col => ({ name: col.querySelector('.tname').value.trim(), players: typedNames(col) }))
   };
 }
 
@@ -405,8 +455,11 @@ function restoreNextRound () {
   const radio = document.querySelector('input[name="level"][value="' + setup.level + '"]');
   if (radio) radio.checked = true;
   if (setup.math) $('mathTier').value = setup.math;
-  fillSide('p1', 't1', setup.teams[0].name, setup.teams[0].players);
-  fillSide('p2', 't2', setup.teams[1].name, setup.teams[1].players);
+  const teams = setup.teams || [];
+  setTeamCount(teams.length);
+  teamCols().forEach((col, i) => {
+    if (teams[i]) fillTeam(col, teams[i].name, teams[i].players || []);
+  });
 }
 
 // either password works here: the reader one only loads names and saves games
@@ -428,6 +481,9 @@ $('gateBtn').onclick = async () => {
   }
 };
 $('gatePw').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
+$('addTeam').onclick = () => {
+  if (teamCols().length < MAX_TEAMS) addTeam().querySelector('.tname').focus();
+};
 
 function lev (a, b) {
   const m = [];
@@ -456,16 +512,28 @@ function suggestionsFor (name) {
 }
 
 function nameInputs () {
-  return [
-    ...Array.from($('p1').querySelectorAll('.pname')).map(i => ({ input: i, team: $('t1').value.trim() || 'Team 1' })),
-    ...Array.from($('p2').querySelectorAll('.pname')).map(i => ({ input: i, team: $('t2').value.trim() || 'Team 2' }))
-  ].filter(e => e.input.value.trim());
+  return teamCols().flatMap((col, i) => {
+    const team = col.querySelector('.tname').value.trim() || 'Team ' + (i + 1);
+    return Array.from(col.querySelectorAll('.pname')).map(input => ({ input, team, col: i }));
+  }).filter(e => e.input.value.trim());
 }
 
 // returns players array, or null if the moderator still has names to resolve
 function validatedPlayers () {
   const warn = $('nameCheck');
   const entries = nameInputs();
+
+  // MODAQ tells teams apart by name alone, so two with one name would merge
+  const colOf = {};
+  for (const e of entries) {
+    const key = e.team.toLowerCase();
+    if (key in colOf && colOf[key] !== e.col) {
+      warn.className = 'alert alert-danger mt-3';
+      warn.innerHTML = 'Two teams are both called <strong>' + esc(e.team) + '</strong>. Give each team its own name.';
+      return null;
+    }
+    colOf[key] = e.col;
+  }
 
   // snap to existing capitalization so "max" can never become a second "Max"
   entries.forEach(e => {
@@ -513,14 +581,9 @@ function validatedPlayers () {
   }
 
   warn.classList.add('d-none');
-  const players = entries.map(e => ({ name: e.input.value.trim(), teamName: e.team, isStarter: true }));
-  // scholars bowl plays five a side; anyone listed after that starts on the bench
-  const perTeam = {};
-  players.forEach(p => {
-    perTeam[p.teamName] = (perTeam[p.teamName] || 0) + 1;
-    p.isStarter = perTeam[p.teamName] <= 5;
-  });
-  return players;
+  // everyone listed plays: JV and Beginner practice put seven on a team, and
+  // MODAQ's buzz menu leaves out anyone who is not a starter
+  return entries.map(e => ({ name: e.input.value.trim(), teamName: e.team, isStarter: true }));
 }
 
 // ---------- World Language display ----------
@@ -765,9 +828,11 @@ function watchReader (teamNames) {
   window.addEventListener('resize', anchor);
 
   // matching on the real team names rather than the literal word "Team" keeps
-  // this working once the moderator renames the teams
+  // this working once the moderator renames the teams. The length cap keeps
+  // out containers holding the whole reader, and grows with the names, since
+  // an octopus scoreboard lists every team.
   const looksLikeScoreboard = t =>
-    t.length < 200 && /\\d/.test(t) && teamNames.every(n => t.indexOf(n) !== -1);
+    t.length < 200 + teamNames.join('').length && /\\d/.test(t) && teamNames.every(n => t.indexOf(n) !== -1);
 
   const findScoreEl = () => {
     let best = null;
@@ -779,12 +844,19 @@ function watchReader (teamNames) {
     return best;
   };
 
-  const scoresFrom = text => teamNames.map(n => {
-    const at = text.indexOf(n);
-    if (at === -1) return null;
-    const m = text.slice(at + n.length).match(/-?\\d+/);
-    return m ? Number(m[0]) : null;
-  });
+  // MODAQ lists the teams in the order their players were given, so read them
+  // in that order, each after the last: "JV Crimson: 10, Crimson: 5" would
+  // otherwise give Crimson JV Crimson's score
+  const scoresFrom = text => {
+    let from = 0;
+    return teamNames.map(n => {
+      const at = text.indexOf(n, from);
+      if (at === -1) return null;
+      from = at + n.length;
+      const m = text.slice(from).match(/-?\\d+/);
+      return m ? Number(m[0]) : null;
+    });
+  };
 
   const scan = () => {
     queued = false;
@@ -941,7 +1013,10 @@ async function saveNote () {
 $('go').onclick = async () => {
   const players = validatedPlayers();
   if (!players) return;
-  if (players.length < 2) { $('status').textContent = 'add at least one player per team'; return; }
+  if (new Set(players.map(p => p.teamName)).size < 2) {
+    $('status').textContent = 'add players to at least two teams';
+    return;
+  }
 
   $('go').disabled = true;
   $('status').textContent = 'building round...';
