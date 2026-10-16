@@ -283,7 +283,14 @@ touching the reader:
   buttons overflow to 32px, and React rebuilds it. Measure its descendants and
   re-apply placement continuously; do not restructure its layout.
 - The buzz menu lists only players with `isStarter`; there is no other cap.
-  Scholars bowl plays five a side, so the first five per team start.
+  Everyone the moderator lists starts: JV and Beginner practice puts seven on a
+  team, and a benched player cannot be credited with a buzz until subbed in.
+- MODAQ takes any number of teams: scoring, the buzz menu, the scoreboard, and
+  the QBJ export all loop over `teamNames` (the order teams' players were
+  given). Fridays run "octopus" games, three or more teams on one lockout
+  system; the reader and the stats game editor both take up to eight
+  (`MAX_TEAMS` in each file). MODAQ gives only the first wrong answer on a
+  tossup the −5; any later team's wrong answer is saved as 0.
 - `customExport.onExport` is called from the menu **and** from the prompt after
   the last question. It must return `{ isError, status }` — MODAQ shows
   `status` only on errors, and a fixed "Export succeeded." otherwise. Saves carry
