@@ -1,15 +1,12 @@
-// Keeping arcade games in this browser, so a refresh never loses one, and
-// telling the scoreboard window what changed. Games sit in localStorage keyed
-// by id, so two arcade tabs running two rooms stay apart. Each tab remembers
-// its own game in sessionStorage (which survives a refresh), and has its own
-// channel: the scoreboard window it opened follows that channel to whichever
-// game the tab has open, so a new game shows up on the projector by itself.
+// Keeping arcade games in this browser, so a refresh never loses one. Games
+// sit in localStorage keyed by id, so two arcade tabs running two rooms stay
+// apart, and each tab remembers its own game in sessionStorage, which survives
+// a refresh. Which game the projector shows is second-screen.js's job; the
+// scoreboard window hears each save through onGameSaved.
 
 const GAME = 'kshsaa-arcade-game:';
-const CHANNEL = 'kshsaa-arcade-channel:';
 const SETUP = 'kshsaa-arcade-setup';
 const MY_GAME = 'kshsaa-arcade-current';
-const MY_CHANNEL = 'kshsaa-arcade-my-channel';
 // games untouched this long are cleared out
 const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -71,30 +68,14 @@ export function savedGames (now = Date.now()) {
 export const myGameId = () => read(area('sessionStorage'), MY_GAME);
 export const setMyGameId = id => id ? write(area('sessionStorage'), MY_GAME, id) : remove(area('sessionStorage'), MY_GAME);
 
-/** This tab's channel to its scoreboard window. */
-export function myChannel () {
-  let channel = read(area('sessionStorage'), MY_CHANNEL);
-  if (!channel) {
-    channel = Math.random().toString(36).slice(2, 10);
-    write(area('sessionStorage'), MY_CHANNEL, channel);
-  }
-  return channel;
-}
-
-export const pointChannel = (channel, id) => write(area('localStorage'), CHANNEL + channel, id);
-export const channelGameId = channel => read(area('localStorage'), CHANNEL + channel);
-
 /**
- * Calls back with the channel's game whenever its console saves it or opens
- * another one. The storage event fires only in the other windows, which is
- * exactly the scoreboard's case.
- * @param {string} channel
- * @param {(game: ?import('./engine.js').Game) => void} onGame
+ * Calls back whenever another window saves a game. The storage event fires
+ * only in the other windows, which is exactly the scoreboard's case.
+ * @param {(id: string, game: ?import('./engine.js').Game) => void} onGame
  */
-export function watchChannel (channel, onGame) {
+export function onGameSaved (onGame) {
   window.addEventListener('storage', e => {
-    if (e.key === CHANNEL + channel) onGame(loadGame(channelGameId(channel)));
-    else if (e.key === GAME + channelGameId(channel) && e.newValue) onGame(read(area('localStorage'), e.key));
+    if (e.key && e.key.startsWith(GAME) && e.newValue) onGame(e.key.slice(GAME.length), read(area('localStorage'), e.key));
   });
 }
 

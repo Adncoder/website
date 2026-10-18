@@ -166,6 +166,8 @@ ${kshsaaNav('/kshsaa-play', 1100)}
     <span id="saveState" class="badge text-bg-light border">not saved yet</span>
     <button type="button" class="btn btn-sm btn-outline-secondary" id="noteBtn"
       title="Write down something about this question, for a player or the team">Note on this question</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="screenBtn"
+      title="A second window for the projector: the scores, the question, the clock, and anything held up">Scoreboard window</button>
     <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="nextRound"
       title="Start a fresh round with the same teams, then change whoever swapped out">Next round with these teams &rarr;</button>
   </div>
@@ -219,6 +221,15 @@ const NOTES = [];
 let ROUND_ID = null;
 // Fridays run octopus games: three or more teams on one lockout system
 const MAX_TEAMS = 8;
+// The scoreboard window, a second screen for the projector, gets this round's
+// scores, question, clock, and anything held up (publishScreen). Its module
+// loads on the side, so nothing about it can stop a round from being read.
+let SCREEN = null;
+// the round as the second screen needs it, from the moment it starts
+let MATCH = null;
+let LIVE_SCORES = null;
+let HELD_UP = null;
+let lastPublished = '';
 
 function renumber (box) {
   Array.from(box.querySelectorAll('.pname')).forEach((input, i) => {
@@ -484,6 +495,17 @@ $('gatePw').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
 $('addTeam').onclick = () => {
   if (teamCols().length < MAX_TEAMS) addTeam().querySelector('.tname').focus();
 };
+$('screenBtn').onclick = () => {
+  if (SCREEN && !SCREEN.openScreen()) {
+    window.alert('The browser blocked the window. Allow pop-ups for this site, or open ' +
+      window.location.origin + SCREEN.screenUrl() + ' in a new window.');
+  }
+};
+import('/kshsaa/second-screen.js').then(m => {
+  SCREEN = m;
+  $('screenBtn').classList.remove('d-none');
+  publishScreen();
+}).catch(() => {});
 
 function lev (a, b) {
   const m = [];
@@ -643,16 +665,22 @@ function showLanguage (question) {
     '<span class="lang-text">' + esc(l.text) + '</span></div>').join('');
   $('langShow').classList.add('on');
   fitText($('langFit'));
+  HELD_UP = lines;
+  publishScreen();
 }
 
 function hideLanguage () {
   $('langShow').classList.remove('on');
+  HELD_UP = null;
+  publishScreen();
 }
 
 const languageShowing = () => $('langShow').classList.contains('on');
 
 // ---------- answer clock (KSHSAA timing) ----------
-const TIMER = { duration: 10, remaining: 10, running: false, handle: null, last: 0 };
+// startedAt and startedLeft (wall-clock ms, seconds left) are for the second
+// screen, which runs its own copy of the clock from when it last started
+const TIMER = { duration: 10, remaining: 10, running: false, handle: null, last: 0, startedAt: 0, startedLeft: 0 };
 const DURATIONS = [10, 30, 45, 60, 120];
 const DEFAULT_SECONDS = 10;
 // seconds allowed on each question of this round, read off the [30 sec] markers
@@ -692,7 +720,10 @@ function tpStart () {
   TIMER.running = true;
   TIMER.last = performance.now();
   TIMER.handle = setInterval(tpTick, 100);
+  TIMER.startedAt = Date.now();
+  TIMER.startedLeft = TIMER.remaining;
   tpSyncToggle();
+  publishScreen();
 }
 
 function tpStop () {
@@ -700,6 +731,7 @@ function tpStop () {
   if (TIMER.handle) clearInterval(TIMER.handle);
   TIMER.handle = null;
   tpSyncToggle();
+  publishScreen();
 }
 
 // no interruption, wrong answer: opponents get the time left plus five seconds
@@ -716,6 +748,7 @@ function tpRereadReset () {
   tpStop();
   TIMER.remaining = TIMER.duration;
   tpRender();
+  publishScreen();
 }
 
 // a new question means a fresh clock, at whatever limit that question carries.
@@ -877,6 +910,7 @@ function watchReader (teamNames) {
     if (!scoreEl || !root.contains(scoreEl)) {
       scoreEl = findScoreEl();
       lastScores = scoreEl ? scoresFrom(scoreEl.textContent) : null;
+      showScores(lastScores);
       return;
     }
     const now = scoresFrom(scoreEl.textContent);
@@ -886,6 +920,7 @@ function watchReader (teamNames) {
       }
     }
     lastScores = now;
+    showScores(now);
   };
 
   // React re-renders in bursts; one debounced pass per burst beats polling.
@@ -909,6 +944,7 @@ function tpSet (seconds, alsoStart) {
     b.classList.toggle('active', Number(b.dataset.secs) === seconds);
   });
   if (alsoStart) tpStart();
+  publishScreen();
 }
 
 function setupTimer (round, teamNames) {
@@ -974,6 +1010,44 @@ function setupTimer (round, teamNames) {
   tpForQuestion(1);
   $('timerBar').classList.remove('d-none');
   watchReader(teamNames);
+}
+
+// ---------- second screen ----------
+// Scores as read off MODAQ. A reading that misses a team keeps that team's
+// last score, so a re-render never flashes a zero onto the projector.
+function showScores (scores) {
+  if (!scores) return;
+  LIVE_SCORES = scores.map((s, i) => s != null ? s : (LIVE_SCORES ? LIVE_SCORES[i] : null));
+  publishScreen();
+}
+
+// What the scoreboard window shows of this round (scoreboard/match.js reads
+// it). Written out only when something on it changes, since the window
+// redraws on every write.
+function publishScreen () {
+  if (!SCREEN || !MATCH) return;
+  const q = CURRENT_QUESTION || 1;
+  const view = {
+    kind: 'match',
+    roundId: MATCH.roundId,
+    label: MATCH.label,
+    level: MATCH.level,
+    teams: MATCH.teams.map((name, i) => ({ name, score: (LIVE_SCORES && LIVE_SCORES[i]) || 0 })),
+    question: q,
+    total: ROUND.length,
+    category: ROUND[q - 1] ? ROUND[q - 1].category : '',
+    clock: {
+      limit: TIMER.duration * 1000,
+      left: Math.round((TIMER.running ? TIMER.startedLeft : TIMER.remaining) * 1000),
+      since: TIMER.running ? TIMER.startedAt : null
+    },
+    display: HELD_UP,
+    final: SAVED
+  };
+  const text = JSON.stringify(view);
+  if (text === lastPublished) return;
+  lastPublished = text;
+  SCREEN.showOnScreen(view);
 }
 
 function showNoteCount () {
@@ -1093,6 +1167,7 @@ $('go').onclick = async () => {
     }
     const levelName = document.querySelector('label[for="level-' + data.level + '"]');
     $('roundInfo').textContent = label + ' · ' + (levelName ? levelName.textContent : data.level);
+    MATCH = { roundId: data.roundId, label, level: levelName ? levelName.textContent : data.level, teams: teamNames };
     $('roundBar').classList.remove('d-none');
     $('nextRound').onclick = () => {
       if (!SAVED && !window.confirm('This game has not been saved to team stats. Start the next round anyway?')) return;
@@ -1158,6 +1233,7 @@ $('go').onclick = async () => {
                 SAVED = true;
                 $('saveState').textContent = 'saved to stats';
                 $('saveState').className = 'badge text-bg-success';
+                publishScreen();
               }
               if (r.ok) {
                 return { isError: false, status: 'Saved to team stats (' + (d.buzzes || 0) + ' buzzes recorded).' };
