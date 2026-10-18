@@ -1,7 +1,8 @@
 // The Octopus Arcade's moderator page: the setup form, then the console that
 // runs a game. The rules are engine.js and modes/; this file turns keys and
 // clicks into actions, keeps the clocks, and draws the state. The scoreboard
-// (board.js) is a second window reading the game this page saves.
+// window (scoreboard/page.js, through second-screen.js) shows the game this
+// page saves.
 
 import { MODES } from './modes/index.js';
 import { MODIFIERS } from './modifiers.js';
@@ -11,6 +12,7 @@ import {
 import { perCategory, pickQuestions, questionsUrl } from './questions.js';
 import { addTime, clockLeft, formatClock, newClock, startClock, stopClock } from './clock.js';
 import * as store from './store.js';
+import { openScreen, screenUrl, showOnScreen } from '../second-screen.js';
 
 const $ = id => document.getElementById(id);
 // team names are free text and reach innerHTML below
@@ -39,7 +41,6 @@ let autoNext = null;
 let toastTimer = null;
 let lineups = [];
 const adjusting = new Set();
-const channel = store.myChannel();
 
 // ---------- setup ----------
 
@@ -319,13 +320,14 @@ function openGame (game, notes = []) {
   shownQuestion = replay(GAME).q;
   adjusting.clear();
   store.setMyGameId(GAME.id);
-  store.pointChannel(channel, GAME.id);
   $('setup').classList.add('d-none');
   $('readHead').classList.add('d-none');
   $('game').classList.remove('d-none');
   $('notes').innerHTML = notes.map(n => '<div class="alert alert-warning py-2 small mb-2">' + esc(n) + '</div>').join('');
   document.title = MODES[GAME.mode].name + ' - Octopus Arcade';
   changed();
+  // after changed() has saved it, so the scoreboard window can load it
+  showOnScreen({ kind: 'arcade', id: GAME.id });
 }
 
 function leaveGame () {
@@ -503,9 +505,7 @@ function addRoundTime () {
 }
 
 function openBoard () {
-  const url = '/kshsaa-arcade/board?channel=' + encodeURIComponent(channel);
-  const win = window.open(url, 'kshsaa-arcade-board-' + channel, 'popup,width=1280,height=760');
-  if (!win) toast('The browser blocked the window. Allow pop-ups here, or open ' + url + ' in a new window.');
+  if (!openScreen()) toast('The browser blocked the window. Allow pop-ups here, or open ' + screenUrl() + ' in a new window.');
 }
 
 const ACTIONS = {

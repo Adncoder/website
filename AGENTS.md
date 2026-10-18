@@ -143,15 +143,17 @@ applies.
 
 | File | Page |
 | --- | --- |
-| `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, lineup reuse, next round with the same teams, and save-once stats export |
+| `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
 | `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out; exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
 | `routes/kshsaa-stats.js` | Password-gated stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
 | `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
-| `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round) and the projector scoreboard (`/kshsaa-arcade/board`). Serves the two pages only |
-| `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board.js` (scoreboard), `store.js`, `clock.js`, `questions.js` |
+| `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round). Serves the page only |
+| `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js` |
+| `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
+| `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
 | `test/kshsaa-arcade.test.js` | `npm test`: the arcade engine under `node --test` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
@@ -332,20 +334,44 @@ in `modes/index.js`. Its `correct` and `wrong` change the teams only through
 `modifiers.js`.
 
 Games live in this browser only: `localStorage` by game id, with the tab's own
-game and its scoreboard channel in `sessionStorage`. The scoreboard window
-follows its channel through the `storage` event, so it has to run in the same
-browser on the same computer, typically a laptop with the projector as a second
-screen. A refresh or a closed tab leaves the game paused with its clocks
-stopped. Questions come from `/kshsaa-round/generate` with `drill` repeated once
+game in `sessionStorage`. A refresh or a closed tab leaves the game paused with
+its clocks stopped. The projector shows the game through the scoreboard window
+(below). Questions come from `/kshsaa-round/generate` with `drill` repeated once
 per category (`count` is per category). Like practice sets they are not counted
 as read, and arcade games are never saved to stats.
 
+### Scoreboard window
+
+`/kshsaa-scoreboard` is a second screen for the projector, opened by the
+"Scoreboard window" button in the reader's round bar or the arcade console. It
+follows the tab that opened it and shows whatever that tab is running: a normal
+round's scores, question, category, and answer clock, with a World Language
+question while it is held up and Final once the game is saved, or an arcade
+game. Each tab has a channel in `sessionStorage`, so the window keeps following
+through a reload, "Next round with these teams", and a move from the reader to
+the arcade tab. The tab writes what to show to `localStorage`
+(`kshsaa-screen:<channel>`, through `second-screen.js`), and the window redraws
+on the `storage` event. That event only reaches windows of the same browser, so
+the scoreboard has to run on the same computer, typically a laptop with the
+projector as a second display.
+
+The reader's scores come off MODAQ's page through the same reading the clock
+uses to notice a neg (`watchReader`). `publishScreen` writes them out only when
+something on the screen changes, and a reading that misses a team keeps its
+last score rather than flashing a zero. The reader loads `second-screen.js` with
+a dynamic `import()` whose failure is ignored, so nothing about the scoreboard
+can stop a round from being read. An arcade tab points its channel at a game id
+only after saving that game, and the window loads the game from the arcade's
+own storage.
+
 To test it in Claude's built-in browser pane, note that the pane opens
-`window.open` in the same tab: "Open scoreboard window" turns the console tab
-into the scoreboard. Go back (the game resumes, paused) and open that
-scoreboard URL, channel and all, in a second tab. Background tabs tick their
-timers once a second, so a clock in the background tab can lag the other one
-by that much.
+`window.open` in the same tab, which in the reader throws away the round. Open
+`/kshsaa-scoreboard?channel=` plus the tab's
+`sessionStorage['kshsaa-screen-channel']` in a second tab instead. Background
+tabs tick their timers once a second, so a clock in the background tab can lag
+the other one by that much. MODAQ's buzz menu opens a player's Correct and
+Wrong on hover, which scripted clicks do not do; focus the player's menu item
+and send it ArrowRight.
 
 ### Sign-in
 

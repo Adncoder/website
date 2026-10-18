@@ -1,17 +1,14 @@
-// The Octopus Arcade scoreboard: a second window for the projector. It shows
-// whichever game its console tab has open, replaying the same saved event list
-// so it can never disagree with the console, and redraws whenever the console
-// saves. Its animations come from comparing each state with the one before.
+// An Octopus Arcade game on the scoreboard window (scoreboard/page.js). It
+// replays the same saved event list as the console, so the two can never
+// disagree, and its animations come from comparing each state with the one
+// before.
 
 import { MODES } from './modes/index.js';
 import { MODIFIERS } from './modifiers.js';
 import { replay, standings, winners } from './engine.js';
 import { clockLeft, formatClock } from './clock.js';
-import * as store from './store.js';
+import { $, animate, buildTiles, esc, fitFoot, float, hideFoot, signed, tileAt } from '../scoreboard/tiles.js';
 
-const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-const channel = new URLSearchParams(window.location.search).get('channel') || '';
 const OVER_TEXT = {
   'last-standing': 'Last team standing',
   questions: 'Out of questions',
@@ -22,86 +19,9 @@ const CONFETTI_COLORS = ['#ffc933', '#ff4f63', '#38d98a', '#58a6ff', '#b98cff', 
 
 let GAME = null;
 let STATE = null;
-let tiles = [];
-
-function show (game) {
-  let state = null;
-  try {
-    state = game && MODES[game.mode] ? replay(game) : null;
-  } catch (e) {}
-  if (!state) {
-    GAME = null;
-    STATE = null;
-    empty('No game yet. Start one on the Octopus Arcade page and it appears here by itself.');
-    return;
-  }
-  // animate only from the same game's last state, never across games
-  const prev = GAME && GAME.id === game.id ? STATE : null;
-  GAME = game;
-  if (!prev) buildTiles();
-  draw(state, prev);
-  STATE = state;
-}
-
-function empty (text) {
-  for (const id of ['bMode', 'bProgress', 'bStatus', 'bClock', 'bRound']) $(id).textContent = '';
-  for (const id of ['bMod', 'bFoot', 'overlay', 'bRound']) $(id).classList.add('hidden');
-  $('tiles').innerHTML = '<div class="empty">' + esc(text) + '</div>';
-  tiles = [];
-}
-
-// Columns that make the tiles as big as they can be at a comfortable shape on
-// whatever screen this is: four teams sit two by two on a 16:9 projector
-// rather than as four tall strips.
-function layoutTiles () {
-  const n = tiles.length;
-  if (!n) return;
-  const { width, height } = $('tiles').getBoundingClientRect();
-  let best = 1;
-  let bestSize = 0;
-  for (let cols = 1; cols <= n; cols++) {
-    const size = Math.min(width / cols / 1.2, height / Math.ceil(n / cols));
-    if (size > bestSize) [best, bestSize] = [cols, size];
-  }
-  $('tiles').style.setProperty('--cols', best);
-}
-
-function buildTiles () {
-  const box = $('tiles');
-  box.className = MODES[GAME.mode].lives ? 'lives-mode' : 'points-mode';
-  box.innerHTML = '';
-  tiles = GAME.teams.map(() => {
-    const el = document.createElement('div');
-    el.className = 'tile';
-    el.innerHTML = '<div class="t-key"></div><div class="t-tag"></div><div class="t-name"></div>' +
-      '<div class="t-lives"></div><div class="t-points"></div><div class="stamp">OUT</div>';
-    box.appendChild(el);
-    return el;
-  });
-  layoutTiles();
-}
-
-/** Restarts a CSS animation on an element. */
-function animate (el, name, ms = 1600) {
-  el.classList.remove(name);
-  // reading the layout restarts the animation
-  el.getBoundingClientRect();
-  el.classList.add(name);
-  setTimeout(() => el.classList.remove(name), ms);
-}
-
-function float (el, text, kind) {
-  const f = document.createElement('div');
-  f.className = 'float ' + kind;
-  f.textContent = text;
-  el.appendChild(f);
-  setTimeout(() => f.remove(), 2000);
-}
-
-const signed = n => (n > 0 ? '+' : '−') + Math.abs(n);
 
 function drawTile (i, state, prev, won) {
-  const el = tiles[i];
+  const el = tileAt(i);
   const team = GAME.teams[i];
   const t = state.teams[i];
   const was = prev && prev.teams[i];
@@ -144,32 +64,19 @@ function drawTile (i, state, prev, won) {
   else if (!was.shield && t.shield) float(el, '+ Shield', 'info');
 }
 
+// the question when the moderator puts it up, and the answer once it is done:
+// a question gets about a third of the screen, an answer alone a strip, so the
+// teams stay the biggest thing on it
 function drawFoot (state) {
   const q = GAME.questions[state.q];
   const showAnswer = GAME.config.showAnswers && Boolean(state.settled);
-  const foot = $('bFoot');
   if (!GAME.projectQuestion && !showAnswer) {
-    foot.classList.add('hidden');
-    layoutTiles();
+    hideFoot();
     return;
   }
-  $('bFit').innerHTML = (GAME.projectQuestion ? '<div class="f-q">' + esc(q.question) + '</div>' : '') +
-    (showAnswer ? '<div class="f-a"><span class="f-label">ANSWER</span>' + esc(q.answer) + '</div>' : '');
-  foot.classList.remove('hidden');
-  // the largest text that fits: a question gets about a third of the screen,
-  // an answer alone a strip, so the teams stay the biggest thing on it
-  const most = window.innerHeight * (GAME.projectQuestion ? 0.36 : 0.15);
-  let lo = 14;
-  let hi = GAME.projectQuestion ? 72 : 52;
-  for (let i = 0; i < 10; i++) {
-    const mid = (lo + hi) / 2;
-    $('bFit').style.fontSize = mid + 'px';
-    if (foot.scrollHeight <= most) lo = mid;
-    else hi = mid;
-  }
-  $('bFit').style.fontSize = lo + 'px';
-  // the tiles just lost or gained room
-  layoutTiles();
+  fitFoot((GAME.projectQuestion ? '<div class="f-q">' + esc(q.question) + '</div>' : '') +
+    (showAnswer ? '<div class="f-a"><span class="f-label">ANSWER</span>' + esc(q.answer) + '</div>' : ''),
+  GAME.projectQuestion ? 0.36 : 0.15, GAME.projectQuestion ? 72 : 52);
 }
 
 function confetti () {
@@ -241,10 +148,32 @@ function draw (state, prev) {
   GAME.teams.forEach((team, i) => drawTile(i, state, prev, won));
   drawFoot(state);
   drawOverlay(state, prev, won);
-  drawClocks(state);
+  tickArcade(state);
 }
 
-function drawClocks (state = STATE) {
+/**
+ * Draws a game, animating from the last drawing when it is the same game.
+ * @param {import('./engine.js').Game} game
+ * @param {boolean} same - the screen already shows this game
+ * @returns {boolean} false if the game could not be read
+ */
+export function showArcade (game, same) {
+  let state;
+  try {
+    state = replay(game);
+  } catch (e) {
+    return false;
+  }
+  const prev = same && GAME && GAME.id === game.id && STATE && STATE.teams.length === state.teams.length ? STATE : null;
+  GAME = game;
+  if (!prev) buildTiles(game.teams.length, MODES[game.mode].lives ? 'lives-mode' : 'points-mode');
+  draw(state, prev);
+  STATE = state;
+  return true;
+}
+
+/** The clocks, ten times a second. */
+export function tickArcade (state = STATE) {
   if (!GAME || !state) return;
   const clock = $('bClock');
   const open = !state.over && !state.settled && state.buzz === null;
@@ -261,23 +190,7 @@ function drawClocks (state = STATE) {
   }
 }
 
-$('fsBtn').onclick = () => {
-  if (document.fullscreenElement) document.exitFullscreen();
-  else document.documentElement.requestFullscreen().catch(() => {});
-};
-document.addEventListener('fullscreenchange', () => {
-  $('fsBtn').classList.toggle('hidden', Boolean(document.fullscreenElement));
-});
-// the text that fits depends on the window, which changes going full screen
-window.addEventListener('resize', () => {
-  layoutTiles();
+/** After the window changes size. */
+export function refitArcade () {
   if (GAME && STATE) drawFoot(STATE);
-});
-
-if (!channel) {
-  empty('Open the scoreboard with the "Open scoreboard window" button on the Octopus Arcade page.');
-} else {
-  show(store.loadGame(store.channelGameId(channel)));
-  store.watchChannel(channel, show);
-  setInterval(() => drawClocks(), 100);
 }
