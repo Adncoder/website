@@ -47,9 +47,11 @@ router.get('/data', requireAuth, async (req, res) => {
       answer: d.answer
     }]));
 
-    const insights = computeInsights(all, filters, questionInfo);
     const byName = {};
     for (const r of rosterList) byName[r.name.trim().toLowerCase()] = r;
+    // varsity squads and the pools that fill their spots ("Rotating Varsity Pool")
+    const isVarsity = name => /varsity/i.test(byName[name.trim().toLowerCase()]?.squad || '');
+    const insights = computeInsights(all, filters, questionInfo, isVarsity);
     // coaches who joined a practice game still count as being in the room for
     // the numbers above, but are never offered as players
     insights.players = insights.players.filter(p => !byName[p.name.trim().toLowerCase()]?.coach);
@@ -175,6 +177,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           </select></div>
         <div><label class="form-label mb-1" for="teamCount">Teams</label>
           <select class="form-select form-select-sm" id="teamCount"></select></div>
+        <div><label class="form-label mb-1" for="atLevel">On questions at</label>
+          <select class="form-select form-select-sm" id="atLevel"></select></div>
         <button type="button" class="btn btn-primary btn-sm" id="build">Build</button>
       </div>
       <div class="d-flex flex-wrap gap-3 align-items-center mb-3 small">
@@ -194,10 +198,13 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
         <span class="small ms-2" id="assignMsg"></span>
       </div>
       <div class="note" id="unplaced"></div>
-      <p class="note">"Knows about" is how many of a round&rsquo;s 16 questions at least one starter would likely know.
-      Each player blends their stats with your past rating from the roster (&#9733;, out of 10); permanent players stay on
-      their squad, and a squad's rotating spots are filled only from the pools the Roster tab names for them. Players in a
-      pool stay in it when squads are saved. Grayed names have under two rounds of games and no rating.</p>
+      <p class="note">"Knows about" is how many of a round&rsquo;s 16 questions at the chosen level the starters would answer
+      with nobody else buzzing. It comes from how often each player answered against whoever else was in the room, so
+      playing next to varsity does not count against a JV player, and a game where varsity held back is left out for the
+      varsity players in it. Each player blends their stats with your past rating from the roster (&#9733;, out of 10);
+      permanent players stay on their squad, and a squad's rotating spots are filled only from the pools the Roster tab
+      names for them. Players in a pool stay in it when squads are saved. Grayed names have under two rounds of games and
+      no rating.</p>
     </div></div>
 
     <div class="d-flex justify-content-between align-items-end">
@@ -206,10 +213,14 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     </div>
     <div class="card"><div class="card-body p-0"><div class="table-responsive">
       <table class="table table-sm align-middle mb-0"><thead><tr>
-        <th>Player</th><th class="num">Games</th><th class="num">Points/question</th><th>Trend</th>
-        <th>Strong</th><th>Work on</th><th>Habits</th><th></th></tr></thead>
+        <th>Player</th><th class="num">Games</th><th class="num">Points/question</th>
+        <th class="num" title="Room-adjusted: how many of a 16-question round at the level chosen above they would answer with nobody else buzzing">Adjusted</th>
+        <th>Trend</th><th>Strong</th><th>Work on</th><th>Habits</th><th></th></tr></thead>
       <tbody id="focus"></tbody></table>
     </div></div></div>
+    <p class="note">Adjusted: how many of a 16-question round at <span id="focusLevel"></span> the player would answer with
+    nobody else buzzing, from how they did against whoever was in the room. Trend: the change in that between their two
+    most recent months. Games where a varsity player held back are left out for them.</p>
 
     <h2>Question difficulty</h2>
     <div class="card"><div class="card-body p-0"><div class="table-responsive">
@@ -282,6 +293,7 @@ function load () {
       if (d.error) { $('filterNote').textContent = d.error; return; }
       DATA = d;
       fillFilters(d);
+      fillAtLevel(d);
       buildCandidates();
       renderPool();
       renderFocus();
@@ -307,39 +319,79 @@ $('fLevel').onchange = function () { FILTER.level = $('fLevel').value; load(); }
 $('fKind').onchange = function () { FILTER.kind = $('fKind').value; load(); };
 
 // ---------- team building ----------
-// A team's strength is how many of a round's 16 questions at least one of its
-// five starters would likely know: per category, one minus the chance that
-// every starter misses, weighted by how many questions the category gets.
+// A team's strength is how many of a round's 16 questions its five starters
+// would answer with nobody else buzzing, less half their -5s. In the room
+// model a category's questions go to starter p with chance s / (D + S), s
+// being their strength there, S the starters' strengths added up, and D how
+// hard the chosen level plays. Each answer counts for the player's worth
+// (what it is worth after the -5s that come with it), and each category for
+// how many questions it gets.
 //
-// Each player's chances blend their stats with the coach's 1-10 rating from
+// Each player's strengths blend their stats with the coach's 1-10 rating from
 // the roster. Stats count for rounds / (rounds + N) of the blend, so a rating
 // carries a player who has barely played and fades as their games pile up.
 
 var EQUAL_ROUNDS_KEY = 'kshsaa-equal-rounds';
 var CANDIDATES = [];
 var UNPLACED = [];
+var AT_LEVEL = null;
+
+// how hard the chosen level plays, against the reference level's 1
+function difficulty () {
+  return DATA.difficulty[AT_LEVEL] || 1;
+}
 
 function strength (members) {
+  var D = difficulty();
   var total = 0;
   DATA.categories.forEach(function (c) {
-    var miss = 1;
-    members.forEach(function (p) { miss *= 1 - (p.know[c] || 0); });
-    total += DATA.weights[c] * (1 - miss);
+    var sum = 0;
+    var net = 0;
+    members.forEach(function (p) {
+      sum += p.s[c] || 0;
+      net += (p.s[c] || 0) * p.f;
+    });
+    total += DATA.weights[c] * net / (D + sum);
   });
   return total;
 }
 
-// how many of a round's questions the player would likely know on their own
-function levelOf (know) {
-  var total = 0;
-  DATA.categories.forEach(function (c) { total += DATA.weights[c] * (know[c] || 0); });
-  return total;
+// how many of a round's questions the player would answer on their own
+function levelOf (s, f) {
+  return strength([{ s: s, f: f }]);
 }
 
-function scaled (know, factor) {
+function scaled (s, factor) {
   var out = {};
-  DATA.categories.forEach(function (c) { out[c] = Math.min(0.95, (know[c] || 0) * factor); });
+  DATA.categories.forEach(function (c) { out[c] = (s[c] || 0) * factor; });
   return out;
+}
+
+// the same mix of categories, made stronger or weaker until it answers
+// target questions of 16 on its own
+function fitTo (s, target, f) {
+  if (!(f > 0) || !(target > 0)) return s;
+  target = Math.min(target, 15.99 * f);
+  var lo = 0;
+  var hi = 1;
+  while (levelOf(scaled(s, hi), f) < target && hi < 1e6) hi *= 2;
+  for (var i = 0; i < 50; i++) {
+    var mid = (lo + hi) / 2;
+    if (levelOf(scaled(s, mid), f) < target) lo = mid; else hi = mid;
+  }
+  return scaled(s, (lo + hi) / 2);
+}
+
+// the levels the filtered games were read at; the Level filter's, or else
+// Varsity, unless another was picked
+function fillAtLevel (d) {
+  var keys = d.levels.map(function (l) { return l.key; }).concat('untagged')
+    .filter(function (k) { return d.difficulty[k] != null; });
+  var pick = function (k) { return keys.indexOf(k) !== -1 ? k : null; };
+  AT_LEVEL = pick(FILTER.level) || pick(AT_LEVEL) || pick('varsity') || keys[0] || null;
+  $('atLevel').innerHTML = keys.map(function (k) {
+    return '<option value="' + k + '"' + (k === AT_LEVEL ? ' selected' : '') + '>' + esc(levelName(k)) + '</option>';
+  }).join('');
 }
 
 function equalRounds () {
@@ -351,16 +403,14 @@ function equalRounds () {
 // player on the team and a 1 with the weakest. Someone with no games gets the
 // team's average mix of categories at that level.
 function ratingScale () {
-  var measured = DATA.players.filter(function (p) { return p.heard >= 32; });
-  var levels = measured.map(function (p) { return levelOf(p.know); }).sort(function (a, b) { return a - b; });
+  var measured = DATA.players.filter(function (p) { return p.heard >= 32 && p.strength; });
+  var levels = measured.map(function (p) { return levelOf(p.strength, p.worth); }).sort(function (a, b) { return a - b; });
   var profile = {};
   DATA.categories.forEach(function (c) {
     var sum = 0;
-    measured.forEach(function (p) { sum += p.know[c] || 0; });
+    measured.forEach(function (p) { sum += p.strength[c] || 0; });
     profile[c] = measured.length ? sum / measured.length : 0.3;
   });
-  var unit = levelOf(profile) || 1;
-  DATA.categories.forEach(function (c) { profile[c] /= unit; });
   return {
     profile: profile,
     level: function (rating) {
@@ -380,32 +430,33 @@ function buildCandidates () {
   var n = equalRounds();
   var list = DATA.players.map(function (p) {
     var r = rosterBy[p.name.toLowerCase()] || {};
-    return { name: p.name, games: p.games, heard: p.heard, statsKnow: p.know, rating: r.rating ?? null, squad: r.squad || null, permanent: Boolean(r.permanent), captain: Boolean(r.captain), initials: r.initials || null };
+    return { name: p.name, games: p.games, heard: p.heard, statsS: p.strength, f: p.worth ?? DATA.teamWorth, rating: r.rating ?? null, squad: r.squad || null, permanent: Boolean(r.permanent), captain: Boolean(r.captain), initials: r.initials || null };
   });
   var seen = {};
   list.forEach(function (c) { seen[c.name.toLowerCase()] = true; });
   DATA.roster.forEach(function (r) {
     if (!seen[r.name.toLowerCase()] && r.rating != null) {
-      list.push({ name: r.name, games: 0, heard: 0, statsKnow: null, rating: r.rating, squad: r.squad || null, permanent: Boolean(r.permanent), captain: Boolean(r.captain), initials: r.initials || null });
+      list.push({ name: r.name, games: 0, heard: 0, statsS: null, f: DATA.teamWorth, rating: r.rating, squad: r.squad || null, permanent: Boolean(r.permanent), captain: Boolean(r.captain), initials: r.initials || null });
     }
   });
   list.forEach(function (c) {
     if (c.rating == null) {
-      c.know = c.statsKnow;
+      c.s = c.statsS;
       c.statsShare = 1;
-    } else if (!c.heard) {
-      c.know = scaled(scale.profile, scale.level(c.rating));
+    } else if (!c.heard || !c.statsS) {
+      c.s = fitTo(scale.profile, scale.level(c.rating), c.f);
       c.statsShare = 0;
     } else {
       var rounds = c.heard / 16;
       c.statsShare = rounds / (rounds + n);
-      var fromStats = levelOf(c.statsKnow);
+      var fromStats = levelOf(c.statsS, c.f);
       var target = c.statsShare * fromStats + (1 - c.statsShare) * scale.level(c.rating);
-      c.know = fromStats > 0 ? scaled(c.statsKnow, target / fromStats) : scaled(scale.profile, target);
+      c.s = fitTo(fromStats > 0 ? c.statsS : scale.profile, target, c.f);
     }
-    c.level = levelOf(c.know);
+    if (c.s) c.level = levelOf(c.s, c.f);
   });
-  CANDIDATES = list.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  // someone held back in every game, with no rating to go on, cannot be placed
+  CANDIDATES = list.filter(function (c) { return c.s; }).sort(function (a, b) { return a.name.localeCompare(b.name); });
   $('weightNote').textContent = '(four rounds of games: ' + Math.round(100 * 4 / (4 + n)) + '% stats)';
 }
 
@@ -587,9 +638,12 @@ function buildEven (players, count) {
   });
 }
 
+// where the player stands out most against the team, since some categories
+// play easier for everyone
 function bestCategory (p) {
   var best = null;
-  DATA.categories.forEach(function (c) { if (!best || p.know[c] > p.know[best]) best = c; });
+  var vsTeam = function (c) { return (p.s[c] || 0) / (DATA.teamStrength[c] || 1); };
+  DATA.categories.forEach(function (c) { if (!best || vsTeam(c) > vsTeam(best)) best = c; });
   return best;
 }
 
@@ -644,6 +698,13 @@ $('equalRounds').onchange = function () {
   if (TEAMS.length) $('build').click();
 };
 $('firstOverall').onchange = function () { if (TEAMS.length) $('build').click(); };
+$('atLevel').onchange = function () {
+  AT_LEVEL = $('atLevel').value;
+  buildCandidates();
+  renderPool();
+  renderFocus();
+  if (TEAMS.length) $('build').click();
+};
 // squads and permanent players only mean something when making the real teams
 $('mode').onchange = function () {
   $('firstOverallLabel').classList.toggle('d-none', $('mode').value === 'even');
@@ -685,12 +746,13 @@ function renderTeams () {
     t.starters.forEach(function (p) { h += row(p, false); });
     t.subs.forEach(function (p) { h += row(p, true); });
     h += '</tbody></table>';
+    var D = difficulty();
     DATA.categories.forEach(function (c) {
-      var miss = 1;
-      t.starters.forEach(function (p) { miss *= 1 - (p.know[c] || 0); });
-      var cover = 1 - miss;
+      var sum = 0;
+      t.starters.forEach(function (p) { sum += p.s[c] || 0; });
+      var cover = sum / (D + sum);
       var low = cover < 0.5;
-      var lead = t.starters.concat(t.subs).slice().sort(function (a, b) { return b.know[c] - a.know[c]; })[0];
+      var lead = t.starters.concat(t.subs).slice().sort(function (a, b) { return b.s[c] - a.s[c]; })[0];
       h += '<div class="d-flex align-items-center gap-2 small mb-1"><span style="width:7.5rem">' + esc(c) + '</span>' +
         '<div class="bar flex-grow-1' + (low ? ' low' : '') + '"><span style="width:' + Math.round(cover * 100) + '%"></span></div>' +
         '<span class="num" style="width:2.5rem">' + Math.round(cover * 100) + '%</span></div>' +
@@ -764,22 +826,28 @@ function renderFocus () {
     var fb = b.weak.length + b.habits.length;
     return fb - fa || a.name.localeCompare(b.name);
   });
+  $('focusLevel').textContent = levelName(AT_LEVEL);
   $('focus').innerHTML = rows.map(function (p, i) {
     var few = p.heard < 32;
     var trend = !p.trend || !p.trend.change
       ? '<span class="text-secondary">' + (p.trend ? 'steady' : '-') + '</span>'
-      : '<span class="' + (p.trend.change > 0 ? 'up' : 'down') + '" title="points per question, ' +
+      : '<span class="' + (p.trend.change > 0 ? 'up' : 'down') + '" title="adjusted, of 16 at ' + esc(levelName(p.trend.level)) + ', ' +
         esc(p.trend.from) + ' to ' + esc(p.trend.to) + '">' + (p.trend.change > 0 ? '&#9650; +' : '&#9660; ') +
         p.trend.change + '</span>';
-    return '<tr><td>' + esc(p.name) + (p.squad ? '<div class="small text-secondary">' + esc(p.squad) + '</div>' : '') + '</td>' +
-      '<td class="num">' + p.games + '</td><td class="num">' + (p.ppq == null ? '-' : p.ppq) + '</td><td class="text-nowrap">' + trend + '</td>' +
+    var held = p.heldBack ? '<div class="small text-secondary">held back in ' + p.heldBack + ' game' + (p.heldBack === 1 ? '' : 's') + '</div>' : '';
+    return '<tr><td>' + esc(p.name) + (p.squad ? '<div class="small text-secondary">' + esc(p.squad) + '</div>' : '') + held + '</td>' +
+      '<td class="num">' + p.games + '</td><td class="num">' + (p.ppq == null ? '-' : p.ppq) + '</td>' +
+      '<td class="num' + (few ? ' text-secondary' : '') + '">' + (p.strength ? levelOf(p.strength, p.worth).toFixed(1) : '-') + '</td>' +
+      '<td class="text-nowrap">' + trend + '</td>' +
       (few
-        ? '<td colspan="3" class="small text-secondary">Only ' + p.games + ' game' + (p.games === 1 ? '' : 's') + ' &mdash; too early to tell</td>'
+        ? '<td colspan="3" class="small text-secondary">' + (p.games
+          ? 'Only ' + p.games + ' game' + (p.games === 1 ? '' : 's') + ' &mdash; too early to tell'
+          : 'Held back in every game here') + '</td>'
         : '<td>' + p.strong.map(function (c) { return '<span class="chip chip-good">' + esc(c) + '</span>'; }).join('') + '</td>' +
           '<td>' + p.weak.map(function (c) { return '<span class="chip chip-bad">' + esc(c) + '</span>'; }).join('') + '</td>' +
           '<td>' + p.habits.map(function (h) { return '<span class="chip chip-habit">' + HABITS[h][0] + '</span>'; }).join('') + '</td>') +
       '<td class="text-end"><button type="button" class="btn btn-sm btn-link p-0 draft" data-i="' + i + '">message</button></td></tr>' +
-      '<tr class="d-none" id="msg' + i + '"><td colspan="8"><textarea class="form-control msg mb-1" rows="3"></textarea>' +
+      '<tr class="d-none" id="msg' + i + '"><td colspan="9"><textarea class="form-control msg mb-1" rows="3"></textarea>' +
       '<button type="button" class="btn btn-sm btn-outline-secondary copy" data-i="' + i + '">Copy</button> ' +
       (emailOf(p.name)
         ? '<button type="button" class="btn btn-sm btn-outline-primary mail" data-i="' + i + '">Email ' + esc(emailOf(p.name)) + '</button> '
@@ -827,11 +895,13 @@ function printFocus () {
   var month = $('fMonth').options[$('fMonth').selectedIndex].text;
   var level = $('fLevel').options[$('fLevel').selectedIndex].text;
   $('printSheet').innerHTML = '<h1>Player focus</h1><p>' + esc(month) + ' &middot; ' + esc(level) +
+    ' &middot; adjusted is of 16 at ' + esc(levelName(AT_LEVEL)) +
     ' &middot; printed ' + new Date().toLocaleDateString() + '</p>' +
     '<table><thead><tr><th style="width:24%">Player</th><th>Strong</th><th>Work on</th><th>Habits</th><th style="width:24%">Notes</th></tr></thead><tbody>' +
     rows.map(function (p) {
       var who = '<strong>' + esc(p.name) + '</strong><div class="sub">' + (p.squad ? esc(p.squad) + ' &middot; ' : '') +
-        p.games + ' games &middot; ' + (p.ppq == null ? '-' : p.ppq) + ' pts/q</div>';
+        p.games + ' games &middot; ' + (p.ppq == null ? '-' : p.ppq) + ' pts/q' +
+        (p.strength ? ' &middot; adjusted ' + levelOf(p.strength, p.worth).toFixed(1) : '') + '</div>';
       if (p.heard < 32) return '<tr><td>' + who + '</td><td colspan="3">Too early to tell</td><td></td></tr>';
       return '<tr><td>' + who + '</td><td>' + esc(p.strong.join(', ')) + '</td><td>' + esc(p.weak.join(', ')) + '</td>' +
         '<td>' + p.habits.map(function (h) { return HABITS[h][0]; }).join(', ') + '</td><td></td></tr>';

@@ -20,6 +20,7 @@ import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
+import { fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
 import { formatSquadPlan, parseSquadPlan } from '../server/kshsaa/squad-plan.js';
 
 const router = Router();
@@ -535,6 +536,8 @@ function parseRaw (o, cats, denominators) {
 
 const LEVEL_KEYS = Object.keys(LEVELS);
 const validLevel = v => (LEVEL_KEYS.includes(v) ? v : null);
+// whether varsity held back, or null to go by the level (see room-model.js)
+const validHoldBack = v => (typeof v === 'boolean' ? v : null);
 
 function normalize (raw, label, cats, denominators) {
   let parsed;
@@ -597,6 +600,7 @@ router.post('/upload', requireReader, async (req, res) => {
     const denominators = { words: counts(wordCounts), chars: counts(charCounts) };
     const doc = normalize(game, String(label || '').slice(0, 120), cats && cats.length ? cats : null, denominators);
     doc.level = validLevel(req.body.level);
+    doc.holdBack = validHoldBack(req.body.holdBack);
     doc.roundId = roundId;
     // which questions were read, for tracing a game back to its packet
     doc.questionIds = Array.isArray(questionIds) ? questionIds.slice(0, 40).map(q => String(q).slice(0, 40)) : null;
@@ -675,7 +679,7 @@ const MAX_TEAMS = 8;
 /**
  * Checks an edited game from the stats page and turns it into the stored
  * shape. Throws with a message for the moderator on anything invalid.
- * @param {object} body - { label, level, teams: [{name, players: [{name, heard}]}],
+ * @param {object} body - { label, level, holdBack, teams: [{name, players: [{name, heard}]}],
  *   buzzes: [{questionNumber, category, player, value, wordIndex}],
  *   notes: [{questionNumber, player, text}] }
  * @param {object} g - the game as stored
@@ -736,7 +740,7 @@ function editedGame (body, g, fix) {
 
   for (const t of teams) t.score = teamScore(buzzes, t.name);
   const notes = cleanNotes(body.notes, n => Boolean(teamOf[n]), fix);
-  return { label, level: validLevel(body.level), teams, heardByPlayer, buzzes, notes };
+  return { label, level: validLevel(body.level), holdBack: validHoldBack(body.holdBack), teams, heardByPlayer, buzzes, notes };
 }
 
 // the stats page's game editor: rename, set the level, fix teams and scorers
@@ -904,12 +908,25 @@ router.get('/data', requireAuth, async (req, res) => {
   }
 
   const levelLabel = key => (LEVELS[key] ? LEVELS[key].label : 'Untagged');
+  // The Adjusted column: the room model over the same games, as how many of a
+  // round's 16 questions a player would answer on their own at the Level
+  // filter's level, or Varsity when it shows all of them.
+  const isVarsity = name => /varsity/i.test(squadByName[name.trim().toLowerCase()] || '');
+  const model = fitRoomModel(shown, isVarsity);
+  const at = [level, 'varsity', model.reference].find(l => model.difficulty[l] != null) ?? null;
+  const adjusted = name => {
+    const m = model.players.get(name);
+    return m && at ? +soloAnswers(m.strength, model.difficulty[at], m.worth).toFixed(1) : null;
+  };
   const playerRows = Object.values(players)
     .filter(p => p.main.games.size)
     .map(p => ({
       name: p.name,
       team: squadByName[p.name.trim().toLowerCase()] || 'Unassigned',
       ...summary(p.main),
+      adjusted: adjusted(p.name),
+      // questions the Adjusted column rests on: held-back games do not count
+      adjustedHeard: model.players.get(p.name)?.heard ?? 0,
       byCategory: p.byCategory,
       perGame: Object.values(p.perGame),
       byMonth: Object.keys(p.byMonth).sort().reverse()
@@ -928,12 +945,14 @@ router.get('/data', requireAuth, async (req, res) => {
     levels: LEVEL_KEYS.map(key => ({ key, label: LEVELS[key].label })),
     kinds: Object.keys(KINDS).map(key => ({ key, label: KINDS[key] })),
     totalGames: everything.length,
+    adjustedLevel: at ? levelLabel(at) : null,
     games: shown.map(g => ({
       id: String(g._id),
       label: g.label,
       kind: kindOf(g),
       notes: (g.notes || []).length,
       level: g.level || null,
+      heldBack: heldBackIn(g, isVarsity).size,
       playedAt: g.playedAt,
       tossupsRead: g.tossupsRead,
       teams: (g.teams || []).map(t => ({ name: t.name, score: t.score }))
@@ -1129,6 +1148,7 @@ var SORT_COLS = [
   { key: 'team', label: 'Squad', text: true },
   { key: 'games', label: 'Games', tip: 'Games played in, buzzing or not' },
   { key: 'ppth', label: 'Points/question', tip: 'Points per tossup heard' },
+  { key: 'adjusted', label: 'Adjusted', tip: 'Room-adjusted: how many of a 16-question round they would answer with nobody else buzzing' },
   { key: 'accuracy', label: 'Buzz accuracy', tip: 'Share of buzzes answered correctly, counting every wrong answer' },
   { key: 'celerity', label: 'Celerity', tip: 'How early correct buzzes came: 1.000 is the first word, 0 the last' }
 ];
@@ -1606,6 +1626,8 @@ function gameRow (g, hidden) {
   return '<tr class="rowlink grow"' + (hidden ? ' hidden' : '') + ' data-id="' + g.id + '" title="See scorers, rename, or fix this game">' +
     '<td class="text-secondary ps-4">' + new Date(g.playedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</td>' +
     '<td>' + esc(g.label) + (g.kind === 'tournament' ? ' <span class="lvl">Tournament</span>' : '') +
+    (g.heldBack ? ' <span class="small text-secondary" title="' + g.heldBack + ' varsity player' + (g.heldBack === 1 ? '' : 's') +
+      ' held back; left out of their Insights numbers">varsity held back</span>' : '') +
     (g.notes ? ' <span class="small text-secondary" title="Notes on this game">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
     '<td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
     '<td class="num">' + g.tossupsRead + '</td>' +
@@ -1712,11 +1734,16 @@ function render (d) {
         '<td class="text-secondary">' + esc(p.team) + '</td>' +
         '<td class="num">' + p.games + '</td>' +
         '<td class="num fw-semibold">' + fmt(p.ppth) + '</td>' +
+        '<td class="num' + (p.adjustedHeard < 32 ? ' text-secondary' : '') + '">' + fmt(p.adjusted) + '</td>' +
         '<td class="num">' + fmt(p.accuracy, 'pct') + '</td>' +
         '<td class="num">' + fmt(p.celerity, 'cel') + '</td></tr>';
     });
     h += '</tbody></table></div></div></div>' +
-      '<p class="note">Click a player for their correct answers, misses, and history by level and month.</p>' +
+      '<p class="note">Click a player for their correct answers, misses, and history by level and month. ' +
+      'Adjusted is how many of a 16-question round at ' + esc(d.adjustedLevel || 'this level') + ' they would answer ' +
+      'with nobody else buzzing, from how they did against whoever was in the room, so playing next to varsity does not ' +
+      'count against a JV player. Games where a varsity player held back are left out for them, and grayed numbers rest ' +
+      'on under two rounds of games.</p>' +
       '<div id="spotlight" class="mt-2"></div>';
 
     // category heat grid - same section, its own table so neither gets squished
@@ -1909,6 +1936,7 @@ function selectPlayer (name) {
     stat('Correct', p.correct) +
     stat('Wrong', p.wrong + (p.negs ? ' <span class="small text-danger">(' + p.negs + ' for \\u22125)</span>' : '')) +
     stat('Points/question', fmt(p.ppth)) +
+    stat('Adjusted', fmt(p.adjusted)) +
     stat('Buzz accuracy', fmt(p.accuracy, 'pct')) +
     stat('Celerity', fmt(p.celerity, 'cel')) +
     '</div>' +
@@ -2011,6 +2039,8 @@ function toEditModel (g) {
     id: String(g._id),
     label: g.label,
     level: g.level || '',
+    // null goes by the level
+    holdBack: typeof g.holdBack === 'boolean' ? g.holdBack : null,
     playedAt: g.playedAt,
     tossupsRead: g.tossupsRead,
     categories: g.categories || [],
@@ -2018,6 +2048,11 @@ function toEditModel (g) {
     buzzes: buzzes,
     notes: notes
   };
+}
+
+// the same default as heldBack in room-model.js
+function holdBackOf (e) {
+  return e.holdBack != null ? e.holdBack : e.level === 'jv' || e.level === 'beginner';
 }
 
 function allPlayers () {
@@ -2068,7 +2103,11 @@ function renderEditor () {
       return '<option value="' + l.key + '"' + (l.key === EDIT.level ? ' selected' : '') + '>' + esc(l.label) + '</option>';
     }).join('') + '</select></div>' +
     '<div class="col-md-3"><div class="form-label">Played</div><div class="small pt-1">' +
-    new Date(EDIT.playedAt).toLocaleString() + ' &middot; ' + EDIT.tossupsRead + ' tossups</div></div></div>';
+    new Date(EDIT.playedAt).toLocaleString() + ' &middot; ' + EDIT.tossupsRead + ' tossups</div></div></div>' +
+    '<div class="form-check mt-2"><input class="form-check-input" type="checkbox" id="gmHold"' + (holdBackOf(EDIT) ? ' checked' : '') + '>' +
+    '<label class="form-check-label small" for="gmHold">Varsity players held back (did not interrupt). Their answers here ' +
+    'stay out of their Insights numbers, and the JV players are not rated against them.' +
+    '<span class="text-secondary" id="gmHoldAuto">' + (EDIT.holdBack == null ? ' Set from the level.' : '') + '</span></label></div>';
 
   h += '<div class="subhead">Scorers</div><div id="gmScorers"></div>';
 
@@ -2213,7 +2252,8 @@ $('gmBody').addEventListener('input', function (e) {
 $('gmBody').addEventListener('change', function (e) {
   var el = e.target;
   var b = el.hasAttribute('data-b') ? EDIT.buzzes[Number(el.getAttribute('data-b'))] : null;
-  if (el.id === 'gmLevel') { EDIT.level = el.value; return; }
+  if (el.id === 'gmLevel') { EDIT.level = el.value; $('gmHold').checked = holdBackOf(EDIT); return; }
+  if (el.id === 'gmHold') { EDIT.holdBack = el.checked; $('gmHoldAuto').textContent = ''; return; }
   if (el.hasAttribute('data-n')) {
     var n = EDIT.notes[Number(el.getAttribute('data-n'))];
     if (el.classList.contains('nq')) n.q = el.value === '' ? null : Number(el.value);
@@ -2287,6 +2327,7 @@ $('gmSave').onclick = function () {
   var body = {
     label: EDIT.label,
     level: EDIT.level || null,
+    holdBack: EDIT.holdBack,
     teams: EDIT.teams.map(function (t) {
       return { name: t.name, players: t.players.map(function (p) { return { name: p.name, heard: p.heard }; }) };
     }),
