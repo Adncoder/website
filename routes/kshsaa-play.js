@@ -125,6 +125,12 @@ ${kshsaaNav('/kshsaa-play', 1100)}
     </div>
 
     <div class="mb-3">${levelControls()}</div>
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="checkbox" id="holdBack">
+      <label class="form-check-label" for="holdBack">Varsity players are holding back (not interrupting)</label>
+      <div class="form-text">On by default for JV and Beginner. Their answers then stay out of their Insights numbers,
+        and the JV players are not rated against them.</div>
+    </div>
 
     <div class="row g-4" id="teams"></div>
     <div class="mt-3">
@@ -430,7 +436,15 @@ function startApp () {
     if ($('status').textContent === 'loading player names...') $('status').textContent = '';
   });
   loadLineups();
+  holdBackForLevel();
   restoreNextRound();
+}
+
+// varsity players hold back in a JV or Beginner round unless the moderator
+// says otherwise, the same default the stats use for older games
+function holdBackForLevel () {
+  const level = document.querySelector('input[name="level"]:checked').value;
+  $('holdBack').checked = level === 'jv' || level === 'beginner';
 }
 
 // ---------- next round ----------
@@ -450,6 +464,7 @@ function currentSetup () {
   return {
     label: $('label').value.trim(),
     level: document.querySelector('input[name="level"]:checked').value,
+    holdBack: $('holdBack').checked,
     math: $('mathTier').value,
     teams: teamCols().map(col => ({ name: col.querySelector('.tname').value.trim(), players: typedNames(col) }))
   };
@@ -465,6 +480,7 @@ function restoreNextRound () {
   $('label').value = nextLabel(setup.label || '');
   const radio = document.querySelector('input[name="level"][value="' + setup.level + '"]');
   if (radio) radio.checked = true;
+  if (typeof setup.holdBack === 'boolean') $('holdBack').checked = setup.holdBack;
   if (setup.math) $('mathTier').value = setup.math;
   const teams = setup.teams || [];
   setTeamCount(teams.length);
@@ -492,6 +508,7 @@ $('gateBtn').onclick = async () => {
   }
 };
 $('gatePw').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
+document.querySelectorAll('input[name="level"]').forEach(r => r.addEventListener('change', holdBackForLevel));
 $('addTeam').onclick = () => {
   if (teamCols().length < MAX_TEAMS) addTeam().querySelector('.tname').focus();
 };
@@ -1202,6 +1219,7 @@ $('go').onclick = async () => {
                 game: match,
                 label,
                 level: data.level,
+                holdBack: setup.holdBack,
                 roundId: data.roundId,
                 questionIds: data.round.map(q => q.id),
                 categories,

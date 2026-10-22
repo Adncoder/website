@@ -160,6 +160,7 @@ applies.
 | `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it) |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
+| `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
 | `server/kshsaa/squad-plan.js` | Reads and writes the Roster tab's squad plan: squads, pools, and which pools fill each squad's rotating spots |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
@@ -420,14 +421,31 @@ along with the name, teams, and buzzes. Games saved from the reader also store
 `questionIds`, the tossup read at each number, which the question difficulty
 table needs.
 
-Insights rates a player per category as (correct − ½·negs) per question heard,
-pulled toward the player's overall rate and that toward the team's while the
-sample is small. One scale factor, fitted so that "someone in the room knew it"
-matches how often questions were answered, turns rates into rough chances of
-knowing a question; team strength is the expected number of a round's 16
-questions at least one starter knows. A category is flagged "work on" only when
-it is below the team and at least 1.5 answers short of the player's own usual
-level, so players weak everywhere do not get arbitrary flags.
+Insights and the Stats page's Adjusted column use the room model
+(`room-model.js`), a Luce choice model: a tossup goes to player p with chance
+s_p / (D + the room's strengths added up), and to nobody with chance D over the
+same, s being a player's strength in the category and D how hard the level
+plays (Varsity's D is 1). So answering less next to varsity players does not
+count against a JV player, and every level's games count toward one strength.
+Strengths come from correct answers only; a −5 still costs half an answer,
+through each player's worth, (correct − ½·negs) / correct, which scales what
+their answers count for. Strengths are pulled toward the player's overall
+and that toward the team's, both by 32 questions' worth, fitted by predicting
+each saved game from all the others. Team strength is how many of a round's 16
+questions the starters would answer with nobody else buzzing, at the level the
+team builder's "On questions at" names. A category is flagged "work on" when
+the player got at most 60% of the answers their own usual level would have in
+those rooms, at least 1.5 short, and is below the team there, so players weak
+everywhere do not get arbitrary flags.
+
+Varsity players hold back (do not interrupt) when they play with JV or
+Beginner players. A practice game's `holdBack` says whether they did; when it is
+missing, they did if the level is JV or Beginner. "Varsity" means a roster squad
+or pool with "varsity" in its name. In a game where they held back, Insights
+leaves the game out for them entirely, takes them out of the room for everyone
+else, and skips any tossup one of them answered, since a JV player who knew it
+would have been racing them at the end. The reader's setup and the game editor
+both have the checkbox; the raw Stats tables still count every game.
 
 Roster entries can carry a coach `rating` (1–10 in halves, shown as "Past
 rating x/10"; null is N/A, for anyone not yet seen play) and `permanent` (stays
