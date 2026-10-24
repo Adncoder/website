@@ -1,6 +1,6 @@
 // Import Beginner-level questions: the giveaway line of every middle-school
 // tossup on qbreader.org, minus "For 10 points", which scholars bowl does not
-// use. See server/kshsaa/giveaway.js for how the line is picked and which
+// use. See client/kshsaa/giveaway.js for how the line is picked and which
 // questions are skipped because their last line cannot stand alone.
 //
 // Run from the website folder (the same place as import-kshsaa.js):
@@ -14,7 +14,7 @@
 // nothing else. Needs MONGODB_URI in .env (not for --dry-run).
 
 import 'dotenv/config';
-import { giveawaySlotOf } from './server/kshsaa/giveaway.js';
+import { giveawaySlotOf } from './client/kshsaa/giveaway.js';
 import { runImport } from './server/kshsaa/qbreader-import.js';
 
 await runImport({

@@ -22,7 +22,9 @@ const PAGE = `<!DOCTYPE html>
  .hidden{display:none!important}
  #bHead{display:flex;align-items:center;gap:2.2vw;padding:1.6vh 2.4vw .8vh;font-size:clamp(.9rem,2vw,2rem);white-space:nowrap}
  #bMode{font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--gold)}
- #bProgress{color:var(--muted)}
+ #bProgress{font-weight:800}
+ #bProgress.pop{animation:pop .65s cubic-bezier(.2,1.6,.4,1);transform-origin:left center}
+ @keyframes pop{0%{transform:scale(1.35);color:var(--gold)}100%{transform:none}}
  #bStatus{font-weight:800;color:var(--blue);overflow:hidden;text-overflow:ellipsis}
  #bStatus.rebound{color:var(--violet)}
  #bStatus.buzz{color:var(--gold)}
@@ -95,9 +97,20 @@ const PAGE = `<!DOCTYPE html>
  .f-a{font-family:'Segoe UI',system-ui,sans-serif;font-weight:800;color:#0b5d33}
  .f-a .f-label{font-size:.55em;letter-spacing:.12em;color:#6b6b6b;margin-right:.5em;vertical-align:middle}
  .f-q+.f-a{margin-top:.45em}
+ .f-a+.f-a{margin-top:.15em}
+ .f-a.f-miss{color:#8a1c2b}
  .lang-line{display:flex;align-items:baseline;gap:.5em;line-height:1.15}
  .lang-line+.lang-line{margin-top:.25em}
  .lang-tag{flex:0 0 auto;font-family:'Segoe UI',system-ui,sans-serif;font-weight:700;color:#8a8886;font-size:.32em;letter-spacing:.08em}
+ #bNext{position:fixed;inset:0;z-index:9;display:flex;align-items:center;justify-content:center;pointer-events:none}
+ #bNext .n-card{background:rgba(10,15,31,.94);border:.6vmin solid var(--gold);border-radius:2.4vmin;padding:2.6vh 6vw;
+   text-align:center;box-shadow:0 0 8vmin rgba(255,201,51,.35)}
+ #bNext.show .n-card{animation:nextcard var(--n-ms,1.8s) ease-out forwards}
+ .n-big{font-size:clamp(3rem,11vw,11rem);font-weight:900;letter-spacing:.04em;line-height:1;text-transform:uppercase}
+ .n-sub{font-size:clamp(1.2rem,3.6vw,3.6rem);font-weight:800;color:var(--gold);margin-top:1.2vh}
+ .n-sub:empty{display:none}
+ @keyframes nextcard{0%{opacity:0;transform:scale(.6)}12%{opacity:1;transform:scale(1.05)}20%{transform:none}
+   80%{opacity:1}100%{opacity:0}}
  #overlay{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;
    text-align:center;background:rgba(6,9,20,.88);padding:4vh 6vw}
  .o-big{font-size:clamp(3rem,11vw,11rem);font-weight:900;letter-spacing:.08em;line-height:1}
@@ -132,6 +145,7 @@ const PAGE = `<!DOCTYPE html>
 <div id="bMod" class="hidden"></div>
 <div id="tiles"></div>
 <div id="bFoot" class="hidden"><div id="bFit"></div></div>
+<div id="bNext" class="hidden" aria-hidden="true"><div class="n-card"><div class="n-big"></div><div class="n-sub"></div></div></div>
 <div id="overlay" class="hidden"></div>
 <button type="button" id="fsBtn">Full screen</button>
 <script type="module" src="/kshsaa/scoreboard/page.js"></script>

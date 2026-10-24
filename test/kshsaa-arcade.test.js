@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { ArcadeError, act, newGame, replay, standings, whyNoBuzz, winners } from '../client/kshsaa/arcade/engine.js';
 import { MODES } from '../client/kshsaa/arcade/modes/index.js';
 import { pickQuestions, questionsUrl, secondsFor } from '../client/kshsaa/arcade/questions.js';
+import { fromBonus, fromQbreader, fromTossup, qbreaderUrl, withBonuses } from '../client/kshsaa/arcade/qbreader.js';
 import { addTime, clockLeft, formatClock, newClock, startClock, stopClock } from '../client/kshsaa/arcade/clock.js';
 
 const QUESTIONS = Array.from({ length: 12 }, (x, i) => ({
@@ -146,6 +147,101 @@ describe('Lightning Round', () => {
     const s = replay(g);
     assert.equal(s.over, 'time');
     assert.deepEqual(winners(g, s), [2]);
+  });
+});
+
+describe('Quizbowl', () => {
+  const BONUS = { id: 'b', category: 'Fine Arts', leadin: 'For 10 points each:', parts: ['One?', 'Two?', 'Three?'], answers: ['1', '2', '3'], source: '' };
+  // every other tossup has a bonus
+  const WITH_BONUSES = QUESTIONS.map((q, i) => i % 2 ? q : { ...q, question: 'Clue (*) giveaway', bonus: BONUS });
+  const qb = () => start('quizbowl', {}, { questions: WITH_BONUSES });
+  const part = right => ({ type: 'part', right });
+
+  it('scores a power 15, a right answer 10, a neg −5, and a wrong answer at the end nothing', () => {
+    const g = play(qb(), buzz(0), { type: 'wrong', neg: true }, buzz(1), { type: 'wrong' }, buzz(2), { type: 'correct', power: true });
+    assert.deepEqual(points(g), [-5, 0, 15, 0]);
+    const plain = play(qb(), buzz(3), 'correct');
+    assert.deepEqual(points(plain), [0, 0, 0, 10]);
+  });
+
+  it('gives the team that gets a tossup its bonus, which no one else may buzz on', () => {
+    let g = play(qb(), buzz(1), 'correct');
+    const s = replay(g);
+    assert.deepEqual(s.bonus, { team: 1, results: [] });
+    assert.equal(s.settled, null, 'not done until the bonus is');
+    refused(g, buzz(0), /Gold's bonus/);
+    refused(g, 'next', /Finish Gold's bonus/);
+    g = play(g, part(true), part(false), part(true));
+    assert.deepEqual(points(g), [0, 30, 0, 0]);
+    assert.equal(replay(g).settled, 'correct');
+    refused(g, part(true), /no bonus/);
+    assert.equal(replay(play(g, 'next')).bonus, null);
+  });
+
+  it('plays no bonus on a tossup without one', () => {
+    const g = play(qb(), 'next', buzz(0), 'correct');
+    const s = replay(g);
+    assert.equal(s.bonus, null);
+    assert.equal(s.settled, 'correct');
+  });
+
+  it('undo takes back a bonus part, and throwing out the question takes back the whole bonus', () => {
+    const g = play(qb(), buzz(0), 'correct', part(true), part(true));
+    assert.deepEqual(points(play(g, 'undo')), [20, 0, 0, 0]);
+    const thrown = play(g, 'throwout');
+    assert.deepEqual(points(thrown), [0, 0, 0, 0]);
+    assert.equal(replay(thrown).q, 1);
+  });
+
+  it('only scores powers and negs in Quizbowl', () => {
+    const g = play(start('bounty-hunter'), buzz(0), { type: 'correct', power: true }, 'next', buzz(1), { type: 'wrong', neg: false });
+    assert.deepEqual(points(g), [10, -5, 0, 0]);
+    assert.equal(g.events.some(e => 'power' in e || 'neg' in e), false);
+  });
+});
+
+describe('questions from qbreader.org', () => {
+  it('asks for a category at the level, from standard sets, recent ones where it goes stale', () => {
+    const url = new URL(qbreaderUrl('tossup', 'Pop Culture', 'jv', 30, 2026));
+    assert.equal(url.pathname, '/api/random-tossup');
+    assert.equal(url.searchParams.get('subcategories'), 'Movies,Music,Television,Video Games,Other Pop Culture');
+    assert.equal(url.searchParams.get('difficulties'), '2');
+    assert.equal(url.searchParams.get('minYear'), '2018');
+    assert.equal(url.searchParams.get('standardOnly'), 'true');
+    const bonus = new URL(qbreaderUrl('bonus', 'Mathematics', 'beginner', 5, 2026));
+    assert.equal(bonus.pathname, '/api/random-bonus');
+    assert.equal(bonus.searchParams.get('alternateSubcategories'), 'Math');
+    assert.equal(bonus.searchParams.get('threePartBonuses'), 'true');
+    assert.equal(fromQbreader('World Language'), false);
+  });
+
+  it('cuts a tossup to the level, or keeps it whole for Quizbowl', () => {
+    const t = {
+      _id: 'x',
+      question_sanitized: 'This team won a title in 2019 after a long drought. This team plays at Arrowhead Stadium. For 10 points, name this NFL team led by Patrick Mahomes.',
+      answer_sanitized: 'Kansas City Chiefs',
+      set: { name: '2024 Test Set' }
+    };
+    assert.equal(fromTossup(t, 'Sports', 'beginner', false).question, 'Name this NFL team led by Patrick Mahomes.');
+    assert.equal(fromTossup(t, 'Sports', 'jv', false).question,
+      'This team plays at Arrowhead Stadium. Name this NFL team led by Patrick Mahomes.');
+    const whole = fromTossup(t, 'Sports', 'beginner', true);
+    assert.equal(whole.question, t.question_sanitized);
+    assert.equal(whole.id, 'qb-x');
+    assert.equal(fromTossup({ ...t, alternate_subcategory: 'Math' }, 'Science/Health', 'jv', true), null, 'math is its own category');
+  });
+
+  it('pairs each tossup with a bonus from its own category first', () => {
+    const b = (id, category) => fromBonus({ _id: id, leadin_sanitized: 'L', parts_sanitized: ['a', 'b', 'c'], answers_sanitized: ['1', '2', '3'] }, category);
+    assert.equal(fromBonus({ _id: 'short', parts_sanitized: ['a', 'b'], answers_sanitized: ['1', '2'] }, 'Fine Arts'), null);
+    const paired = withBonuses(
+      [{ id: 't1', category: 'Fine Arts' }, { id: 't2', category: 'Sports' }, { id: 't3', category: 'Sports' }],
+      [b('b1', 'Sports'), b('b2', 'Fine Arts')]
+    );
+    assert.deepEqual(paired.map(t => t.bonus && t.bonus.id), ['qb-b2', 'qb-b1', undefined]);
+    assert.equal(pickQuestions(paired, { wanted: 3 }).filter(q => q.bonus).length, 2, 'picking keeps the bonuses');
+    assert.equal(withBonuses(pickQuestions(paired, { wanted: 3 }), [b('b3', 'Sports')]).filter(q => q.bonus).length, 3,
+      'and a tossup without one can be given one');
   });
 });
 

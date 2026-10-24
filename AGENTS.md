@@ -151,13 +151,13 @@ applies.
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round). Serves the page only |
-| `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js` |
+| `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
 | `test/kshsaa-arcade.test.js` | `npm test`: the arcade engine under `node --test` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
-| `server/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it) |
+| `client/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it). The import scripts run it in Node and the arcade in the browser, so it lives under `client/` and imports nothing |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
@@ -311,8 +311,8 @@ touching the reader:
 
 ### Octopus Arcade
 
-Last Team Standing, Bounty Hunter, Lightning Round, and Chaos Mode, for two to
-eight teams. It does not use MODAQ: MODAQ has no callbacks, saves every wrong
+Last Team Standing, Bounty Hunter, Lightning Round, Chaos Mode, and Quizbowl,
+for two to eight teams. It does not use MODAQ: MODAQ has no callbacks, saves every wrong
 answer after the first as 0, and owns its buzz menu, so it can neither count
 lives nor shut an eliminated team out. Nothing here talks to buzzer hardware
 either, because the lockout boxes are standalone. Each team gets a key (1 to 8
@@ -339,7 +339,29 @@ game in `sessionStorage`. A refresh or a closed tab leaves the game paused with
 its clocks stopped. The projector shows the game through the scoreboard window
 (below). Questions come from `/kshsaa-round/generate` with `drill` repeated once
 per category (`count` is per category). Like practice sets they are not counted
-as read, and arcade games are never saved to stats.
+as read, and arcade games are never saved to stats. Never call it with no
+KSHSAA category in the drill: it then reads a whole round, which does count.
+
+Sports and Pop Culture (`EXTRA_CATEGORIES` in `qbreader.js`) are arcade-only
+categories, and Quizbowl reads every category, straight from qbreader.org's
+public API in the browser (it allows any site, 20 requests a second): standard
+sets only, at difficulty 1, 2, or 3 for Beginner, JV, or Varsity, with Sports
+and Pop Culture from the last eight years and Year in Review from the last
+two. The other modes cut Sports and Pop Culture to the level's length with
+`questionForLevel` in `giveaway.js`, the same cut the imports use. Nothing from
+qbreader.org is stored in the database, so it needs the internet at practice
+and never counts as read.
+
+Quizbowl is scored as NAQT scores it: 15 for a power (before the `(*)`), 10
+after, −5 for a neg (a wrong answer that interrupted), 0 for a wrong answer
+once the question is finished. The moderator tells them apart: `F` power, `C`
+correct, `W` neg, `X` wrong at the end, so team keys cannot be `f` or `x` in
+Quizbowl. Each question can carry a three-part `bonus`, handed out after the
+questions are picked so none is wasted on a tossup left out. A right answer
+on one starts the bonus (`state.bonus`): no team may buzz, `C` and `W` rule on
+each part (`part` events), and the question only counts as settled, and Next
+only works, once every part has a ruling. A mode turns this on with
+`quizbowl: true` and scores parts in `bonusPart`.
 
 ### Scoreboard window
 
@@ -355,6 +377,13 @@ the arcade tab. The tab writes what to show to `localStorage`
 on the `storage` event. That event only reaches windows of the same browser, so
 the scoreboard has to run on the same computer, typically a laptop with the
 projector as a second display.
+
+Whenever the question moves forward (not back), the window flashes a big card
+with its number and category for about two seconds (`announce` in `tiles.js`),
+since the line along the top is too small to notice from the back of a room. A
+Quizbowl bonus gets one too. The card animates only in a window that is showing:
+a background browser tab holds the animation, so test it in a tab brought to
+the front.
 
 The reader's scores come off MODAQ's page through the same reading the clock
 uses to notice a neg (`watchReader`). `publishScreen` writes them out only when

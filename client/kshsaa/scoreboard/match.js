@@ -3,7 +3,7 @@
 // clock, and a World Language question while the moderator holds it up.
 
 import { clockLeft, formatClock } from '../arcade/clock.js';
-import { $, animate, buildTiles, esc, fitFoot, float, hideFoot, signed, tileAt } from './tiles.js';
+import { $, animate, announce, buildTiles, esc, fitFoot, float, hideFoot, signed, tileAt } from './tiles.js';
 
 /**
  * What the reader writes out (publishScreen in routes/kshsaa-play.js).
@@ -45,8 +45,13 @@ export function showMatch (view, same) {
   document.title = (view.label || 'Round') + ' - Scoreboard';
   $('bMode').textContent = view.level || 'Scholars Bowl';
   // past the last question is MODAQ's tiebreaker
-  $('bProgress').textContent = view.question > view.total ? 'Tiebreaker' : 'Question ' + view.question + ' of ' + view.total;
-  $('bStatus').textContent = view.final ? 'Final' : view.question > view.total ? '' : view.category;
+  const tiebreaker = view.question > view.total;
+  $('bProgress').textContent = tiebreaker ? 'Tiebreaker' : 'Question ' + view.question + ' of ' + view.total;
+  $('bStatus').textContent = view.final ? 'Final' : tiebreaker ? '' : view.category;
+  // forward only: going back a question to fix a score is not a new question
+  if (prev && view.question > prev.question && !view.final) {
+    announce(tiebreaker ? 'Tiebreaker' : 'Question ' + view.question, tiebreaker ? '' : view.category);
+  }
   $('bStatus').className = view.final ? 'right' : '';
   const top = Math.max(...view.teams.map(t => t.score));
   view.teams.forEach((team, i) => {

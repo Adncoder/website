@@ -9,6 +9,10 @@
 // Many giveaways lean on the clues before them ("For 10 points, name this
 // American poet.") and are unanswerable alone, so those are rejected rather
 // than kept: a round is only useful if every question can be answered.
+//
+// The import scripts run this in Node, and the Octopus Arcade runs it in the
+// browser on the Sports and Pop Culture questions it reads from qbreader.org,
+// so it uses nothing but the language itself.
 
 // the quizbowl point-value phrase, wherever it sits in the sentence
 const FOR_POINTS = /\s*,?\s*\b(?:for\s+(?:10|ten|15|fifteen|20|twenty)\s+points|ftp)\b(?:\s+each)?\s*[,:;.—–-]*\s*/i;
@@ -137,6 +141,29 @@ export function lastSentencesOf (text, isMath, least, most, maxWords) {
   if (clues.length + 1 < least) { return null; }
   const q = [...clues, last].join(' ');
   return q.split(' ').length < 8 ? null : q;
+}
+
+/**
+ * How many sentences each level keeps, the giveaway included (Beginner keeps
+ * the giveaway alone). import-jv.js and import-varsity.js cut with these, and
+ * so does the arcade.
+ */
+export const SENTENCES = {
+  // the giveaway and the clue before it
+  jv: { least: 2, most: 2, maxWords: 80 },
+  // the giveaway and up to three clues before it, read in about twenty seconds
+  varsity: { least: 2, most: 4, maxWords: 110 }
+};
+
+/**
+ * A quizbowl tossup cut down for a level, the way that level's import cuts it.
+ * @param {string} text - the tossup's question_sanitized
+ * @param {string} level - a key of LEVELS in routes/kshsaa-round.js
+ * @returns {?string} null if it cannot stand alone at that length
+ */
+export function questionForLevel (text, level) {
+  const s = SENTENCES[level];
+  return s ? lastSentencesOf(text, false, s.least, s.most, s.maxWords) : giveawayOf(text, false);
 }
 
 /**

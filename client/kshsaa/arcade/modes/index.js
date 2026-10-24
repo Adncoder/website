@@ -2,12 +2,13 @@
 // one file: what the setup screen offers, the rules it explains, and what a
 // right and a wrong answer do. To add one, write its file and list it below.
 // engine.js handles everything the modes share: buzzing, lockout, rebounds,
-// elimination, shields, power-ups, undo, and the winner.
+// elimination, shields, power-ups, bonuses, undo, and the winner.
 
 import lastTeamStanding from './last-team-standing.js';
 import bountyHunter from './bounty-hunter.js';
 import lightningRound from './lightning-round.js';
 import chaosMode from './chaos-mode.js';
+import quizbowl from './quizbowl.js';
 
 /**
  * What a mode's rules get when a team is ruled right or wrong.
@@ -15,6 +16,8 @@ import chaosMode from './chaos-mode.js';
  * @property {number} team - the team being ruled on
  * @property {number} scale - 2 on a Double Damage question, else 1
  * @property {boolean} lives - whether this mode plays for lives
+ * @property {boolean} power - Quizbowl: a right answer before the (*)
+ * @property {boolean} neg - Quizbowl: a wrong answer that interrupted the question
  * @property {?import('../modifiers.js').Modifier} modifier - the power-up on this question
  * @property {import('../engine.js').Ops} ops - what a rule may do to the teams
  */
@@ -32,11 +35,14 @@ import chaosMode from './chaos-mode.js';
  * @property {boolean} [timed] - a clock runs for the whole game
  * @property {boolean} [shortQuestions] - read the shortest questions available
  * @property {boolean} [autoAdvance] - the next question comes up on its own
+ * @property {boolean} [quizbowl] - whole tossups and bonuses from qbreader.org,
+ *   with powers and negs; the team that gets a tossup plays its bonus
  * @property {(ctx: RulingContext) => void} correct
  * @property {(ctx: RulingContext) => void} wrong
+ * @property {(ctx: RulingContext) => void} [bonusPart] - a bonus part answered right
  */
 
 /** @type {Object<string, ArcadeMode>} */
 export const MODES = Object.fromEntries(
-  [lastTeamStanding, bountyHunter, lightningRound, chaosMode].map(mode => [mode.id, mode])
+  [lastTeamStanding, bountyHunter, lightningRound, chaosMode, quizbowl].map(mode => [mode.id, mode])
 );

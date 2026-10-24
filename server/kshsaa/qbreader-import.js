@@ -15,7 +15,7 @@
 import { readFileSync, writeFileSync } from 'fs';
 import { basename } from 'path';
 import { MongoClient, ObjectId } from 'mongodb';
-import { giveawayOf, lastSentencesOf } from './giveaway.js';
+import { giveawayOf, lastSentencesOf } from '../../client/kshsaa/giveaway.js';
 
 // overridable only so the fetching can be exercised against a local stand-in
 const API = process.env.QBREADER_API || 'https://www.qbreader.org/api/query';

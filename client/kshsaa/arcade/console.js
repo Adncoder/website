@@ -10,6 +10,7 @@ import {
   ArcadeError, MAX_TEAMS, act, answerLimit, eligibleTeams, newGame, replay, standings, whyNoBuzz, winners
 } from './engine.js';
 import { perCategory, pickQuestions, questionsUrl } from './questions.js';
+import { EXTRA_CATEGORIES, fetchQbreader, fromQbreader, withBonuses } from './qbreader.js';
 import { addTime, clockLeft, formatClock, newClock, startClock, stopClock } from './clock.js';
 import * as store from './store.js';
 import { openScreen, screenUrl, showOnScreen } from '../second-screen.js';
@@ -20,9 +21,14 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '
 
 // keys the console answers to itself, so no team's buzzer may use them
 const CONTROL_KEYS = { c: 'Correct', w: 'Wrong', n: 'Next', z: 'Undo', p: 'Pause', s: 'Question on scoreboard' };
+// and in Quizbowl
+const QUIZBOWL_KEYS = { f: 'Power', x: 'Wrong at the end' };
 const DEFAULT_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 // Lightning Round's pause between one question and the next
 const AUTO_NEXT_MS = 1500;
+// time to answer each bonus part once it is read, as at NAQT
+const BONUS_SECONDS = 5;
+const POWER_MARK = '(*)';
 const MORE_QUESTIONS = 10;
 const COMING_UP = '<span class="small text-secondary">Next question coming up...</span>';
 const OVER_TEXT = {
@@ -34,8 +40,10 @@ const OVER_TEXT = {
 
 let GAME = null;
 let STATE = null;
-// the question the clock and the scoreboard's question text were set up for
+// the question the clock and the scoreboard's question text were set up for,
+// and the bonus part the clock was
 let shownQuestion = null;
+let shownPart = null;
 let ticker = null;
 let autoNext = null;
 let toastTimer = null;
@@ -46,7 +54,7 @@ const adjusting = new Set();
 
 function renderModes () {
   $('modes').innerHTML = Object.values(MODES).map(m =>
-    '<div class="col-sm-6 col-lg-3"><label class="mode-card d-block h-100">' +
+    '<div class="col-sm-6 col-lg"><label class="mode-card d-block h-100">' +
     '<input type="radio" name="mode" value="' + m.id + '">' +
     '<div class="card h-100"><div class="card-body py-2 px-3">' +
     '<div class="fw-semibold">' + esc(m.name) + '</div>' +
@@ -76,6 +84,12 @@ function modeChanged (useDefaults) {
   if (mode.powerUps === 'always') $('powerUps').checked = true;
   if (mode.powerUps === 'off') $('powerUps').checked = false;
   $('powerUpsHint').textContent = mode.powerUps === 'always' ? '(always on in ' + mode.name + ')' : '';
+  // Quizbowl reads qbreader.org's own questions, which have no World Language and no math tiers
+  $('quizbowlHint').classList.toggle('d-none', !mode.quizbowl);
+  $('mathTier').closest('.mb-2').classList.toggle('d-none', Boolean(mode.quizbowl));
+  for (const input of document.querySelectorAll('.cat')) {
+    input.disabled = Boolean(mode.quizbowl) && !fromQbreader(input.value);
+  }
   if (useDefaults) {
     $('powerUps').checked = mode.powerUps === 'always';
     $('questionCount').value = mode.defaults.questions;
@@ -213,23 +227,29 @@ function applySetup (setup) {
   modeChanged(false);
 }
 
+/** The categories a game reads: in Quizbowl, only those qbreader.org has. */
+const categoriesFor = (mode, categories) => mode.quizbowl ? categories.filter(fromQbreader) : categories;
+
 /** What is wrong with a setup, in words, or null. */
 function setupProblem (setup) {
+  const mode = MODES[setup.mode];
   const seen = {};
   for (const t of setup.teams) {
     const name = t.name.toLowerCase();
     if (seen[name]) return 'Two teams are both called ' + t.name + '.';
     seen[name] = true;
   }
+  const control = mode.quizbowl ? { ...CONTROL_KEYS, ...QUIZBOWL_KEYS } : CONTROL_KEYS;
   const keys = {};
   for (const t of setup.teams) {
     if (t.key.length !== 1) return t.name + ' needs a buzzer key: one letter or digit.';
-    if (CONTROL_KEYS[t.key]) return '"' + t.key.toUpperCase() + '" is the console\'s ' + CONTROL_KEYS[t.key] + ' key. Give ' + t.name + ' another.';
+    if (control[t.key]) return '"' + t.key.toUpperCase() + '" is the console\'s ' + control[t.key] + ' key. Give ' + t.name + ' another.';
     if (keys[t.key]) return keys[t.key] + ' and ' + t.name + ' have the same key.';
     keys[t.key] = t.name;
   }
-  if (!setup.categories.length) return 'Pick at least one category.';
-  const mode = MODES[setup.mode];
+  if (!categoriesFor(mode, setup.categories).length) {
+    return mode.quizbowl ? 'Pick a category besides World Language: quizbowl has none.' : 'Pick at least one category.';
+  }
   const usable = setup.modifiers.filter(id => !MODIFIERS[id].livesOnly || mode.lives);
   if (setup.powerUps && mode.powerUps !== 'off' && !usable.length) return 'Pick at least one power-up, or turn them off.';
   return null;
@@ -244,19 +264,38 @@ const newId = () => window.crypto && window.crypto.randomUUID
   ? window.crypto.randomUUID()
   : Date.now().toString(36) + Math.random().toString(36).slice(2);
 
+/** A practice set from the round builder, for the categories this site has. */
+async function fromRoundBuilder (config, categories, count) {
+  const r = await fetch(questionsUrl({ level: config.level, math: config.math, categories, count }));
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || data.error) throw new Error('Could not get questions: ' + (data.error || 'the server answered ' + r.status));
+  return data;
+}
+
 /**
+ * Questions from the round builder and, for Sports, Pop Culture, and
+ * everything in Quizbowl, from qbreader.org.
  * @param {string} modeId
  * @param {{level: string, math: string, categories: string[]}} config
  * @param {number} wanted
  * @param {string[]} [exclude] - ids the game already has
  */
 async function fetchQuestions (modeId, config, wanted, exclude = []) {
-  const short = Boolean(MODES[modeId].shortQuestions);
-  const count = perCategory(wanted + exclude.length, config.categories.length, short);
-  const r = await fetch(questionsUrl({ level: config.level, math: config.math, categories: config.categories, count }));
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok || data.error) throw new Error('Could not get questions: ' + (data.error || 'the server answered ' + r.status));
-  return { questions: pickQuestions(data.round || [], { wanted, short, exclude }), notes: data.notes || [] };
+  const mode = MODES[modeId];
+  const short = Boolean(mode.shortQuestions);
+  const categories = categoriesFor(mode, config.categories);
+  const count = perCategory(wanted + exclude.length, categories.length, short);
+  const outside = mode.quizbowl ? categories : categories.filter(c => EXTRA_CATEGORIES.includes(c));
+  const here = categories.filter(c => !outside.includes(c));
+  const [site, qbreader] = await Promise.all([
+    // the round builder reads a whole round when no drill names a category of its own
+    here.length ? fromRoundBuilder(config, here, count) : {},
+    outside.length ? fetchQbreader({ labels: outside, level: config.level, each: count, whole: Boolean(mode.quizbowl) }) : {}
+  ]);
+  const round = (site.round || []).concat(qbreader.tossups || []);
+  // bonuses go to the tossups picked, so none is spent on one left out
+  const questions = withBonuses(pickQuestions(round, { wanted, short, exclude }), qbreader.bonuses || []);
+  return { questions, notes: site.notes || [] };
 }
 
 async function startGame () {
@@ -315,9 +354,13 @@ function settle (game) {
   };
 }
 
+/** The bonus part up now, or null outside a bonus. */
+const partUp = state => state.bonus && !state.settled ? state.bonus.results.length : null;
+
 function openGame (game, notes = []) {
   GAME = game;
   shownQuestion = replay(GAME).q;
+  shownPart = partUp(replay(GAME));
   adjusting.clear();
   store.setMyGameId(GAME.id);
   $('setup').classList.add('d-none');
@@ -359,6 +402,11 @@ function changed () {
     GAME.clock = newClock(answerLimit(GAME, STATE.q) * 1000);
     // World Language is held up for the players to read, not read aloud
     GAME.projectQuestion = GAME.questions[STATE.q].category === 'World Language';
+  }
+  // each bonus part gets its own few seconds, started once it is read
+  if (partUp(STATE) !== shownPart) {
+    shownPart = partUp(STATE);
+    if (shownPart !== null) GAME.clock = newClock(BONUS_SECONDS * 1000);
   }
   syncClocks();
   planAutoNext();
@@ -508,9 +556,23 @@ function openBoard () {
   if (!openScreen()) toast('The browser blocked the window. Allow pop-ups here, or open ' + screenUrl() + ' in a new window.');
 }
 
+// during a bonus, C and W (or X) rule on the part being read
+const inBonus = () => partUp(STATE) !== null;
+const quizbowl = () => Boolean(MODES[GAME.mode].quizbowl);
+
 const ACTIONS = {
-  correct: () => dispatch({ type: 'correct' }),
-  wrong: () => dispatch({ type: 'wrong' }),
+  correct: () => dispatch(inBonus() ? { type: 'part', right: true } : { type: 'correct' }),
+  // in Quizbowl, W is the neg: a wrong answer that interrupted the question
+  wrong: () => dispatch(inBonus() ? { type: 'part', right: false } : { type: 'wrong', neg: quizbowl() }),
+  power: () => {
+    if (inBonus()) return;
+    if (STATE.buzz !== null && !GAME.questions[STATE.q].question.includes(POWER_MARK)) {
+      toast('This question has no power mark, so a right answer is worth 10.');
+      return;
+    }
+    dispatch({ type: 'correct', power: true });
+  },
+  nopenalty: () => dispatch(inBonus() ? { type: 'part', right: false } : { type: 'wrong' }),
   next: () => dispatch({ type: 'next' }),
   undo: () => dispatch({ type: 'undo' }),
   pause: togglePause,
@@ -521,7 +583,7 @@ const ACTIONS = {
     drawClocks();
   },
   clockreset: () => {
-    GAME.clock = newClock(answerLimit(GAME, STATE.q) * 1000);
+    GAME.clock = newClock((inBonus() ? BONUS_SECONDS : answerLimit(GAME, STATE.q)) * 1000);
     syncClocks();
     save();
     drawClocks();
@@ -572,13 +634,16 @@ function render () {
   const mod = MODIFIERS[STATE.modifier];
   const alive = STATE.teams.filter(t => !t.out).length;
   $('gMode').textContent = mode.name;
-  $('gProgress').textContent = 'Question ' + (STATE.q + 1) + ' of ' + GAME.questions.length +
+  $('gProgress').textContent = (mode.quizbowl ? 'Tossup ' : 'Question ') + (STATE.q + 1) + ' of ' + GAME.questions.length +
     (mode.lives ? ' · ' + alive + (alive === 1 ? ' team' : ' teams') + ' left' : '');
   $('qMeta').textContent = q.category + (q.tier ? ' · ' + q.tier : '');
   $('qSource').textContent = q.source || '';
-  $('qText').textContent = q.question;
+  drawQuestionText(q.question);
+  $('qText').classList.toggle('d-none', Boolean(STATE.bonus));
   $('qAnswer').textContent = q.answer;
   $('projectQ').checked = GAME.projectQuestion;
+  $('qbKeys').classList.toggle('d-none', !mode.quizbowl);
+  renderBonus();
 
   $('modCard').classList.toggle('d-none', !mod);
   $('modCard').innerHTML = mod
@@ -604,8 +669,51 @@ function render () {
   drawClocks();
 }
 
+/**
+ * The question, with a quizbowl tossup's power mark picked out and the clues
+ * before it in bold, as a packet prints them.
+ */
+function drawQuestionText (text) {
+  const el = $('qText');
+  el.textContent = '';
+  const at = text.indexOf(POWER_MARK);
+  if (at === -1) {
+    el.textContent = text;
+    return;
+  }
+  const before = document.createElement('span');
+  before.className = 'power-zone';
+  before.textContent = text.slice(0, at);
+  const mark = document.createElement('mark');
+  mark.className = 'power-mark';
+  mark.textContent = POWER_MARK;
+  el.append(before, mark, text.slice(at + POWER_MARK.length));
+}
+
+// a Quizbowl bonus: its leadin, then each part with its answer, the one being
+// read picked out and the ones ruled on marked
+function renderBonus () {
+  const box = $('bonusBox');
+  const b = STATE.bonus;
+  box.classList.toggle('d-none', !b);
+  if (!b) return;
+  const bonus = GAME.questions[STATE.q].bonus;
+  const up = partUp(STATE);
+  box.innerHTML = '<div class="d-flex flex-wrap gap-2 small text-secondary mb-1"><span class="fw-semibold">Bonus for ' +
+    esc(GAME.teams[b.team].name) + '</span><span class="ms-auto">' + esc(bonus.source) + '</span></div>' +
+    '<div class="q-text mb-2">' + esc(bonus.leadin) + '</div>' +
+    bonus.parts.map((part, i) => {
+      const done = i < b.results.length;
+      const cls = i === up ? ' now' : done ? (b.results[i] ? ' right' : ' wrong') : '';
+      return '<div class="bpart' + cls + '"><span class="bnum">' + (done ? (b.results[i] ? '&check;' : '&cross;') : '[10]') + '</span>' +
+        '<div><div class="q-text">' + esc(part) + '</div><div class="q-answer"><span class="small text-secondary fw-semibold me-1">ANSWER</span>' +
+        '<strong>' + esc(bonus.answers[i]) + '</strong></div></div></div>';
+    }).join('');
+}
+
 function renderRuling () {
   const name = i => '<strong>' + esc(GAME.teams[i].name) + '</strong>';
+  const mode = MODES[GAME.mode];
   let h;
   if (STATE.over) {
     const won = winners(GAME, STATE);
@@ -617,14 +725,28 @@ function renderRuling () {
     h = '<div class="big mb-1">Ready.</div><div class="small text-secondary mb-2">Open the scoreboard window, drag it to the ' +
       'projector, and make it full screen. Then start.</div>' +
       '<button type="button" class="btn btn-primary" data-do="pause">Start the game (P)</button>';
+  } else if (STATE.buzz !== null && mode.quizbowl) {
+    const power = GAME.questions[STATE.q].question.includes(POWER_MARK);
+    h = '<div class="big mb-2">' + name(STATE.buzz) + ' buzzed</div><div class="d-flex flex-wrap gap-1">' +
+      (power ? '<button type="button" class="btn btn-success" data-do="power">&check; Power, before the (*): 15 (F)</button>' : '') +
+      '<button type="button" class="btn btn-success" data-do="correct">&check; Correct: 10 (C)</button>' +
+      '<button type="button" class="btn btn-danger" data-do="wrong">&cross; Neg, interrupted: &minus;5 (W)</button>' +
+      '<button type="button" class="btn btn-outline-danger" data-do="nopenalty">&cross; Wrong at the end: 0 (X)</button></div>';
   } else if (STATE.buzz !== null) {
     const back = STATE.teams[STATE.buzz].out ? ' <span class="small text-secondary">(out: a right answer brings them back)</span>' : '';
     h = '<div class="big mb-2">' + name(STATE.buzz) + ' buzzed' + back + '</div>' +
       '<button type="button" class="btn btn-success me-1" data-do="correct">&check; Correct (C)</button>' +
       '<button type="button" class="btn btn-danger" data-do="wrong">&cross; Wrong (W)</button>';
+  } else if (inBonus()) {
+    h = '<div class="big mb-1">' + name(STATE.bonus.team) + "'s bonus: part " + (partUp(STATE) + 1) + ' of ' +
+      GAME.questions[STATE.q].bonus.parts.length + '</div>' +
+      '<div class="small text-secondary mb-2">Read the part, start the clock (Space), and rule on what the team says.</div>' +
+      '<button type="button" class="btn btn-success me-1" data-do="correct">&check; Right: 10 (C)</button>' +
+      '<button type="button" class="btn btn-danger" data-do="wrong">&cross; Wrong (W)</button>';
   } else if (STATE.settled) {
     const next = '<button type="button" class="btn btn-primary" data-do="next">Next question (N)</button>';
-    h = '<div class="big mb-2">' + (STATE.settled === 'correct' ? name(STATE.answeredBy) + ' got it.' : 'No one got it.') + '</div>' +
+    const bonus = STATE.bonus ? ' Bonus: ' + STATE.bonus.results.filter(Boolean).length * 10 + '.' : '';
+    h = '<div class="big mb-2">' + (STATE.settled === 'correct' ? name(STATE.answeredBy) + ' got it.' + bonus : 'No one got it.') + '</div>' +
       (autoNext ? COMING_UP : next);
   } else {
     const open = eligibleTeams(GAME, STATE);
@@ -652,6 +774,7 @@ function renderTeams () {
     if (t.out) [cls, st] = ['out', 'Out'];
     if (STATE.locked.includes(i) && !t.out) [cls, st] = ['locked', 'Missed'];
     if (STATE.answeredBy === i && STATE.settled === 'correct') [cls, st] = ['right', 'Got it'];
+    if (STATE.bonus && STATE.bonus.team === i && inBonus()) [cls, st] = ['right', 'Bonus'];
     if (STATE.buzz === i) [cls, st] = ['buzzed', 'Buzzed'];
     const row = '<div class="trow ' + cls + '" data-team="' + i + '" title="' + esc(why || 'Buzz for ' + team.name) + '">' +
       '<span class="k">' + esc(team.key.toUpperCase()) + '</span>' +
@@ -750,9 +873,9 @@ document.addEventListener('keydown', e => {
     return;
   }
   const team = GAME.teams.findIndex(t => t.key === key);
-  const run = team !== -1
-    ? () => buzz(team)
-    : { c: ACTIONS.correct, w: ACTIONS.wrong, n: ACTIONS.next, z: ACTIONS.undo, p: ACTIONS.pause, s: toggleProjection, ' ': toggleClock }[key];
+  const keys = { c: ACTIONS.correct, w: ACTIONS.wrong, n: ACTIONS.next, z: ACTIONS.undo, p: ACTIONS.pause, s: toggleProjection, ' ': toggleClock };
+  if (quizbowl()) Object.assign(keys, { f: ACTIONS.power, x: ACTIONS.nopenalty });
+  const run = team !== -1 ? () => buzz(team) : keys[key];
   if (!run) return;
   e.preventDefault();
   // a focused button would otherwise take the key as a click as well
