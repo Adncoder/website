@@ -2,6 +2,8 @@
 // (/kshsaa-round/generate with a drill per category). They pick by level and
 // math tier, least-read first, and unlike rounds they do not count questions
 // as read, so a Friday game never uses up what a real round would draw.
+// Sports, Pop Culture, and everything in Quizbowl come from qbreader.org
+// instead (qbreader.js); this file mixes and picks from both.
 
 /** The most of one category the practice-set builder hands out at once. */
 const MOST_PER_CATEGORY = 40;
@@ -84,6 +86,7 @@ export function pickQuestions (round, { wanted, short = false, exclude = [], ran
     question: q.question,
     answer: q.answer,
     source: q.source || '',
-    ...(q.tier ? { tier: q.tier } : {})
+    ...(q.tier ? { tier: q.tier } : {}),
+    ...(q.bonus ? { bonus: q.bonus } : {})
   }));
 }

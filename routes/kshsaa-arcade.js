@@ -1,14 +1,18 @@
 // Octopus Arcade: Friday fun rounds for any number of teams on one lockout
-// system - Last Team Standing, Bounty Hunter, Lightning Round, and Chaos Mode.
+// system - Last Team Standing, Bounty Hunter, Lightning Round, Chaos Mode, and
+// Quizbowl.
 //
 // This route only serves the moderator's setup and console. The game is client
 // code in client/kshsaa/arcade/ (rules in engine.js and modes/, the console in
 // console.js), so none of it runs inside this template literal, and its
-// projector view is the shared scoreboard window (routes/kshsaa-scoreboard.js). Questions come from the round builder's practice sets,
-// which do not count them as read, and arcade games are not saved to stats.
+// projector view is the shared scoreboard window (routes/kshsaa-scoreboard.js).
+// Questions come from the round builder's practice sets, which do not count
+// them as read, and from qbreader.org (Sports, Pop Culture, and all of
+// Quizbowl); arcade games are not saved to stats.
 
 import { Router } from 'express';
 import { CATEGORIES, levelControls } from './kshsaa-round.js';
+import { EXTRA_CATEGORIES } from '../client/kshsaa/arcade/qbreader.js';
 import { KSHSAA_HEAD, kshsaaNav, readTabs } from '../server/kshsaa/nav.js';
 
 const router = Router();
@@ -33,6 +37,17 @@ ${KSHSAA_HEAD}
  .team-row .tkey{max-width:3.4rem;text-align:center;font-family:Consolas,monospace;font-weight:700}
  .mod-off{opacity:.45}
  .q-text{font-family:Georgia,'Times New Roman',serif;font-size:1.35rem;line-height:1.45;white-space:pre-wrap}
+ .q-text .power-zone{font-weight:700}
+ .q-text .power-mark{background:#ffe08a;padding:0 .15em;border-radius:.2em;font-weight:700}
+ .bpart{display:flex;gap:.7rem;padding:.45rem .6rem;border:2px solid transparent;border-radius:.45rem}
+ .bpart+.bpart{margin-top:.3rem}
+ .bpart .q-text{font-size:1.15rem}
+ .bpart .q-answer{font-size:1rem}
+ .bpart .bnum{font-weight:700;min-width:2.2rem;color:#6c757d}
+ .bpart.now{border-color:#0d6efd;background:#f0f6ff}
+ .bpart.right .bnum{color:#2f9e62}
+ .bpart.wrong .bnum{color:#a4262c}
+ .bpart.right,.bpart.wrong{opacity:.75}
  .q-answer{font-size:1.15rem}
  #qAnswer{font-weight:700}
  .clock{font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;min-width:4.6rem;line-height:1}
@@ -137,14 +152,19 @@ ${kshsaaNav('/kshsaa-play', 1200)}
     <div id="modifierBox" class="ms-4 small"></div>
 
     <h2 class="h6 fw-semibold mt-4">Questions</h2>
+    <div class="alert alert-info py-2 small d-none" id="quizbowlHint">Quizbowl reads whole tossups and bonuses from
+      qbreader.org: middle school sets for Beginner, easy high school for JV, and regular high school for Varsity.
+      Quizbowl has no World Language, and the math menu does not apply.</div>
     ${levelControls()}
     <div class="form-label fw-semibold mb-1">Categories</div>
     <div class="d-flex flex-wrap gap-3 mb-1">
-      ${CATEGORIES.map((c, i) => `<div class="form-check">
-        <input class="form-check-input cat" type="checkbox" id="cat-${i}" value="${c}"${c === 'World Language' ? '' : ' checked'}>
+      ${CATEGORIES.concat(EXTRA_CATEGORIES).map((c, i) => `<div class="form-check">
+        <input class="form-check-input cat" type="checkbox" id="cat-${i}" value="${c}"${c === 'World Language' || EXTRA_CATEGORIES.includes(c) ? '' : ' checked'}>
         <label class="form-check-label" for="cat-${i}">${c}</label></div>`).join('')}
     </div>
-    <div class="small text-secondary">World Language questions are held up, not read: the console puts their text on the scoreboard.</div>
+    <div class="small text-secondary">World Language questions are held up, not read: the console puts their text on the scoreboard.
+      Sports and Pop Culture (movies, music, TV, video games) come from qbreader.org's school sets of the last eight
+      years, shortened to the level the way the other quizbowl questions here are.</div>
 
     <button type="button" class="btn btn-primary mt-4" id="start">Get questions &amp; set up the game</button>
     <span class="ms-2 small" id="status"></span>
@@ -184,6 +204,7 @@ ${kshsaaNav('/kshsaa-play', 1200)}
           </div>
           <div id="qText" class="q-text"></div>
           <div class="q-answer mt-3"><span class="small text-secondary fw-semibold me-1">ANSWER</span><span id="qAnswer"></span></div>
+          <div id="bonusBox" class="mt-3 pt-3 border-top d-none"></div>
           <div class="d-flex flex-wrap align-items-center gap-2 mt-3 pt-3 border-top">
             <span id="clock" class="clock">10.0</span>
             <button type="button" class="btn btn-sm btn-outline-primary" data-do="clock" id="clockBtn">Start clock (Space)</button>
@@ -210,7 +231,8 @@ ${kshsaaNav('/kshsaa-play', 1200)}
         </details>
         <div class="small text-secondary mt-2">Keys: team keys buzz &middot; <kbd>C</kbd> correct &middot; <kbd>W</kbd> wrong
           &middot; <kbd>N</kbd> next &middot; <kbd>Z</kbd> undo &middot; <kbd>P</kbd> pause &middot; <kbd>Space</kbd> clock
-          &middot; <kbd>S</kbd> question on scoreboard</div>
+          &middot; <kbd>S</kbd> question on scoreboard<span id="qbKeys" class="d-none"> &middot; in Quizbowl, <kbd>F</kbd> power,
+          <kbd>W</kbd> neg, <kbd>X</kbd> wrong at the end, and on a bonus <kbd>C</kbd> or <kbd>W</kbd> for each part</span></div>
       </div>
     </div>
   </div>

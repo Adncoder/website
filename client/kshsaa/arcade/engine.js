@@ -8,7 +8,8 @@
 //
 // What a right or wrong answer is worth belongs to the modes (modes/) and the
 // power-ups (modifiers.js). This file holds what every mode shares: lockout,
-// rebounds, elimination, shields, the end of the game, and the standings.
+// rebounds, elimination, shields, bonuses, the end of the game, and the
+// standings.
 
 import { MODES } from './modes/index.js';
 import { MODIFIERS } from './modifiers.js';
@@ -31,6 +32,7 @@ export class ArcadeError extends Error {}
  * @property {string} answer
  * @property {string} [source]
  * @property {string} [tier]
+ * @property {import('./qbreader.js').Bonus} [bonus] - Quizbowl: the bonus the team that gets it plays
  */
 
 /**
@@ -49,10 +51,13 @@ export class ArcadeError extends Error {}
 
 /**
  * @typedef {object} ArcadeEvent
- * @property {'question'|'buzz'|'correct'|'wrong'|'adjust'|'modifier'|'end'|'reset'} t
+ * @property {'question'|'buzz'|'correct'|'wrong'|'part'|'adjust'|'modifier'|'end'|'reset'} t
  * @property {number} [q] - question: which one
  * @property {?string} [modifier] - question, modifier: the power-up in play
  * @property {number} [team] - buzz, correct, wrong, adjust
+ * @property {boolean} [power] - correct, in Quizbowl: before the (*)
+ * @property {boolean} [neg] - wrong, in Quizbowl: interrupted the question
+ * @property {boolean} [right] - part: a bonus part answered right
  * @property {number} [lives] - adjust: change in lives
  * @property {number} [points] - adjust: change in points
  * @property {boolean} [shield] - adjust: give (true) or take (false) the shield
@@ -94,8 +99,11 @@ export class ArcadeError extends Error {}
  * @property {?string} modifier - the power-up on it
  * @property {?number} buzz - the team whose buzz waits on a ruling
  * @property {number[]} locked - teams that answered this question wrong
- * @property {?('correct'|'dead')} settled - how this question ended, once it has
+ * @property {?('correct'|'dead')} settled - how this question ended, once it
+ *   has; a question with a bonus ends when the bonus does
  * @property {?number} answeredBy
+ * @property {?{team: number, results: boolean[]}} bonus - the bonus being
+ *   played on this question, a result per part ruled so far
  * @property {?string} ended - why the moderator or a clock ended the game
  * @property {?string} over - why the game is over: 'last-standing' or an ended reason
  * @property {TeamState[]} teams
@@ -120,6 +128,7 @@ function freshState (game) {
     locked: [],
     settled: null,
     answeredBy: null,
+    bonus: null,
     ended: null,
     over: null,
     teams: freshTeams(game),
@@ -214,10 +223,24 @@ function opsFor (game, state) {
   return ops;
 }
 
-function rulingContext (game, state, team) {
+function rulingContext (game, state, team, e = {}) {
   const modifier = MODIFIERS[state.modifier] || null;
-  return { team, modifier, scale: modifier?.scale || 1, lives: MODES[game.mode].lives, ops: opsFor(game, state) };
+  return {
+    team,
+    modifier,
+    scale: modifier?.scale || 1,
+    lives: MODES[game.mode].lives,
+    power: Boolean(e.power),
+    neg: Boolean(e.neg),
+    ops: opsFor(game, state)
+  };
 }
+
+/** The bonus a right answer on this question earns, if the mode plays them. */
+const bonusOf = (game, state) => (MODES[game.mode].quizbowl && game.questions[state.q]?.bonus) || null;
+
+/** A bonus under way: its team answers, and no one buzzes. */
+const inBonus = state => Boolean(state.bonus && !state.settled);
 
 /**
  * The teams that may still buzz on this question.
@@ -233,24 +256,32 @@ export function eligibleTeams (game, state) {
 /** How each event changes the state. Only act() adds events, so these trust them. */
 const APPLY = {
   question (game, state, e) {
-    Object.assign(state, { q: e.q, modifier: e.modifier ?? null, buzz: null, locked: [], settled: null, answeredBy: null });
+    Object.assign(state, { q: e.q, modifier: e.modifier ?? null, buzz: null, locked: [], settled: null, answeredBy: null, bonus: null });
   },
   buzz (game, state, e) {
     state.buzz = e.team;
   },
   correct (game, state, e) {
-    const ctx = rulingContext(game, state, e.team);
+    const ctx = rulingContext(game, state, e.team, e);
     // only possible on a question that lets eliminated teams buzz
     if (state.teams[e.team].out) ctx.ops.revive(e.team);
     MODES[game.mode].correct(ctx);
     ctx.modifier?.afterCorrect?.(ctx);
-    Object.assign(state, { buzz: null, settled: 'correct', answeredBy: e.team });
+    Object.assign(state, { buzz: null, answeredBy: e.team });
+    if (bonusOf(game, state)) state.bonus = { team: e.team, results: [] };
+    else state.settled = 'correct';
   },
   wrong (game, state, e) {
-    MODES[game.mode].wrong(rulingContext(game, state, e.team));
+    MODES[game.mode].wrong(rulingContext(game, state, e.team, e));
     state.buzz = null;
     state.locked.push(e.team);
     if (!game.config.rebounds || !eligibleTeams(game, state).length) state.settled = 'dead';
+  },
+  part (game, state, e) {
+    const bonus = state.bonus;
+    if (e.right) MODES[game.mode].bonusPart(rulingContext(game, state, bonus.team));
+    bonus.results.push(Boolean(e.right));
+    if (bonus.results.length >= bonusOf(game, state).parts.length) state.settled = 'correct';
   },
   // the moderator's fixes go around the rules: no shields, no lives cap
   adjust (game, state, e) {
@@ -278,7 +309,9 @@ const APPLY = {
     state.ended = e.reason;
   },
   reset (game, state) {
-    Object.assign(state, { teams: freshTeams(game), outCount: 0, buzz: null, locked: [], settled: null, answeredBy: null, ended: null });
+    Object.assign(state, {
+      teams: freshTeams(game), outCount: 0, buzz: null, locked: [], settled: null, answeredBy: null, bonus: null, ended: null
+    });
   }
 };
 
@@ -308,8 +341,9 @@ function describe (game, e, before, state) {
   const text = {
     question: () => 'Question ' + (e.q + 1) + (e.modifier ? ' (' + MODIFIERS[e.modifier].label(lives) + ')' : ''),
     buzz: () => name(e.team) + ' buzzed',
-    correct: () => name(e.team) + ' right',
-    wrong: () => name(e.team) + ' wrong',
+    correct: () => name(e.team) + (e.power ? ' power' : ' right'),
+    wrong: () => name(e.team) + (e.neg ? ' neg' : ' wrong'),
+    part: () => name(state.bonus.team) + ' bonus part ' + state.bonus.results.length + (e.right ? ' right' : ' wrong'),
     adjust: () => 'Fixed by hand',
     modifier: () => 'Power-up now ' + (e.modifier ? MODIFIERS[e.modifier].label(lives) : 'none'),
     end: () => ({ questions: 'Out of questions', time: 'Time is up', moderator: 'Game ended by the moderator' })[e.reason],
@@ -354,6 +388,7 @@ export function whyNoBuzz (game, state, team) {
   if (state.over) return 'The game is over.';
   if (game.paused) return 'The game is paused.';
   if (state.teams[team].out && !opensToOut(state)) return name + ' is out. Ignore their light.';
+  if (inBonus(state)) return 'This is ' + game.teams[state.bonus.team].name + "'s bonus. Only they answer.";
   if (state.settled) return 'This question is done. Press Next.';
   if (state.buzz !== null) return state.buzz === team ? name + ' already buzzed.' : game.teams[state.buzz].name + ' buzzed first.';
   if (state.locked.includes(team)) return name + ' already answered this question.';
@@ -450,7 +485,8 @@ export function newGame ({ id, mode, teams, config, questions, random = Math.ran
  * The game passed in is left alone.
  * @param {Game} game
  * @param {{type: string, team?: number, reason?: string, modifier?: ?string, questions?: Question[],
- *   lives?: number, points?: number, shield?: boolean, out?: boolean}} action
+ *   lives?: number, points?: number, shield?: boolean, out?: boolean, power?: boolean, neg?: boolean,
+ *   right?: boolean}} action
  * @param {() => number} [random] - for drawing power-ups
  * @returns {Game}
  */
@@ -467,13 +503,25 @@ export function act (game, action, random = Math.random) {
       return push({ t: 'buzz', team: action.team });
     }
     case 'correct':
-    case 'wrong':
+    case 'wrong': {
       notOver();
       if (state.buzz === null) throw new ArcadeError('No one has buzzed.');
-      return push({ t: action.type, team: state.buzz });
+      const e = { t: action.type, team: state.buzz };
+      // only Quizbowl scores by where in the question the buzz came
+      if (MODES[game.mode].quizbowl) {
+        if (action.type === 'correct' && action.power) e.power = true;
+        if (action.type === 'wrong' && action.neg) e.neg = true;
+      }
+      return push(e);
+    }
+    case 'part':
+      notOver();
+      if (!inBonus(state)) throw new ArcadeError('There is no bonus to rule on.');
+      return push({ t: 'part', right: Boolean(action.right) });
     case 'next':
       notOver();
       if (state.buzz !== null) throw new ArcadeError('Rule on ' + game.teams[state.buzz].name + "'s buzz first.");
+      if (inBonus(state)) throw new ArcadeError('Finish ' + game.teams[state.bonus.team].name + "'s bonus first: right or wrong on each part.");
       if (state.q + 1 >= game.questions.length) return push({ t: 'end', reason: 'questions' });
       return push({ t: 'question', q: state.q + 1, modifier: drawModifier(game, state, random) });
     case 'throwout': {
@@ -481,7 +529,7 @@ export function act (game, action, random = Math.random) {
       // the moderator's fixes during it stand
       notOver();
       const start = game.events.findLastIndex(e => e.t === 'question');
-      const kept = game.events.filter((e, i) => i <= start || !['buzz', 'correct', 'wrong'].includes(e.t));
+      const kept = game.events.filter((e, i) => i <= start || !['buzz', 'correct', 'wrong', 'part'].includes(e.t));
       return act({ ...game, events: kept }, { type: 'next' }, random);
     }
     case 'undo':
@@ -495,7 +543,7 @@ export function act (game, action, random = Math.random) {
     }
     case 'modifier':
       notOver();
-      if (state.buzz !== null || state.locked.length || state.settled) {
+      if (state.buzz !== null || state.locked.length || state.settled || state.bonus) {
         throw new ArcadeError('The power-up can only change before anyone buzzes.');
       }
       return push({ t: 'modifier', modifier: action.modifier || null });

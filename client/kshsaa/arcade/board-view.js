@@ -7,7 +7,7 @@ import { MODES } from './modes/index.js';
 import { MODIFIERS } from './modifiers.js';
 import { replay, standings, winners } from './engine.js';
 import { clockLeft, formatClock } from './clock.js';
-import { $, animate, buildTiles, esc, fitFoot, float, hideFoot, signed, tileAt } from '../scoreboard/tiles.js';
+import { $, animate, announce, buildTiles, esc, fitFoot, float, hideFoot, signed, tileAt } from '../scoreboard/tiles.js';
 
 const OVER_TEXT = {
   'last-standing': 'Last team standing',
@@ -33,15 +33,16 @@ function drawTile (i, state, prev, won) {
     : '';
   el.querySelector('.t-points').textContent = t.points + (lives ? ' pts' : '');
   const buzzed = state.buzz === i && !state.over;
-  const right = state.settled === 'correct' && state.answeredBy === i;
+  const onBonus = Boolean(state.bonus && state.bonus.team === i && !state.settled && !state.over);
+  const right = (state.settled === 'correct' && state.answeredBy === i) || onBonus;
   const missed = state.locked.includes(i) && !t.out;
   el.classList.toggle('buzzed', buzzed);
   el.classList.toggle('right', right);
-  el.classList.toggle('locked', missed && !state.settled);
+  el.classList.toggle('locked', missed && !state.settled && !state.bonus);
   el.classList.toggle('out', t.out);
   el.classList.toggle('shielded', t.shield);
   el.classList.toggle('winner', won.includes(i));
-  el.querySelector('.t-tag').textContent = buzzed ? 'BUZZ!' : right ? '✓' : missed ? '✗' : t.shield ? '🛡️' : '';
+  el.querySelector('.t-tag').textContent = buzzed ? 'BUZZ!' : onBonus ? 'BONUS' : right ? '✓' : missed ? '✗' : t.shield ? '🛡️' : '';
 
   if (!was) return;
   if (buzzed && prev.buzz !== i) animate(el, 'buzzpop', 400);
@@ -64,19 +65,27 @@ function drawTile (i, state, prev, won) {
   else if (!was.shield && t.shield) float(el, '+ Shield', 'info');
 }
 
-// the question when the moderator puts it up, and the answer once it is done:
-// a question gets about a third of the screen, an answer alone a strip, so the
-// teams stay the biggest thing on it
+// the question when the moderator puts it up (on a bonus, the part being
+// read), and the answer once it is done, with a bonus's answers as each part
+// is ruled on: a question gets about a third of the screen, answers alone a
+// strip, so the teams stay the biggest thing on it
 function drawFoot (state) {
   const q = GAME.questions[state.q];
-  const showAnswer = GAME.config.showAnswers && Boolean(state.settled);
+  const b = state.bonus;
+  const up = b && !state.settled ? b.results.length : -1;
+  const showAnswer = GAME.config.showAnswers && Boolean(state.settled || b);
   if (!GAME.projectQuestion && !showAnswer) {
     hideFoot();
     return;
   }
-  fitFoot((GAME.projectQuestion ? '<div class="f-q">' + esc(q.question) + '</div>' : '') +
-    (showAnswer ? '<div class="f-a"><span class="f-label">ANSWER</span>' + esc(q.answer) + '</div>' : ''),
-  GAME.projectQuestion ? 0.36 : 0.15, GAME.projectQuestion ? 72 : 52);
+  const reading = up === -1 ? esc(q.question) : (up === 0 ? esc(q.bonus.leadin) + ' ' : '') + esc(q.bonus.parts[up]);
+  const parts = b && showAnswer
+    ? b.results.map((right, i) => '<div class="f-a' + (right ? '' : ' f-miss') + '"><span class="f-label">PART ' + (i + 1) +
+      '</span>' + (right ? '✓ ' : '✗ ') + esc(q.bonus.answers[i]) + '</div>').join('')
+    : '';
+  fitFoot((GAME.projectQuestion ? '<div class="f-q">' + reading + '</div>' : '') +
+    (showAnswer ? '<div class="f-a"><span class="f-label">ANSWER</span>' + esc(q.answer) + '</div>' + parts : ''),
+  GAME.projectQuestion ? 0.36 : b ? 0.26 : 0.15, GAME.projectQuestion ? 72 : 52);
 }
 
 function confetti () {
@@ -123,13 +132,23 @@ function draw (state, prev) {
   const won = winners(GAME, state);
   document.title = mode.name + ' - Scoreboard';
   $('bMode').textContent = mode.name;
-  $('bProgress').textContent = 'Question ' + (state.q + 1) + (mode.timed ? '' : ' of ' + GAME.questions.length);
+  const word = mode.quizbowl ? 'Tossup ' : 'Question ';
+  $('bProgress').textContent = word + (state.q + 1) + (mode.timed ? '' : ' of ' + GAME.questions.length);
+  // forward only (undo goes back), and briefly where the questions come quickly
+  if (prev && state.q > prev.q && !state.over) {
+    announce(word + (state.q + 1), GAME.questions[state.q].category, mode.autoAdvance ? 1100 : undefined);
+  } else if (prev && state.bonus && !prev.bonus && !state.over) {
+    announce('Bonus', 'for ' + GAME.teams[state.bonus.team].name);
+  }
 
   const status = $('bStatus');
   const alive = state.teams.filter(t => !t.out).length;
   let text = mode.lives ? alive + (alive === 1 ? ' team' : ' teams') + ' left' : '';
   let kind = '';
+  const b = state.bonus;
+  const marks = b ? b.results.map(r => r ? '✓' : '✗').concat(Array(GAME.questions[state.q].bonus.parts.length - b.results.length).fill('·')).join(' ') : '';
   if (!state.over && state.buzz !== null) [text, kind] = [GAME.teams[state.buzz].name + ' buzzed', 'buzz'];
+  else if (!state.over && b) [text, kind] = [GAME.teams[b.team].name + "'s bonus: " + marks, 'right'];
   else if (!state.over && state.settled === 'correct') [text, kind] = [GAME.teams[state.answeredBy].name + ' got it!', 'right'];
   else if (!state.over && state.settled === 'dead') text = 'No one got it';
   else if (!state.over && state.locked.length) [text, kind] = ['Rebound!', 'rebound'];

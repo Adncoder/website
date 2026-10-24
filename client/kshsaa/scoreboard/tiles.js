@@ -1,13 +1,17 @@
 // What every view on the scoreboard window shares: a tile per team, sized to
-// the screen, little animations, the text strip along the bottom, and clearing
-// the screen between one round or game and the next.
+// the screen, little animations, the text strip along the bottom, the card
+// that announces each new question, and clearing the screen between one round
+// or game and the next.
 
 export const $ = id => document.getElementById(id);
 // team names are free text and reach innerHTML
 export const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 export const signed = n => (n > 0 ? '+' : '−') + Math.abs(n);
 
+const ANNOUNCE_MS = 1800;
+
 let tiles = [];
+let announceTimer = null;
 
 /** The tile for team i. */
 export const tileAt = i => tiles[i];
@@ -66,6 +70,29 @@ export function float (el, text, kind) {
 }
 
 /**
+ * A big card in the middle of the screen for a moment, so the room sees a new
+ * question start without reading the small line along the top. It never takes
+ * clicks, and fades on its own.
+ * @param {string} title - "Question 6"
+ * @param {string} [sub] - its category
+ * @param {number} [ms] - how long it stays
+ */
+export function announce (title, sub = '', ms = ANNOUNCE_MS) {
+  const card = $('bNext');
+  card.querySelector('.n-big').textContent = title;
+  card.querySelector('.n-sub').textContent = sub;
+  card.style.setProperty('--n-ms', ms + 'ms');
+  card.classList.remove('show', 'hidden');
+  // reading the layout restarts the animation
+  card.getBoundingClientRect();
+  card.classList.add('show');
+  animate($('bProgress'), 'pop', 700);
+  clearTimeout(announceTimer);
+  // the animation fades it out, but not with reduced motion on
+  announceTimer = setTimeout(() => card.classList.add('hidden'), ms);
+}
+
+/**
  * Shows text along the bottom at the largest size that fits.
  * @param {string} html
  * @param {number} share - the most of the screen's height it may take
@@ -97,7 +124,8 @@ export function hideFoot () {
 /** A clean screen for whatever comes on next. */
 export function resetBoard () {
   for (const id of ['bMode', 'bProgress', 'bStatus', 'bClock', 'bRound']) $(id).textContent = '';
-  for (const id of ['bMod', 'bFoot', 'overlay', 'bRound']) $(id).classList.add('hidden');
+  for (const id of ['bMod', 'bFoot', 'overlay', 'bRound', 'bNext']) $(id).classList.add('hidden');
+  clearTimeout(announceTimer);
   $('bStatus').className = '';
   $('bClock').className = '';
   $('tiles').innerHTML = '';
