@@ -141,6 +141,13 @@ Everything under `routes/kshsaa-*.js`, `server/kshsaa/`, `client/kshsaa/`,
 upstream; the rest of this document describes the upstream codebase and still
 applies.
 
+The fork runs on Render, not Heroku. Render takes the Node.js version from
+`engines.node` in `package.json` unless a `NODE_VERSION` environment variable,
+`.node-version`, or `.nvmrc` says otherwise; with none of them, a service stays
+on whatever default Node had the day it was created and never picks up a
+security release. When Node ships one, raise the floor in `engines.node` and
+redeploy.
+
 | File | Page |
 | --- | --- |
 | `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
