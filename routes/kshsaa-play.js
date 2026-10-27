@@ -124,8 +124,18 @@ ${kshsaaNav('/kshsaa-play', 1100)}
       <div id="lineupTeams"></div>
     </div>
 
+    <div class="mb-3">
+      <div class="form-label fw-semibold mb-1">Format</div>
+      <div class="btn-group" role="group" aria-label="Round format">
+        <input type="radio" class="btn-check" name="format" id="format-kshsaa" value="kshsaa" checked>
+        <label class="btn btn-outline-primary btn-sm" for="format-kshsaa">KSHSAA</label>
+        <input type="radio" class="btn-check" name="format" id="format-naqt" value="naqt">
+        <label class="btn btn-outline-primary btn-sm" for="format-naqt">NAQT</label>
+      </div>
+      <div class="form-text" id="formatNote"></div>
+    </div>
     <div class="mb-3">${levelControls()}</div>
-    <div class="form-check mb-3">
+    <div class="form-check mb-3" id="holdBackBox">
       <input class="form-check-input" type="checkbox" id="holdBack">
       <label class="form-check-label" for="holdBack">Varsity players are holding back (not interrupting)</label>
       <div class="form-text">On by default for JV and Beginner. Their answers then stay out of their Insights numbers,
@@ -215,6 +225,27 @@ const KSHSAA_FORMAT = {
   pronunciationGuideMarkers: ['(', ')'],
   timeoutsAllowed: 0,
   version: '2'
+};
+// NAQT rounds come from qbreader.org (/kshsaa/naqt.js): 15 for a buzz before
+// the (*), 10 after, -5 for a neg, and a bonus for the team that answered,
+// never bouncing back. Two tossups past the 24 break a tie.
+const NAQT_FORMAT = {
+  displayName: 'NAQT',
+  negValue: -5,
+  powers: [{ marker: '(*)', points: 15 }],
+  bonusesBounceBack: false,
+  minimumOvertimeQuestionCount: 1,
+  overtimeIncludesBonuses: false,
+  pairTossupsBonuses: false,
+  pronunciationGuideMarkers: ['("', '")'],
+  regulationTossupCount: 24,
+  timeoutsAllowed: 1,
+  version: '2'
+};
+const FORMAT_NOTES = {
+  kshsaa: '16 questions at 10 points, saved to team stats.',
+  naqt: '24 tossups and 24 bonuses from qbreader.org in NAQT\\'s high school mix: 15 for a buzz before the (*), ' +
+    '10 after, \\u22125 for a neg, and a three-part bonus for the team that answers. Practice only: not saved to stats.'
 };
 
 let KNOWN = [];
@@ -438,6 +469,7 @@ function startApp () {
   loadLineups();
   holdBackForLevel();
   restoreNextRound();
+  applyFormat();
 }
 
 // varsity players hold back in a JV or Beginner round unless the moderator
@@ -445,6 +477,17 @@ function startApp () {
 function holdBackForLevel () {
   const level = document.querySelector('input[name="level"]:checked').value;
   $('holdBack').checked = level === 'jv' || level === 'beginner';
+}
+
+const selectedFormat = () => document.querySelector('input[name="format"]:checked').value;
+
+// a NAQT round is practice only and takes its math from qbreader.org, so
+// holding back and the math menu have nothing to say about it
+function applyFormat () {
+  const naqt = selectedFormat() === 'naqt';
+  $('formatNote').textContent = FORMAT_NOTES[selectedFormat()];
+  $('holdBackBox').classList.toggle('d-none', naqt);
+  $('mathTier').parentElement.classList.toggle('d-none', naqt);
 }
 
 // ---------- next round ----------
@@ -463,6 +506,7 @@ function nextLabel (label) {
 function currentSetup () {
   return {
     label: $('label').value.trim(),
+    format: selectedFormat(),
     level: document.querySelector('input[name="level"]:checked').value,
     holdBack: $('holdBack').checked,
     math: $('mathTier').value,
@@ -480,6 +524,8 @@ function restoreNextRound () {
   $('label').value = nextLabel(setup.label || '');
   const radio = document.querySelector('input[name="level"][value="' + setup.level + '"]');
   if (radio) radio.checked = true;
+  const format = document.querySelector('input[name="format"][value="' + setup.format + '"]');
+  if (format) format.checked = true;
   if (typeof setup.holdBack === 'boolean') $('holdBack').checked = setup.holdBack;
   if (setup.math) $('mathTier').value = setup.math;
   const teams = setup.teams || [];
@@ -509,6 +555,7 @@ $('gateBtn').onclick = async () => {
 };
 $('gatePw').onkeydown = e => { if (e.key === 'Enter') $('gateBtn').click(); };
 document.querySelectorAll('input[name="level"]').forEach(r => r.addEventListener('change', holdBackForLevel));
+document.querySelectorAll('input[name="format"]').forEach(r => r.addEventListener('change', applyFormat));
 $('addTeam').onclick = () => {
   if (teamCols().length < MAX_TEAMS) addTeam().querySelector('.tname').focus();
 };
@@ -999,7 +1046,8 @@ function setupTimer (round, teamNames) {
   $('tpDisplay').onclick = () => {
     if (languageShowing()) { hideLanguage(); return; }
     const q = ROUND[(CURRENT_QUESTION || 1) - 1];
-    if (q) { showLanguage(q.question); }
+    // a NAQT tossup is formatted for MODAQ; hold up its plain text
+    if (q) { showLanguage(q.display || q.question); }
   };
 
   $('tpToggle').onclick = () => { TIMER.running ? tpStop() : tpStart(); };
@@ -1051,7 +1099,7 @@ function publishScreen () {
     level: MATCH.level,
     teams: MATCH.teams.map((name, i) => ({ name, score: (LIVE_SCORES && LIVE_SCORES[i]) || 0 })),
     question: q,
-    total: ROUND.length,
+    total: Math.max(q, MATCH.total || ROUND.length),
     category: ROUND[q - 1] ? ROUND[q - 1].category : '',
     clock: {
       limit: TIMER.duration * 1000,
@@ -1111,18 +1159,28 @@ $('go').onclick = async () => {
 
   $('go').disabled = true;
   $('status').textContent = 'building round...';
+  const naqt = selectedFormat() === 'naqt';
   try {
     // kept for "Next round with these teams"
     const setup = currentSetup();
-    const res = await fetch('/kshsaa-round/generate?' + levelQuery());
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    let data;
+    if (naqt) {
+      // straight from qbreader.org in this browser: nothing passes through
+      // this site, so the round is never counted as read
+      $('status').textContent = 'getting questions from qbreader.org...';
+      const { naqtRound } = await import('/kshsaa/naqt.js');
+      data = { ...await naqtRound({ level: setup.level }), level: setup.level, roundId: 'naqt-' + Date.now() };
+    } else {
+      const res = await fetch('/kshsaa-round/generate?' + levelQuery());
+      data = await res.json();
+      if (data.error) throw new Error(data.error);
+    }
 
     // metadata is MODAQ's own per-question field: it renders it as <Social Studies>
     // beside the answer, so the moderator can see which subject they are reading.
     const packet = {
       tossups: data.round.map(q => ({ question: q.question, answer: q.answer, metadata: q.category })),
-      bonuses: []
+      bonuses: (data.bonuses || []).map(b => ({ leadin: b.leadin, parts: b.parts, answers: b.answers, values: b.values, metadata: b.metadata }))
     };
     const label = $('label').value.trim() || 'Practice';
     // sent with the game so stats read the real category of each question
@@ -1133,6 +1191,9 @@ $('go').onclick = async () => {
     ROUND_ID = data.roundId;
     const noteTeams = teamNames.map(name => ({ name, players: players.filter(p => p.teamName === name).map(p => p.name) }));
     $('noteBtn').onclick = () => openNote(noteTeams);
+    // notes go out with the saved game, and a NAQT game is never saved
+    $('noteBtn').classList.toggle('d-none', naqt);
+    if (naqt) $('saveState').textContent = 'practice, not saved';
     $('npSave').onclick = saveNote;
     $('npCancel').onclick = () => $('notePanel').classList.add('d-none');
     $('npText').onkeydown = e => {
@@ -1183,11 +1244,13 @@ $('go').onclick = async () => {
       $('roundWarn').classList.remove('d-none');
     }
     const levelName = document.querySelector('label[for="level-' + data.level + '"]');
-    $('roundInfo').textContent = label + ' · ' + (levelName ? levelName.textContent : data.level);
-    MATCH = { roundId: data.roundId, label, level: levelName ? levelName.textContent : data.level, teams: teamNames };
+    const levelText = (levelName ? levelName.textContent : data.level) + (naqt ? ' · NAQT' : '');
+    $('roundInfo').textContent = label + ' · ' + levelText;
+    // a NAQT round's two tiebreakers do not count toward "Question 3 of 24"
+    MATCH = { roundId: data.roundId, label, level: levelText, teams: teamNames, total: naqt ? NAQT_FORMAT.regulationTossupCount : null };
     $('roundBar').classList.remove('d-none');
     $('nextRound').onclick = () => {
-      if (!SAVED && !window.confirm('This game has not been saved to team stats. Start the next round anyway?')) return;
+      if (!naqt && !SAVED && !window.confirm('This game has not been saved to team stats. Start the next round anyway?')) return;
       try { sessionStorage.setItem(NEXT_KEY, JSON.stringify(setup)); } catch (e) {}
       window.location.reload();
     };
@@ -1196,10 +1259,10 @@ $('go').onclick = async () => {
       React.createElement(Modaq.ModaqControl, {
         packet,
         players,
-        gameFormat: KSHSAA_FORMAT,
+        gameFormat: naqt ? NAQT_FORMAT : KSHSAA_FORMAT,
         persistState: false,
         storeName: 'kshsaa-modaq',
-        customExport: {
+        customExport: naqt ? undefined : {
           label: 'Save to team stats',
           type: 'QBJ',
           // MODAQ shows the returned { isError, status }: an error's status in
@@ -1269,7 +1332,7 @@ $('go').onclick = async () => {
     );
   } catch (e) {
     $('status').innerHTML = '<span class="text-danger">error: ' + esc(e.message) +
-      ' &mdash; <a href="/kshsaa-round">use the download page instead</a></span>';
+      (naqt ? '' : ' &mdash; <a href="/kshsaa-round">use the download page instead</a>') + '</span>';
     $('go').disabled = false;
   }
 };
