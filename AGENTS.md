@@ -496,6 +496,16 @@ the player got at most 60% of the answers their own usual level would have in
 those rooms, at least 1.5 short, and is below the team there, so players weak
 everywhere do not get arbitrary flags.
 
+On the Overview, squad chips toggle, so several can be on at once, and a
+checkbox on each player adds anyone to the group or takes them off a picked
+squad (`GROUP`: squads, players added, players removed). The card above the
+players table adds up whoever is in the group, and its Team strength is the
+team builder's formula over their room-model strengths (`room` on each player
+row, `roomWeights` and `roomDifficulty` in `/kshsaa-stats/data`) at the
+Adjusted column's level, so a group of one is that player's Adjusted. A
+search looks through every squad, so a player from another squad can be
+added; picked squads list their whole roster, ticked or not.
+
 Varsity players hold back (do not interrupt) when they play with JV or
 Beginner players. A practice game's `holdBack` says whether they did; when it is
 missing, they did if the level is JV or Beginner. "Varsity" means a roster squad
