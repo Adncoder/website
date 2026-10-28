@@ -20,7 +20,7 @@ import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
-import { fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
+import { WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
 import { formatSquadPlan, parseSquadPlan } from '../server/kshsaa/squad-plan.js';
 
 const router = Router();
@@ -918,6 +918,13 @@ router.get('/data', requireAuth, async (req, res) => {
     const m = model.players.get(name);
     return m && at ? +soloAnswers(m.strength, model.difficulty[at], m.worth).toFixed(1) : null;
   };
+  // a player's strengths and worth, so the Overview can add up any group the
+  // way the Insights team builder adds up a team
+  const room = name => {
+    const m = model.players.get(name);
+    if (!m) return null;
+    return { s: Object.fromEntries(CATEGORIES.map(c => [c, +(m.strength[c] || 0).toFixed(4)])), f: +m.worth.toFixed(4) };
+  };
   const playerRows = Object.values(players)
     .filter(p => p.main.games.size)
     .map(p => ({
@@ -927,6 +934,7 @@ router.get('/data', requireAuth, async (req, res) => {
       adjusted: adjusted(p.name),
       // questions the Adjusted column rests on: held-back games do not count
       adjustedHeard: model.players.get(p.name)?.heard ?? 0,
+      room: room(p.name),
       byCategory: p.byCategory,
       perGame: Object.values(p.perGame),
       byMonth: Object.keys(p.byMonth).sort().reverse()
@@ -946,6 +954,9 @@ router.get('/data', requireAuth, async (req, res) => {
     kinds: Object.keys(KINDS).map(key => ({ key, label: KINDS[key] })),
     totalGames: everything.length,
     adjustedLevel: at ? levelLabel(at) : null,
+    // the 16 questions of a round by category, and how hard the Adjusted level plays
+    roomWeights: WEIGHTS,
+    roomDifficulty: at ? model.difficulty[at] : null,
     games: shown.map(g => ({
       id: String(g._id),
       label: g.label,
@@ -992,6 +1003,9 @@ ${KSHSAA_HEAD}
  .heat{display:inline-block;min-width:3rem;padding:.15rem .4rem;border-radius:.25rem;
    text-align:center;font-size:.85rem}
  .rowlink{cursor:pointer}
+ /* the group checkbox column on the players table */
+ .pick{width:2rem;text-align:center}
+ .pick .form-check-input{cursor:pointer;margin:0}
  .dayrow td{background:#f8f9fb}
  .daycaret{display:inline-block;width:.8rem;color:#6b7280}
  tr.selected td{background:#eef4ff !important}
@@ -1137,7 +1151,10 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 ${NAME_AUTOCOMPLETE}
 <script>
 var $ = function (id) { return document.getElementById(id); };
-var DATA = null, SELECTED = null, CHARTS = {}, SQUADS = [], SQUAD = '';
+var DATA = null, SELECTED = null, CHARTS = {}, SQUADS = [];
+// the group the Overview's card adds up: whole squads, plus players added
+// from anywhere, less players taken off one of those squads
+var GROUP = { squads: [], added: [], removed: [] };
 var SEARCH = '', KNOWN_NAMES = [];
 var FILTER = { month: 'season', level: 'all', kind: 'all' };
 // points per question is the default: it orders identically to raw points when
@@ -1710,17 +1727,21 @@ function render (d) {
   if (!d.players.length) {
     h += '<p class="note">No one has played in the games these filters cover.</p>';
   } else {
-    h += '<div class="mb-2" id="squadChips">' +
-      '<button class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' + (SQUAD ? '' : ' active') +
+    h += '<div class="mb-1" id="squadChips">' +
+      '<button type="button" class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' + (GROUP.squads.length ? '' : ' active') +
       '" data-squad="">All squads</button>' +
       squadsPresent.map(function (s) {
-        return '<button class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' +
-          (SQUAD === s ? ' active' : '') + '" data-squad="' + esc(s) + '">' + esc(s) + '</button>';
+        var on = GROUP.squads.indexOf(s) !== -1;
+        return '<button type="button" class="btn btn-sm btn-outline-secondary me-1 mb-1 chip' + (on ? ' active' : '') +
+          '" aria-pressed="' + on + '" data-squad="' + esc(s) + '">' + esc(s) + '</button>';
       }).join('') + '</div>' +
+      '<p class="note mt-0 mb-2">Click squads to look at several at once, and tick players to add or take off anyone; ' +
+      'the card above the table adds up whoever is picked. A search looks through every squad.</p>' +
       '<div id="squadSummary"></div>' +
       '<input class="form-control form-control-sm mb-2" id="search" placeholder="Search players...">' +
       '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
       '<table class="table table-sm table-hover align-middle"><thead><tr>' +
+      '<th class="pick" title="In the group"><span class="visually-hidden">In the group</span></th>' +
       SORT_COLS.map(function (c) {
         var on = SORT.key === c.key;
         return '<th class="sortable' + (c.text ? '' : ' num') + (on ? ' sorted' : '') +
@@ -1730,6 +1751,8 @@ function render (d) {
       '</tr></thead><tbody>';
     d.players.forEach(function (p) {
       h += '<tr class="rowlink prow" data-name="' + esc(p.name) + '" data-squad="' + esc(p.team) + '">' +
+        '<td class="pick"><input type="checkbox" class="form-check-input gpick" aria-label="' + esc(p.name) +
+        ' in the group"></td>' +
         '<td>' + esc(p.name) + '</td>' +
         '<td class="text-secondary">' + esc(p.team) + '</td>' +
         '<td class="num">' + p.games + '</td>' +
@@ -1788,10 +1811,8 @@ function render (d) {
   });
   Array.prototype.forEach.call(document.querySelectorAll('#squadChips .chip'), function (chip) {
     chip.onclick = function () {
-      SQUAD = chip.getAttribute('data-squad');
-      Array.prototype.forEach.call(document.querySelectorAll('#squadChips .chip'), function (c) {
-        c.classList.toggle('active', c === chip);
-      });
+      toggleSquad(chip.getAttribute('data-squad'));
+      markChips();
       applyFilters();
       renderSquadSummary();
     };
@@ -1800,6 +1821,16 @@ function render (d) {
   renderSquadSummary();
   Array.prototype.forEach.call(document.querySelectorAll('.prow'), function (row) {
     row.onclick = function () { selectPlayer(row.getAttribute('data-name')); };
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('.gpick'), function (box) {
+    // ticking a player changes the group without opening their card
+    box.onclick = function (e) {
+      e.stopPropagation();
+      var row = box.closest('.prow');
+      togglePlayer(row.getAttribute('data-name'), row.getAttribute('data-squad') || '');
+      applyFilters();
+      renderSquadSummary();
+    };
   });
   if (SELECTED && playerByName(SELECTED)) selectPlayer(SELECTED);
 }
@@ -1834,14 +1865,96 @@ function downloadGame (id, format) {
   });
 }
 
+// ---------- the group ----------
+
+function without (list, item) {
+  return list.filter(function (x) { return x !== item; });
+}
+
+function inGroup (name, squad) {
+  if (GROUP.added.indexOf(name) !== -1) return true;
+  return GROUP.squads.indexOf(squad) !== -1 && GROUP.removed.indexOf(name) === -1;
+}
+
+function groupEmpty () {
+  return !GROUP.squads.length && !GROUP.added.length;
+}
+
+// "All squads" clears the squads; players added one at a time stay
+function toggleSquad (squad) {
+  if (!squad) {
+    GROUP.squads = [];
+    GROUP.removed = [];
+    return;
+  }
+  GROUP.squads = GROUP.squads.indexOf(squad) === -1 ? GROUP.squads.concat(squad) : without(GROUP.squads, squad);
+  // a squad starts out whole each time it is picked or dropped
+  var members = DATA.players.filter(function (p) { return p.team === squad; }).map(function (p) { return p.name; });
+  GROUP.removed = GROUP.removed.filter(function (n) { return members.indexOf(n) === -1; });
+  GROUP.added = GROUP.added.filter(function (n) { return members.indexOf(n) === -1; });
+}
+
+function togglePlayer (name, squad) {
+  var onSquad = GROUP.squads.indexOf(squad) !== -1;
+  if (inGroup(name, squad)) {
+    if (onSquad) GROUP.removed = GROUP.removed.concat(name);
+    GROUP.added = without(GROUP.added, name);
+  } else if (onSquad) {
+    GROUP.removed = without(GROUP.removed, name);
+  } else {
+    GROUP.added = GROUP.added.concat(name);
+  }
+}
+
+function markChips () {
+  Array.prototype.forEach.call(document.querySelectorAll('#squadChips .chip'), function (c) {
+    var s = c.getAttribute('data-squad');
+    var on = s ? GROUP.squads.indexOf(s) !== -1 : !GROUP.squads.length;
+    c.classList.toggle('active', on);
+    if (s) c.setAttribute('aria-pressed', on);
+  });
+}
+
 function applyFilters () {
   var q = SEARCH.toLowerCase();
   Array.prototype.forEach.call(document.querySelectorAll('.prow'), function (row) {
-    var name = row.getAttribute('data-name').toLowerCase();
+    var name = row.getAttribute('data-name');
     var squad = row.getAttribute('data-squad') || '';
-    var hide = (q && name.indexOf(q) === -1) || (SQUAD && squad !== SQUAD);
+    // picked squads show their whole roster, ticked or not, so a player taken
+    // off can be put back; a search looks through everyone, so a player from
+    // another squad can be added
+    var hide = q
+      ? name.toLowerCase().indexOf(q) === -1
+      : GROUP.squads.length > 0 && GROUP.squads.indexOf(squad) === -1 && GROUP.added.indexOf(name) === -1;
     row.style.display = hide ? 'none' : '';
+    var box = row.querySelector('.gpick');
+    if (box) box.checked = inGroup(name, squad);
   });
+}
+
+// How many of a 16-question round these players would answer together with
+// nobody else buzzing, by the room model, as the Insights team builder counts
+// a team: each category's questions times (their strengths there, each times
+// that player's worth, added up) / (the level's difficulty + their strengths
+// there added up).
+function groupStrength (members) {
+  var D = DATA.roomDifficulty;
+  var W = DATA.roomWeights;
+  var measured = members.filter(function (p) { return p.room; });
+  if (!D || !W || !measured.length) return null;
+  var byCategory = {};
+  var total = 0;
+  Object.keys(W).forEach(function (c) {
+    var sum = 0;
+    var net = 0;
+    measured.forEach(function (p) {
+      sum += p.room.s[c] || 0;
+      net += (p.room.s[c] || 0) * p.room.f;
+    });
+    byCategory[c] = W[c] * net / (D + sum);
+    total += byCategory[c];
+  });
+  return { total: total, byCategory: byCategory, measured: measured.length };
 }
 
 function stat (label, value) {
@@ -1851,10 +1964,15 @@ function stat (label, value) {
 function renderSquadSummary () {
   var box = $('squadSummary');
   if (!box) return;
-  if (!SQUAD) { box.innerHTML = ''; return; }
+  if (groupEmpty()) { box.innerHTML = ''; return; }
 
-  var members = DATA.players.filter(function (p) { return p.team === SQUAD; });
+  var members = DATA.players.filter(function (p) { return inGroup(p.name, p.team); });
   if (!members.length) { box.innerHTML = ''; return; }
+  var title = GROUP.squads.length ? GROUP.squads.join(' + ') : 'Picked players';
+  if (GROUP.squads.length && GROUP.added.length) {
+    title += ' + ' + GROUP.added.length + (GROUP.added.length === 1 ? ' player' : ' players');
+  }
+  var strength = groupStrength(members);
 
   var totals = { correct: 0, wrong: 0, points: 0, celSum: 0, celCount: 0, heard: 0, byCategory: {} };
   var gameIds = {};
@@ -1875,7 +1993,12 @@ function renderSquadSummary () {
 
   var buzzes = totals.correct + totals.wrong;
   var h = '<div class="card mb-3"><div class="card-body">' +
-    '<h3>' + esc(SQUAD) + ' &mdash; combined</h3><div>' +
+    '<div class="d-flex justify-content-between align-items-baseline gap-2">' +
+    '<h3 class="mb-1">' + esc(title) + ' &mdash; combined</h3>' +
+    '<button type="button" class="btn btn-sm btn-outline-secondary" id="groupClear">Clear</button></div>' +
+    '<p class="small text-secondary mb-2">' + members.map(function (p) { return esc(p.name); }).join(', ') +
+    (GROUP.removed.length ? ' &middot; without ' + GROUP.removed.map(esc).join(', ') : '') + '</p><div>' +
+    (strength ? stat('Team strength', strength.total.toFixed(1) + ' of 16') : '') +
     stat('Players', members.length) +
     stat('Games', Object.keys(gameIds).length) +
     stat('Points/question', totals.heard ? (totals.points / totals.heard).toFixed(2) : '-') +
@@ -1885,9 +2008,33 @@ function renderSquadSummary () {
   DATA.categoryNames.forEach(function (c) { h += '<th class="text-center">' + esc(c) + '</th>'; });
   h += '</tr></thead><tbody><tr>';
   DATA.categoryNames.forEach(function (c) { h += heatCell(totals.byCategory[c] || { correct: 0, wrong: 0 }); });
-  h += '</tr></tbody></table></div>' +
-    '<p class="note">Squad totals across every game in these filters that any member played.</p></div></div>';
+  h += '</tr>';
+  if (strength) {
+    h += '<tr class="small">';
+    DATA.categoryNames.forEach(function (c) {
+      h += '<td class="text-center text-secondary">' + (DATA.roomWeights[c]
+        ? (strength.byCategory[c] || 0).toFixed(1) + ' of ' + DATA.roomWeights[c]
+        : '') + '</td>';
+    });
+    h += '</tr>';
+  }
+  h += '</tbody></table></div>' +
+    '<p class="note">Totals across every game in these filters that anyone in the group played.' +
+    (strength
+      ? ' Team strength is how many of a 16-question round at ' + esc(DATA.adjustedLevel || 'this level') +
+        ' these players would answer together with nobody else buzzing, by the same room model as the Insights ' +
+        'team builder; the second row splits it by category.' +
+        (strength.measured < members.length
+          ? ' ' + (members.length - strength.measured) + ' of them have no games it can read yet and are left out of it.'
+          : '')
+      : '') + '</p></div></div>';
   box.innerHTML = h;
+  $('groupClear').onclick = function () {
+    GROUP = { squads: [], added: [], removed: [] };
+    markChips();
+    applyFilters();
+    renderSquadSummary();
+  };
 }
 
 function breakdownTable (title, rows, note) {

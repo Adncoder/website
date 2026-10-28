@@ -150,7 +150,7 @@ redeploy.
 
 | File | Page |
 | --- | --- |
-| `routes/kshsaa-play.js` | The reader: MODAQ plus a timer bar, the World Language full-screen display, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
+| `routes/kshsaa-play.js` | The reader: KSHSAA or NAQT rounds in MODAQ, plus a timer bar, the World Language full-screen display, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
 | `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out; exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
 | `routes/kshsaa-stats.js` | Password-gated stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
 | `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
@@ -161,10 +161,11 @@ redeploy.
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-arcade.test.js` | `npm test`: the arcade engine under `node --test` |
+| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js` | `npm test`: the arcade engine and NAQT rounds under `node --test` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `client/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it). The import scripts run it in Node and the arcade in the browser, so it lives under `client/` and imports nothing |
+| `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser. `npm test` runs it in Node, so it imports nothing |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
@@ -370,6 +371,34 @@ each part (`part` events), and the question only counts as settled, and Next
 only works, once every part has a ruling. A mode turns this on with
 `quizbowl: true` and scores parts in `bonusPart`.
 
+### NAQT rounds
+
+The reader's Format switch reads a KSHSAA round or a NAQT one. A NAQT round is
+24 tossups and 24 three-part bonuses, plus two tossups that only come up to
+break a tie, built in the browser by `naqtRound` in `client/kshsaa/naqt.js`
+from qbreader.org's public API: standard sets at difficulty 1, 2, or 3 for
+Beginner, JV, or Varsity, as in the arcade. `DISTRIBUTION` holds NAQT's high
+school distribution (naqt.com/hs/distribution.jsp) as averages per packet.
+`apportion` rounds each one up or down to whole questions, as NAQT's packets
+do, groups first and then their parts, and `spread` orders the questions so
+no two in a row share a group when that can be helped. A part qbreader.org
+cannot fill (Current Events at Beginner, often) is filled from any category,
+and the round's notes say so. qbreader matches an alternate subcategory to
+questions that have none, so the Math part asks for more and keeps only Math.
+
+MODAQ scores it with `NAQT_FORMAT` in the reader: 15 before the `(*)`, 10
+after, -5 for a neg, and bonuses that never bounce back, taken in order by
+whichever team answers a tossup. MODAQ prints any tag but `<b>`, `<u>`,
+`<em>`, `<sub>`, `<sup>`, and `<req>` as text, so `modaqText` turns qbreader's
+`<i>` into `<em>`. A bonus goes to MODAQ as `parts`, `answers`, and `values`
+side by side, never as part objects, or the packet does not load.
+
+NAQT rounds are practice only. Nothing goes through this site's server, so
+they are never counted as read; there is no "Save to team stats" (MODAQ's own
+Export menu instead), and the note button, the hold-back checkbox, and the
+math menu are hidden for them. "Next round with these teams" keeps the format,
+and the scoreboard window counts to 24, past it only for a tiebreaker.
+
 ### Scoreboard window
 
 `/kshsaa-scoreboard` is a second screen for the projector, opened by the
@@ -473,6 +502,16 @@ team builder's "On questions at" names. A category is flagged "work on" when
 the player got at most 60% of the answers their own usual level would have in
 those rooms, at least 1.5 short, and is below the team there, so players weak
 everywhere do not get arbitrary flags.
+
+On the Overview, squad chips toggle, so several can be on at once, and a
+checkbox on each player adds anyone to the group or takes them off a picked
+squad (`GROUP`: squads, players added, players removed). The card above the
+players table adds up whoever is in the group, and its Team strength is the
+team builder's formula over their room-model strengths (`room` on each player
+row, `roomWeights` and `roomDifficulty` in `/kshsaa-stats/data`) at the
+Adjusted column's level, so a group of one is that player's Adjusted. A
+search looks through every squad, so a player from another squad can be
+added; picked squads list their whole roster, ticked or not.
 
 Varsity players hold back (do not interrupt) when they play with JV or
 Beginner players. A practice game's `holdBack` says whether they did; when it is
