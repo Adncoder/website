@@ -2,6 +2,9 @@
     "name": "qbreader",
     "version": "26.04",
     "type": "module",
+    "engines": {
+        "node": ">=24.22.1 <25"
+    },
     "scripts": {
         "build": "npm run webpack && npm run sass",
         "dev": "npm run build && npm run start",
@@ -25,7 +28,7 @@
         "jsonwebtoken": "^9.0.0",
         "mongodb": "^6.17.0",
         "morgan": "^1.10.0",
-        "nodemailer": "^9.0.1",
+        "nodemailer": "^10.2.1",
         "qb-answer-checker": "^1.1.9",
         "stripe": "^12.10.0",
         "uuid": "^14.0.0",
