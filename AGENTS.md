@@ -150,8 +150,9 @@ redeploy.
 
 | File | Page |
 | --- | --- |
-| `routes/kshsaa-play.js` | The reader: KSHSAA or NAQT rounds in MODAQ, plus a timer bar, the World Language full-screen display, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
-| `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out; exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
+| `routes/kshsaa-play.js` | The reader: KSHSAA or NAQT rounds in MODAQ, plus a timer bar, the World Language full-screen display, Replace question, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
+| `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out or an answer within the round, and the reader's replacement questions (`/kshsaa-round/replacement`); exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
+| `client/kshsaa/same-answer.js` | Whether two answer lines name the same thing, so no answer comes up twice in a round. Round building runs it in Node and NAQT rounds in the browser, so it imports nothing |
 | `routes/kshsaa-stats.js` | Password-gated stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
 | `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
@@ -161,11 +162,11 @@ redeploy.
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js` | `npm test`: the arcade engine and NAQT rounds under `node --test` |
+| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js`, `test/kshsaa-same-answer.test.js` | `npm test`: the arcade engine, NAQT rounds, and the same-answer check under `node --test` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `client/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it). The import scripts run it in Node and the arcade in the browser, so it lives under `client/` and imports nothing |
-| `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser. `npm test` runs it in Node, so it imports nothing |
+| `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser, and their replacement tossups. `npm test` runs it in Node, so it imports nothing but `same-answer.js` |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
 | `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
@@ -249,6 +250,28 @@ read longest ago. A question counts as used as soon as a round is generated, and
 builds run one at a time so simultaneous rooms cannot draw the same question.
 `import-kshsaa.js` re-creates tossup ids, so re-running it resets this history.
 
+No answer comes up twice in a round either, even from two different questions.
+The same answer is written many ways across the sources, so `same-answer.js`
+counts two answer lines as one when every word of one is among the other's:
+"Faulkner", "(William) Faulkner", and "William Cuthbert Faulkner" are one
+answer. It reads a line up to its square brackets or a parenthesis of
+alternatives ("(accept ...)", "(prompt on ...)"); other parentheses are part
+of the answer, and World Language's "Translation:" label is not. It also counts
+"Kansas" and "Kansas City" as one, which only costs a pick. Rounds, practice
+sets (so the arcade's questions from them), replacements, and NAQT rounds all
+use it; a bonus's own parts are not checked against each other. Archive
+questions whose answer was imported into the question text have an empty
+answer, which matches nothing.
+
+The reader's "Replace question" throws out the question on screen and reads
+another of its category in its place, at the same number, for when a question
+is broken, already heard, or misread. Its buzzes come off, so both teams hear
+the replacement fresh. A KSHSAA replacement comes from
+`/kshsaa-round/replacement`, which builds one slot of a round that avoids every
+question the round has had (`avoid`, the thrown-out ones included) and their
+answers, and counts its pick as read. Once a game is saved its questions stay
+as they are.
+
 Every page puts `${KSHSAA_HEAD}` in its `<head>` and `${kshsaaNav('/kshsaa-…')}`
 at the top of the body; change the bar there, not in a page. The Spanish
 practice page is a static file and keeps its own copy, and the QBReader navbar's
@@ -316,6 +339,15 @@ touching the reader:
   `keydown`, `keypress`, and `keyup` from propagating.
 - Notes written in the reader go out with the save (`notes`), or, once the game
   is saved, to `POST /kshsaa-stats/notes` with the `roundId`.
+- A replaced question reaches MODAQ as a new `packet` prop. ModaqControl loads
+  a changed packet without touching the game, provided `players`, `gameFormat`,
+  and `customExport` stay the same objects (`modaqProps`). Taking the buzzes off
+  needs MODAQ's store, which it never hands out: `modaqStore()` finds it as the
+  `appState` prop below the React root, and is the only thing that reaches into
+  MODAQ's internals. MODAQ's own Actions > Throw out tossup reads the next
+  tossup in the packet instead and shifts every later one, which breaks a
+  KSHSAA round's order and its per-question stats, so moderators use Replace
+  question.
 
 ### Octopus Arcade
 
@@ -385,6 +417,11 @@ no two in a row share a group when that can be helped. A part qbreader.org
 cannot fill (Current Events at Beginner, often) is filled from any category,
 and the round's notes say so. qbreader matches an alternate subcategory to
 questions that have none, so the Math part asks for more and keeps only Math.
+Each tossup keeps its `part`, so `naqtReplacement` takes a replacement from the
+same part, with an answer new to the round, bonuses included. Bonuses have no
+Replace: MODAQ's own Throw out bonus reads the next bonus in the packet, which
+works because bonuses are not tied to a question number (only a game that
+uses all 24 then runs one short).
 
 MODAQ scores it with `NAQT_FORMAT` in the reader: 15 before the `(*)`, 10
 after, -5 for a neg, and bonuses that never bounce back, taken in order by

@@ -182,6 +182,9 @@ ${kshsaaNav('/kshsaa-play', 1100)}
     <span id="saveState" class="badge text-bg-light border">not saved yet</span>
     <button type="button" class="btn btn-sm btn-outline-secondary" id="noteBtn"
       title="Write down something about this question, for a player or the team">Note on this question</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="replaceBtn"
+      title="Throw this question out and read another from the same category in its place">Replace question</button>
+    <span id="replaceMsg" class="text-secondary"></span>
     <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="screenBtn"
       title="A second window for the projector: the scores, the question, the clock, and anything held up">Scoreboard window</button>
     <button type="button" class="btn btn-sm btn-outline-primary ms-auto" id="nextRound"
@@ -1011,23 +1014,23 @@ function tpSet (seconds, alsoStart) {
   publishScreen();
 }
 
-function setupTimer (round, teamNames) {
-  ROUND = round;
-  // KSHSAA gives longer limits on computation questions; the generator tags them
-  LIMITS = round.map(q => {
-    const m = q.question.match(/^\\[(\\d+)\\s*sec\\]/i);
-    return m ? Number(m[1]) : DEFAULT_SECONDS;
-  });
+// KSHSAA gives longer limits on computation questions; the generator tags them
+function limitOf (question) {
+  const m = question.match(/^\\[(\\d+)\\s*sec\\]/i);
+  return m ? Number(m[1]) : DEFAULT_SECONDS;
+}
 
-  // the override list has to include any limit this round actually uses, or
-  // tpSet could not highlight the value it just applied
-  // only the limits this round actually uses, so the bar stays narrow enough to
-  // sit beside the nav row instead of being pushed under it
+// the override list has to include any limit this round actually uses, or
+// tpSet could not highlight the value it just applied
+// only the limits this round actually uses, so the bar stays narrow enough to
+// sit beside the nav row instead of being pushed under it
+function renderDurations () {
   const choices = [...new Set([DEFAULT_SECONDS, ...LIMITS])].sort((a, b) => a - b);
   $('tpDurations').innerHTML = choices
     .map(s => '<button type="button" data-secs="' + s + '">' + s + 's</button>').join('');
   Array.from($('tpDurations').children).forEach(b => {
     b.onclick = () => tpSet(Number(b.dataset.secs), false);
+    b.classList.toggle('active', Number(b.dataset.secs) === TIMER.duration);
   });
 
   const timed = LIMITS
@@ -1038,6 +1041,12 @@ function setupTimer (round, teamNames) {
     '"+5s" gives the opponents the time left plus five seconds after a wrong answer with no ' +
     'interruption; on an interruption the question is reread and the clock resets on its own.' +
     (timed.length ? ' Longer limits this round: ' + timed.join(', ') + '.' : '');
+}
+
+function setupTimer (round, teamNames) {
+  ROUND = round;
+  LIMITS = round.map(q => limitOf(q.question));
+  renderDurations();
 
   $('langClose').onclick = hideLanguage;
   $('langShow').onclick = e => { if (e.target === $('langShow')) { hideLanguage(); } };
@@ -1149,6 +1158,87 @@ async function saveNote () {
   $('notePanel').classList.add('d-none');
 }
 
+// ---------- replacing a question ----------
+// A question can be thrown out mid-round and another of its category read in
+// its place. READING is what that has to change: the packet MODAQ was given
+// and how to hand it a new one, the per-question lists the save sends, and
+// where a replacement comes from. THROWN_OUT keeps what was replaced, so no
+// replacement brings one back or repeats its answer.
+let READING = null;
+const THROWN_OUT = [];
+
+// MODAQ keeps the game in a store it does not hand out, but everything under
+// ModaqControl gets it as its appState prop, so find it through React. Only
+// a replacement needs it: the buzzes on the thrown-out question have to go.
+function modaqStore () {
+  const root = $('modaq');
+  const key = Object.keys(root).find(k => k.indexOf('__reactContainer$') === 0);
+  let fiber = key && root[key].stateNode ? root[key].stateNode.current : null;
+  while (fiber && !(fiber.memoizedProps && fiber.memoizedProps.appState)) fiber = fiber.child;
+  return fiber ? fiber.memoizedProps.appState : null;
+}
+
+// every buzz off question n, so both teams hear its replacement fresh; false
+// when MODAQ's store could not be found
+function clearBuzzes (n) {
+  const store = modaqStore();
+  const cycle = store && store.game.cycles[n - 1];
+  if (!cycle) return false;
+  for (const buzz of (cycle.wrongBuzzes || []).slice()) {
+    cycle.removeWrongBuzz(buzz.marker.player, store.game.gameFormat);
+  }
+  cycle.removeCorrectBuzz();
+  store.uiState.setSelectedWordIndex(-1);
+  return true;
+}
+
+async function replaceQuestion () {
+  if (!READING) return;
+  // the question MODAQ shows: CURRENT_QUESTION trails it by a re-render
+  const store = modaqStore();
+  const n = store ? store.uiState.cycleIndex + 1 : CURRENT_QUESTION || 1;
+  const old = ROUND[n - 1];
+  if (!old) {
+    $('replaceMsg').textContent = 'This round has no question ' + n + ' to replace.';
+    return;
+  }
+  if (SAVED) {
+    $('replaceMsg').textContent = 'This game is saved, so its questions stay as they are.';
+    return;
+  }
+  if (!window.confirm('Throw out question ' + n + ' (' + old.category + ') and read another ' + old.category +
+    ' question in its place? Any buzz on it comes off the scores.')) return;
+  $('replaceBtn').disabled = true;
+  $('replaceMsg').textContent = 'finding another ' + old.category + ' question...';
+  try {
+    const { question, notes } = await READING.find(old);
+    THROWN_OUT.push(old);
+    // ROUND is the round the save sends, so its ids follow along
+    ROUND[n - 1] = question;
+    LIMITS[n - 1] = limitOf(question.question);
+    READING.wordCounts[n - 1] = READING.buzzableWords(question.question);
+    READING.charCounts[n - 1] = question.question.length;
+    READING.categories[n - 1] = question.category;
+    // MODAQ takes a new packet without starting the game over
+    READING.packet = {
+      ...READING.packet,
+      tossups: READING.packet.tossups.map((t, i) => i === n - 1
+        ? { question: question.question, answer: question.answer, metadata: question.category }
+        : t)
+    };
+    READING.show(READING.packet);
+    const cleared = clearBuzzes(n);
+    renderDurations();
+    if (CURRENT_QUESTION === n) tpForQuestion(n);
+    publishScreen();
+    $('replaceMsg').textContent = ['Question ' + n + ' replaced.']
+      .concat(cleared ? [] : ['Take any buzz on it off in the event log.'], notes).join(' ');
+  } catch (e) {
+    $('replaceMsg').innerHTML = '<span class="text-danger">' + esc(e.message) + '</span>';
+  }
+  $('replaceBtn').disabled = false;
+}
+
 $('go').onclick = async () => {
   const players = validatedPlayers();
   if (!players) return;
@@ -1255,81 +1345,114 @@ $('go').onclick = async () => {
       window.location.reload();
     };
     setupTimer(data.round, teamNames);
-    ReactDOM.createRoot($('modaq')).render(
-      React.createElement(Modaq.ModaqControl, {
-        packet,
-        players,
-        gameFormat: naqt ? NAQT_FORMAT : KSHSAA_FORMAT,
-        persistState: false,
-        storeName: 'kshsaa-modaq',
-        customExport: naqt ? undefined : {
-          label: 'Save to team stats',
-          type: 'QBJ',
-          // MODAQ shows the returned { isError, status }: an error's status in
-          // its dialog, and a fixed "Export succeeded." otherwise. It calls this
-          // from its menu and again from the prompt after the last question,
-          // which is how a game used to get saved twice: only the first save
-          // counts, and the server refuses a repeat as well.
-          onExport: async (match) => {
-            if (SAVED) {
-              return { isError: true, status: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Stats page' };
+    const modaqProps = {
+      packet,
+      players,
+      gameFormat: naqt ? NAQT_FORMAT : KSHSAA_FORMAT,
+      persistState: false,
+      storeName: 'kshsaa-modaq',
+      customExport: naqt ? undefined : {
+        label: 'Save to team stats',
+        type: 'QBJ',
+        // MODAQ shows the returned { isError, status }: an error's status in
+        // its dialog, and a fixed "Export succeeded." otherwise. It calls this
+        // from its menu and again from the prompt after the last question,
+        // which is how a game used to get saved twice: only the first save
+        // counts, and the server refuses a repeat as well.
+        onExport: async (match) => {
+          if (SAVED) {
+            return { isError: true, status: 'this game is already saved to team stats, and a game only saves once. Fix mistakes on the Stats page' };
+          }
+          if (SAVING) return { isError: true, status: 'this game is still being saved' };
+          const post = () => fetch('/kshsaa-stats/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              game: match,
+              label,
+              level: data.level,
+              holdBack: setup.holdBack,
+              roundId: data.roundId,
+              questionIds: data.round.map(q => q.id),
+              categories,
+              wordCounts,
+              charCounts,
+              notes: NOTES
+            })
+          });
+          SAVING = true;
+          try {
+            let r = await post();
+            if (r.status === 401) {
+              const pw = window.prompt('Reader password (to save this game):');
+              if (!pw) {
+                return { isError: true, status: 'not saved. Click "Save to team stats" again when ready' };
+              }
+              const login = await fetch('/kshsaa-stats/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pw })
+              });
+              if (!login.ok) {
+                return { isError: true, status: 'wrong password, so nothing was saved. Click save again to retry' };
+              }
+              r = await post();
             }
-            if (SAVING) return { isError: true, status: 'this game is still being saved' };
-            const post = () => fetch('/kshsaa-stats/upload', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                game: match,
-                label,
-                level: data.level,
-                holdBack: setup.holdBack,
-                roundId: data.roundId,
-                questionIds: data.round.map(q => q.id),
-                categories,
-                wordCounts,
-                charCounts,
-                notes: NOTES
-              })
-            });
-            SAVING = true;
-            try {
-              let r = await post();
-              if (r.status === 401) {
-                const pw = window.prompt('Reader password (to save this game):');
-                if (!pw) {
-                  return { isError: true, status: 'not saved. Click "Save to team stats" again when ready' };
-                }
-                const login = await fetch('/kshsaa-stats/login', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ password: pw })
-                });
-                if (!login.ok) {
-                  return { isError: true, status: 'wrong password, so nothing was saved. Click save again to retry' };
-                }
-                r = await post();
-              }
-              const d = await r.json().catch(() => ({}));
-              if (r.ok || r.status === 409) {
-                SAVED = true;
-                $('saveState').textContent = 'saved to stats';
-                $('saveState').className = 'badge text-bg-success';
-                publishScreen();
-              }
-              if (r.ok) {
-                return { isError: false, status: 'Saved to team stats (' + (d.buzzes || 0) + ' buzzes recorded).' };
-              }
-              if (r.status === 409) return { isError: true, status: d.error };
-              return { isError: true, status: 'could not save: ' + (d.error || r.status) };
-            } catch (e) {
-              return { isError: true, status: 'could not save: ' + e.message };
-            } finally {
-              SAVING = false;
+            const d = await r.json().catch(() => ({}));
+            if (r.ok || r.status === 409) {
+              SAVED = true;
+              $('saveState').textContent = 'saved to stats';
+              $('saveState').className = 'badge text-bg-success';
+              publishScreen();
             }
+            if (r.ok) {
+              return { isError: false, status: 'Saved to team stats (' + (d.buzzes || 0) + ' buzzes recorded).' };
+            }
+            if (r.status === 409) return { isError: true, status: d.error };
+            return { isError: true, status: 'could not save: ' + (d.error || r.status) };
+          } catch (e) {
+            return { isError: true, status: 'could not save: ' + e.message };
+          } finally {
+            SAVING = false;
           }
         }
-      })
-    );
+      }
+    };
+    // a replaced question reaches MODAQ as a new packet beside the very same
+    // players, format, and export, so nothing else in the game is set again
+    const modaqRoot = ReactDOM.createRoot($('modaq'));
+    const showModaq = p => modaqRoot.render(React.createElement(Modaq.ModaqControl, { ...modaqProps, packet: p }));
+    showModaq(packet);
+
+    // every question the round has had, so a replacement is none of them and
+    // shares no answer with any
+    const hadSoFar = () => ROUND.concat(THROWN_OUT);
+    READING = {
+      packet,
+      show: showModaq,
+      wordCounts,
+      charCounts,
+      categories,
+      buzzableWords,
+      // a NAQT replacement comes from qbreader.org like the round, and the
+      // round's bonus answers count too; a KSHSAA one from the round builder,
+      // which counts it as read
+      find: naqt
+        ? async old => {
+          const { naqtReplacement } = await import('/kshsaa/naqt.js');
+          const answerLines = hadSoFar().concat(data.bonuses || []).flatMap(q => q.answerLines || []);
+          return { question: await naqtReplacement({ level: data.level, tossup: old, answerLines }), notes: [] };
+        }
+        : async old => {
+          const params = new URLSearchParams({ level: data.level, math: setup.math, category: old.category });
+          hadSoFar().forEach(q => params.append('avoid', q.id));
+          const r = await fetch('/kshsaa-round/replacement?' + params);
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || !d.question) throw new Error(d.error || 'could not get a replacement (' + r.status + ')');
+          return { question: d.question, notes: d.notes || [] };
+        }
+    };
+    $('replaceBtn').onclick = replaceQuestion;
   } catch (e) {
     $('status').innerHTML = '<span class="text-danger">error: ' + esc(e.message) +
       (naqt ? '' : ' &mdash; <a href="/kshsaa-round">use the download page instead</a>') + '</span>';
