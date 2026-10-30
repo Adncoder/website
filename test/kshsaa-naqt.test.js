@@ -4,9 +4,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DISTRIBUTION, PACKET_LENGTH, PARTS, TIEBREAKERS, answerKey, apportion, fromBonus, fromTossup, modaqText, naqtRound,
+  DISTRIBUTION, PACKET_LENGTH, PARTS, TIEBREAKERS, apportion, fromBonus, fromTossup, modaqText, naqtReplacement, naqtRound,
   naqtUrl, partCounts, spread
 } from '../client/kshsaa/naqt.js';
+import { sameAnswer } from '../client/kshsaa/same-answer.js';
 
 // a seeded generator, so a failure can be replayed
 function seeded (seed) {
@@ -117,13 +118,6 @@ describe('modaqText', () => {
   });
 });
 
-describe('answerKey', () => {
-  it('reads the answer up to its alternates', () => {
-    assert.equal(answerKey('Crime and Punishment [or Prestupleniye]'), 'crimeandpunishment');
-    assert.equal(answerKey('Norway (accept Kingdom of Norway)'), 'norway');
-  });
-});
-
 describe('fromTossup and fromBonus', () => {
   it('names Math and catch-all subcategories by what they hold', () => {
     const t = fromTossup({ _id: 'a', category: 'Science', subcategory: 'Other Science', alternate_subcategory: 'Math', question: 'q', answer: 'a' });
@@ -165,8 +159,8 @@ describe('naqtRound', () => {
     assert.equal(r.round.length, PACKET_LENGTH + TIEBREAKERS);
     assert.equal(r.bonuses.length, PACKET_LENGTH);
     assert.deepEqual(r.notes, []);
-    const keys = r.round.flatMap(q => q.keys).concat(r.bonuses.flatMap(b => b.keys));
-    assert.equal(new Set(keys).size, keys.length);
+    const lines = r.round.flatMap(q => q.answerLines).concat(r.bonuses.flatMap(b => b.answerLines));
+    lines.forEach((a, i) => lines.slice(i + 1).forEach(b => assert.ok(!sameAnswer(a, b), a + ' and ' + b)));
     const science = r.round.slice(0, PACKET_LENGTH).filter(q => q.group === 'Science').length;
     assert.ok(science === 5 || science === 6, 'science tossups: ' + science);
     assert.ok(r.round[0].question.includes('<em>Title</em>'));
@@ -184,5 +178,26 @@ describe('naqtRound', () => {
   it('explains a failed request', async () => {
     const down = async () => { throw new Error('offline'); };
     await assert.rejects(naqtRound({ level: 'jv', get: down, wait: quick }), /Could not get questions from qbreader\.org \(offline\)/);
+  });
+});
+
+describe('naqtReplacement', () => {
+  it('reads from the thrown-out tossup\'s part, with an answer new to the round', async () => {
+    const get = fakeQbreader();
+    const r = await naqtRound({ level: 'varsity', get, wait: quick, random: seeded(11), year: 2026 });
+    const old = r.round[3];
+    const answerLines = r.round.concat(r.bonuses).flatMap(q => q.answerLines);
+    const fresh = await naqtReplacement({ level: 'varsity', tossup: old, answerLines, get, year: 2026 });
+    assert.notEqual(fresh.id, old.id);
+    assert.equal(fresh.group, old.group);
+    assert.equal(fresh.part, old.part);
+    assert.ok(answerLines.every(a => !sameAnswer(a, fresh.answerLines[0])));
+  });
+
+  it('says so when everything it gets repeats an answer', async () => {
+    // every made-up answer is "Answer id…", so one answer of just "Answer" matches them all
+    const old = { id: 'qb-x', category: 'Biology', part: 3 };
+    await assert.rejects(naqtReplacement({ level: 'jv', tossup: old, answerLines: ['Answer'], get: fakeQbreader(), year: 2026 }),
+      /no Biology tossup with a new answer/);
   });
 });

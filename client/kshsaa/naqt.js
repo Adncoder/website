@@ -5,7 +5,9 @@
 // at the level's difficulty. Nothing is stored in this site's database, so a
 // NAQT round is never counted as read and never saved to stats. The reader
 // imports it in the browser and `npm test` runs it in Node, so it imports
-// nothing.
+// nothing but same-answer.js, which imports nothing either.
+
+import { answerSet } from './same-answer.js';
 
 const API = 'https://www.qbreader.org/api';
 
@@ -171,17 +173,6 @@ export function modaqText (html) {
     .trim();
 }
 
-/**
- * An answer line cut to the answer itself, for spotting the same answer twice.
- * @param {string} answer - sanitized
- * @returns {string}
- */
-export function answerKey (answer) {
-  const text = String(answer || '');
-  const cut = text.search(/\s[[(]/);
-  return (cut === -1 ? text : text.slice(0, cut)).toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
 // what the moderator sees beside the answer: the subcategory, or what is
 // inside a catch-all one ("Astronomy" rather than "Other Science")
 function labelOf (q) {
@@ -199,7 +190,10 @@ function labelOf (q) {
  * @property {string} answer - formatted for MODAQ
  * @property {string} display - plain text, for holding it up
  * @property {string} source - the set
- * @property {string[]} keys - answerKey of its answer
+ * @property {string[]} answerLines - its answer as plain text, for keeping
+ *   the same answer out of a round twice
+ * @property {?number} part - its entry in PARTS, or null for one filling in
+ *   from any category (set once it is in a round)
  */
 
 /**
@@ -218,7 +212,8 @@ export function fromTossup (t) {
     answer,
     display: String(t.question_sanitized || '').replace(/\s+/g, ' ').trim(),
     source: t.set?.name || '',
-    keys: [answerKey(t.answer_sanitized || answer)]
+    answerLines: [t.answer_sanitized || answer],
+    part: null
   };
 }
 
@@ -232,7 +227,8 @@ export function fromTossup (t) {
  * @property {string[]} parts
  * @property {string[]} answers
  * @property {number[]} values
- * @property {string[]} keys
+ * @property {string[]} answerLines - one per part, as plain text
+ * @property {?number} part - as for a tossup
  */
 
 /**
@@ -251,7 +247,8 @@ export function fromBonus (b) {
     parts: parts.map(modaqText),
     answers: answers.map(modaqText),
     values: [10, 10, 10],
-    keys: (b.answers_sanitized || answers).map(answerKey)
+    answerLines: b.answers_sanitized || answers,
+    part: null
   };
 }
 
@@ -312,6 +309,10 @@ async function getJson (url) {
   return r.json();
 }
 
+// how many to ask for when n are wanted: duplicates and what keep drops leave
+// fewer than asked for
+const ask = (part, n) => n * (part && part.keep ? 4 : 2) + 2;
+
 /**
  * A NAQT round: questions per part of the distribution, any category filling
  * in where a part comes back short, then ordered so subjects alternate.
@@ -335,21 +336,18 @@ export async function naqtRound ({
   const regular = partCounts(PACKET_LENGTH, 't', random);
   const extra = partCounts(TIEBREAKERS, 't', random);
   const bonusCounts = partCounts(PACKET_LENGTH, 'b', random);
-  const used = new Set();
-  // an answer with no letters or digits has an empty key and is never a repeat
-  const fresh = q => q && q.keys.every(k => !k || !used.has(k));
-  const take = (list, n) => {
+  // no answer twice in the round, tossups and bonus parts alike
+  const answers = answerSet();
+  const take = (list, n, part = null) => {
     const out = [];
     for (const q of list) {
       if (out.length >= n) break;
-      if (!fresh(q)) continue;
-      q.keys.forEach(k => k && used.add(k));
-      out.push(q);
+      if (!q || q.answerLines.some(answers.has)) continue;
+      q.answerLines.forEach(answers.add);
+      out.push({ ...q, part });
     }
     return out;
   };
-  // ask for spares: duplicates and what keep drops leave fewer than asked for
-  const ask = (part, n) => n * (part && part.keep ? 4 : 2) + 2;
   const pull = (kind, part, n) => () => get(naqtUrl(kind, part, level, ask(part, n), year))
     .then(d => (kind === 'bonus' ? d.bonuses : d.tossups) || [])
     .then(list => list.filter(q => !part || !part.keep || part.keep(q)).map(kind === 'bonus' ? fromBonus : fromTossup));
@@ -372,10 +370,10 @@ export async function naqtRound ({
   const bonuses = [];
   const short = new Set();
   PARTS.forEach((part, i) => {
-    const got = take(fetched.tossup[i] || [], regular[i] + extra[i]);
+    const got = take(fetched.tossup[i] || [], regular[i] + extra[i], i);
     tossups.push(...got.slice(0, regular[i]));
     tiebreakers.push(...got.slice(regular[i]));
-    const gotBonuses = take(fetched.bonus[i] || [], bonusCounts[i]);
+    const gotBonuses = take(fetched.bonus[i] || [], bonusCounts[i], i);
     bonuses.push(...gotBonuses);
     if (got.length < regular[i] + extra[i] || gotBonuses.length < bonusCounts[i]) short.add(part.group);
   });
@@ -400,4 +398,35 @@ export async function naqtRound ({
   if (bonuses.length < PACKET_LENGTH) notes.push('This round has ' + bonuses.length + ' bonuses, not ' + PACKET_LENGTH + '.');
   if (!tossups.length) throw new Error('qbreader.org sent no questions for this level.');
   return { round: spread(tossups, random).concat(tiebreakers), bonuses: spread(bonuses, random), notes };
+}
+
+/**
+ * A tossup to read in place of one thrown out: from the same part of the
+ * distribution (any category, for one that filled in), and sharing no answer
+ * with anything the round has had.
+ * @param {object} options
+ * @param {string} options.level - beginner, jv, or varsity
+ * @param {NaqtTossup} options.tossup - the one thrown out
+ * @param {string[]} options.answerLines - every answer the round has had:
+ *   tossups, bonus parts, and thrown-out questions alike
+ * @param {function(string): Promise<object>} [options.get] - fetches JSON
+ * @param {number} [options.year]
+ * @returns {Promise<NaqtTossup>}
+ */
+export async function naqtReplacement ({ level, tossup, answerLines, get = getJson, year = new Date().getFullYear() }) {
+  const part = PARTS[tossup.part] || null;
+  const answers = answerSet();
+  answerLines.forEach(answers.add);
+  let found;
+  try {
+    const d = await get(naqtUrl('tossup', part, level, ask(part, 4), year));
+    found = (d.tossups || [])
+      .filter(q => !part || !part.keep || part.keep(q))
+      .map(fromTossup)
+      .find(q => q && q.id !== tossup.id && !q.answerLines.some(answers.has));
+  } catch (e) {
+    throw new Error('Could not get a question from qbreader.org (' + e.message + ').');
+  }
+  if (!found) throw new Error('qbreader.org sent no ' + tossup.category + ' tossup with a new answer. Try again.');
+  return { ...found, part: tossup.part ?? null };
 }

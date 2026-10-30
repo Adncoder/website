@@ -14,6 +14,8 @@
 
 import { Router } from 'express';
 import { randomUUID } from 'crypto';
+import { ObjectId } from 'mongodb';
+import { answerSet } from '../client/kshsaa/same-answer.js';
 import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
 import mathTierOf, { MATH_TIERS, isComputation } from '../server/kshsaa/math-tier.js';
@@ -40,6 +42,11 @@ const THREE_LANGUAGES = [
 ];
 const IS_LANGUAGE_QUESTION = { $and: THREE_LANGUAGES };
 const NOT_A_LANGUAGE_QUESTION = { $nor: [{ $and: THREE_LANGUAGES }] };
+
+// A question with no answer cannot be read. The archive has a few dozen whose
+// answer the packet parser lost, and before tools/repair-kshsaa-questions.js
+// is run, hundreds more whose answer is still inside the question text.
+const ANSWERED = { answer_sanitized: { $nin: [null, ''] } };
 
 // [label, count, filter] - official KSHSAA round shape, 16 questions
 const DISTRIBUTION = [
@@ -218,25 +225,35 @@ function shuffle (list) {
  * order of preference, and otherwise the ones read longest ago. That keeps any
  * question from coming back until everything else it competes with has been
  * used -- the longest gap the pool allows, rather than a fixed number of rounds.
+ * Nothing picked shares an answer with the round so far, or with another pick.
  * @param {object[]} docs - candidates, already filtered to this slot
  * @param {number} count
  * @param {string[][]} pools - sources, most preferred first
  * @param {Map<string, Date>} lastUsed
+ * @param {ReturnType<typeof answerSet>} answers - the round's so far; picks are added
  * @returns {{chosen: object[], repeats: number}}
  */
-function pickLeastUsed (docs, count, pools, lastUsed) {
+function pickLeastUsed (docs, count, pools, lastUsed, answers) {
   const chosen = [];
+  const take = d => {
+    if (answers.has(d.answer_sanitized)) { return; }
+    chosen.push(d);
+    answers.add(d.answer_sanitized);
+  };
   for (const sources of pools) {
     for (const d of shuffle(docs.filter(d => sources.includes(sourceOf(d.set?.name))))) {
       if (chosen.length >= count) { break; }
-      if (!lastUsed.has(String(d._id))) { chosen.push(d); }
+      if (!lastUsed.has(String(d._id))) { take(d); }
     }
   }
   const unread = chosen.length;
   if (chosen.length < count) {
     const read = shuffle(docs.filter(d => lastUsed.has(String(d._id))))
       .sort((a, b) => lastUsed.get(String(a._id)) - lastUsed.get(String(b._id)));
-    chosen.push(...read.slice(0, count - chosen.length));
+    for (const d of read) {
+      if (chosen.length >= count) { break; }
+      take(d);
+    }
   }
   return { chosen, repeats: chosen.length - unread };
 }
@@ -247,21 +264,21 @@ function pickLeastUsed (docs, count, pools, lastUsed) {
 const THEORY_SHARE = 1 / 6;
 
 /** pickLeastUsed for math, with theory held to about THEORY_SHARE of it. */
-function pickMath (docs, count, pools, lastUsed) {
+function pickMath (docs, count, pools, lastUsed, answers) {
   const theory = docs.filter(d => !isComputation(d.question));
   if (!theory.length || theory.length / docs.length <= THEORY_SHARE) {
-    return pickLeastUsed(docs, count, pools, lastUsed);
+    return pickLeastUsed(docs, count, pools, lastUsed, answers);
   }
   const computed = docs.filter(d => isComputation(d.question));
   let wanted = 0;
   for (let i = 0; i < count; i++) { if (Math.random() < THEORY_SHARE) wanted++; }
-  const some = pickLeastUsed(theory, wanted, pools, lastUsed);
-  const rest = pickLeastUsed(computed, count - some.chosen.length, pools, lastUsed);
+  const some = pickLeastUsed(theory, wanted, pools, lastUsed, answers);
+  const rest = pickLeastUsed(computed, count - some.chosen.length, pools, lastUsed, answers);
   const chosen = some.chosen.concat(rest.chosen);
   let repeats = some.repeats + rest.repeats;
   if (chosen.length < count) {
     // not enough computation: theory fills the rest
-    const fill = pickLeastUsed(theory.filter(d => !some.chosen.includes(d)), count - chosen.length, pools, lastUsed);
+    const fill = pickLeastUsed(theory.filter(d => !some.chosen.includes(d)), count - chosen.length, pools, lastUsed, answers);
     chosen.push(...fill.chosen);
     repeats += fill.repeats;
   }
@@ -277,12 +294,16 @@ function oneAtATime (task) {
   return run;
 }
 
-// what each slot's candidates need for picking, beyond their id
-const projectionFor = label => (label === 'Mathematics'
-  ? { set: 1, question: 1, timed_seconds: 1 }
-  : label === 'World Language'
-    ? { set: 1, question: 1 }
-    : label === 'Year in Review' ? { set: 1, sjaGenerated: 1, kshsaa_level: 1 } : { 'set.name': 1 });
+// what each slot's candidates need for picking, beyond their id: the answer,
+// so no answer comes up twice in a round, and whatever their tier is read from
+const projectionFor = label => ({
+  answer_sanitized: 1,
+  ...(label === 'Mathematics'
+    ? { set: 1, question: 1, timed_seconds: 1 }
+    : label === 'World Language'
+      ? { set: 1, question: 1 }
+      : label === 'Year in Review' ? { set: 1, sjaGenerated: 1, kshsaa_level: 1 } : { 'set.name': 1 })
+});
 
 /**
  * The slots sorted into tiers, with the tier of a candidate and the tiers a
@@ -304,11 +325,16 @@ const tieredSlots = (level, mathTiers) => ({
  *   instead of a round: count questions of each category in labels (one for a
  *   study set, several for the Octopus Arcade). Practice sets are not counted
  *   as read, so studying and fun rounds never use up the questions rounds draw on.
+ * @param {{label: string, ids: string[]}} [options.replace] - one question for
+ *   the slot `label` of a round being read, to take the place of a question
+ *   thrown out: never one of `ids` (the round's questions, the thrown-out ones
+ *   included), and sharing no answer with them. Counted as read, as the
+ *   round's own were.
  * @returns {Promise<{round: object[], short: string[], notes: string[]}>} the
  * round, a label for each category the archive could not fill, and anything
  * else worth telling the moderator
  */
-async function buildRound ({ level, math, drill }) {
+async function buildRound ({ level, math, drill, replace }) {
   const { pools } = LEVELS[level];
   const mathTiers = MATH_CHOICES[math] || LEVELS[level].math;
   const tiered = tieredSlots(level, mathTiers);
@@ -316,19 +342,28 @@ async function buildRound ({ level, math, drill }) {
 
   const slots = drill
     ? DISTRIBUTION.filter(([label]) => drill.labels.includes(label)).map(([label, , filter]) => [label, drill.count, filter])
-    : DISTRIBUTION;
+    : replace
+      ? DISTRIBUTION.filter(([label]) => label === replace.label).map(([label, , filter]) => [label, 1, filter])
+      : DISTRIBUTION;
 
-  const [candidates, usageDocs] = await Promise.all([
+  const [candidates, usageDocs, inRound] = await Promise.all([
     Promise.all(slots.map(([label, , filter]) => tossups
-      .find({ kshsaaImport: true, ...filter, ...setFilter }, { projection: projectionFor(label) })
+      .find({ kshsaaImport: true, ...filter, ...setFilter, ...ANSWERED }, { projection: projectionFor(label) })
       .toArray())),
-    usage.find({}).toArray()
+    usage.find({}).toArray(),
+    replace
+      ? tossups.find({ _id: { $in: replace.ids.map(id => new ObjectId(id)) } }, { projection: { answer_sanitized: 1 } }).toArray()
+      : []
   ]);
   const lastUsed = new Map(usageDocs.map(u => [String(u._id), u.lastUsed]));
 
   // The filters can overlap (a foreign-language question may also be tagged
   // Literature), so drop anything an earlier slot already took.
-  const picked = new Set();
+  const picked = new Set(replace ? replace.ids : []);
+  // "William Faulkner" twice in a round is a repeat even from two different
+  // questions (same-answer.js)
+  const answers = answerSet();
+  inRound.forEach(d => answers.add(d.answer_sanitized));
   const plan = [];
   const recentFrom = yearInReviewFrom();
   const short = [];
@@ -341,16 +376,16 @@ async function buildRound ({ level, math, drill }) {
     if (tiers) {
       const pick = label === 'Mathematics' ? pickMath : pickLeastUsed;
       const inTier = new Set(docs.filter(d => tiers.wanted.includes(tiers.tierOf(d))));
-      result = pick([...inTier], count, pools, lastUsed);
+      result = pick([...inTier], count, pools, lastUsed, answers);
       if (result.chosen.length < count) {
         // a thin tier should not leave the round a question short
-        const extra = pick(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed);
+        const extra = pick(docs.filter(d => !inTier.has(d)), count - result.chosen.length, pools, lastUsed, answers);
         notes.push(label + ': only ' + result.chosen.length + ' ' + (tiers.name || tiers.wanted.join('/')) +
           ' question(s) available, so ' + extra.chosen.length + ' came from another tier.');
         result = { chosen: result.chosen.concat(extra.chosen), repeats: result.repeats + extra.repeats };
       }
     } else {
-      result = pickLeastUsed(docs, count, pools, lastUsed);
+      result = pickLeastUsed(docs, count, pools, lastUsed, answers);
     }
     for (const d of result.chosen) {
       picked.add(String(d._id));
@@ -367,9 +402,10 @@ async function buildRound ({ level, math, drill }) {
     }
   });
 
-  // a level whose own questions were never imported quietly reads others
+  // a level whose own questions were never imported quietly reads others. One
+  // replacement's slot cannot tell: World Language never comes from the imports
   const missing = { beginner: 'import-beginner.js', jv: 'import-jv.js', varsity: 'import-varsity.js' }[level];
-  if (missing && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === level))) {
+  if (missing && !replace && !candidates.some(list => list.some(d => sourceOf(d.set?.name) === level))) {
     notes.push('No ' + LEVELS[level].label + ' questions have been imported yet, so this round used ' +
       (level === 'varsity' ? 'the converted sets and the KSHSAA archive' : 'harder ones') +
       '. Run "node ' + missing + '" from the website folder to add them.');
@@ -429,6 +465,30 @@ router.get('/generate', async (req, res) => {
   }
 });
 
+// The reader's "Replace question": one question of a category for a round
+// already being read. `avoid` repeats once for each question the round has
+// had, the thrown-out ones included; the replacement is none of them and
+// shares no answer with any.
+router.get('/replacement', async (req, res) => {
+  const level = Object.hasOwn(LEVELS, req.query.level) ? req.query.level : 'varsity';
+  const math = Object.hasOwn(MATH_CHOICES, req.query.math) ? req.query.math : 'auto';
+  const label = String(req.query.category ?? '');
+  if (!CATEGORIES.includes(label)) {
+    return res.status(400).json({ error: 'category must be one of ' + CATEGORIES.join(', ') });
+  }
+  const ids = [].concat(req.query.avoid ?? []).map(String).filter(id => /^[0-9a-f]{24}$/i.test(id)).slice(0, 60);
+  try {
+    const { round, notes } = await oneAtATime(() => buildRound({ level, math, replace: { label, ids } }));
+    if (!round.length) {
+      return res.status(404).json({ error: 'No other ' + label + ' question is left at this level.' });
+    }
+    res.json({ question: round[0], notes });
+  } catch (e) {
+    console.error('kshsaa-round replacement error', e);
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 /**
  * How many questions each category has, by source, and how many of those have
  * never been read; math also by tier, and Year in Review counting only the
@@ -438,7 +498,7 @@ router.get('/generate', async (req, res) => {
 export async function poolSummary () {
   const [candidates, usageDocs] = await Promise.all([
     Promise.all(DISTRIBUTION.map(([label, , filter]) => tossups
-      .find({ kshsaaImport: true, ...filter }, { projection: projectionFor(label) })
+      .find({ kshsaaImport: true, ...filter, ...ANSWERED }, { projection: projectionFor(label) })
       .toArray())),
     usage.find({}, { projection: { _id: 1 } }).toArray()
   ]);
