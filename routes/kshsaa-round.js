@@ -43,6 +43,11 @@ const THREE_LANGUAGES = [
 const IS_LANGUAGE_QUESTION = { $and: THREE_LANGUAGES };
 const NOT_A_LANGUAGE_QUESTION = { $nor: [{ $and: THREE_LANGUAGES }] };
 
+// A question with no answer cannot be read. The archive has a few dozen whose
+// answer the packet parser lost, and before tools/repair-kshsaa-questions.js
+// is run, hundreds more whose answer is still inside the question text.
+const ANSWERED = { answer_sanitized: { $nin: [null, ''] } };
+
 // [label, count, filter] - official KSHSAA round shape, 16 questions
 const DISTRIBUTION = [
   ['World Language', 1, {
@@ -343,7 +348,7 @@ async function buildRound ({ level, math, drill, replace }) {
 
   const [candidates, usageDocs, inRound] = await Promise.all([
     Promise.all(slots.map(([label, , filter]) => tossups
-      .find({ kshsaaImport: true, ...filter, ...setFilter }, { projection: projectionFor(label) })
+      .find({ kshsaaImport: true, ...filter, ...setFilter, ...ANSWERED }, { projection: projectionFor(label) })
       .toArray())),
     usage.find({}).toArray(),
     replace
@@ -493,7 +498,7 @@ router.get('/replacement', async (req, res) => {
 export async function poolSummary () {
   const [candidates, usageDocs] = await Promise.all([
     Promise.all(DISTRIBUTION.map(([label, , filter]) => tossups
-      .find({ kshsaaImport: true, ...filter }, { projection: projectionFor(label) })
+      .find({ kshsaaImport: true, ...filter, ...ANSWERED }, { projection: projectionFor(label) })
       .toArray())),
     usage.find({}, { projection: { _id: 1 } }).toArray()
   ]);

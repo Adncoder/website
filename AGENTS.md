@@ -162,9 +162,10 @@ redeploy.
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js`, `test/kshsaa-same-answer.test.js` | `npm test`: the arcade engine, NAQT rounds, and the same-answer check under `node --test` |
+| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js`, `test/kshsaa-same-answer.test.js`, `test/kshsaa-split-answers.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, and the archive repair under `node --test` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
+| `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
 | `client/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it). The import scripts run it in Node and the arcade in the browser, so it lives under `client/` and imports nothing |
 | `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser, and their replacement tossups. `npm test` runs it in Node, so it imports nothing but `same-answer.js` |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
@@ -174,6 +175,7 @@ redeploy.
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
 | `tools/seed-generated-questions.js`, `tools/seed-year-in-review.js` | Load the question bank's review queue: computed math and science, and hand-written Year in Review by level. Dry run unless `--write` |
+| `tools/repair-kshsaa-questions.js` | Repairs the archive questions the packet parser broke, saving each record to `kshsaa_repair_backup` first. Dry run unless `--write`; `--undo --write` puts everything back |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -226,6 +228,23 @@ every `kshsaaImport` set except the `QB Beginner`, `QB JV`, `QB Varsity`, and
 `QB Current Events` ones, so a new giveaway import needs adding to that
 exception too.
 
+The packet parser behind `import-kshsaa.js` damaged about 1,050 archive
+questions. Some packets print every question as "2 Question? Answer: answer",
+and there it ran questions together, answers and all, or left the answer at
+the end of the question text with the answer line blank, so a moderator reading
+straight through read the answer aloud. It also kept page headers, footers,
+and page numbers ("Round: Replacement 04", "Page 27 of 68", "schizophrenia 3").
+`tools/repair-kshsaa-questions.js` repairs them in place with `splitRecord`
+(`server/kshsaa/split-answers.js`): a record keeps its first question, and the
+rest become new questions in its packet, counted as read if it was. Math and
+science answers keep a trailing number, since it may be theirs.
+`import-kshsaa.js` runs `splitRecord` on every parsed question, but only the
+tool rejoins the one question split across records ("...has the following
+three uses:"), so run it again after a re-import. Rounds skip any question
+with no answer (`ANSWERED` in `kshsaa-round.js`): before the repair that is
+every one whose answer is still in its question text, and after it the 33
+whose answer is nowhere in the data.
+
 Year in Review uses only questions written this calendar year or last. The year
 comes from the set name (the spring year of a `24-25` season, else the latest
 year in the name), because imported sets store a placeholder `set.year`; only
@@ -259,9 +278,8 @@ alternatives ("(accept ...)", "(prompt on ...)"); other parentheses are part
 of the answer, and World Language's "Translation:" label is not. It also counts
 "Kansas" and "Kansas City" as one, which only costs a pick. Rounds, practice
 sets (so the arcade's questions from them), replacements, and NAQT rounds all
-use it; a bonus's own parts are not checked against each other. Archive
-questions whose answer was imported into the question text have an empty
-answer, which matches nothing.
+use it; a bonus's own parts are not checked against each other. An empty
+answer matches nothing.
 
 The reader's "Replace question" throws out the question on screen and reads
 another of its category in its place, at the same number, for when a question

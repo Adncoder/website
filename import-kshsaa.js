@@ -11,6 +11,7 @@
 import 'dotenv/config';
 import { readFileSync } from 'fs';
 import { MongoClient, ObjectId } from 'mongodb';
+import { splitRecord } from './server/kshsaa/split-answers.js';
 
 const files = process.argv.slice(2);
 if (files.length === 0) {
@@ -139,7 +140,14 @@ for (const [setName, packets] of bySet) {
       kshsaaImport: true
     });
 
-    const docs = qs.map((q, i) => {
+    // the parser leaves some answers in the question text, runs some
+    // questions together, and keeps page headers and footers
+    // (server/kshsaa/split-answers.js)
+    const whole = qs.flatMap(q => {
+      const numeric = finalCat(q)[0] === 'Science';
+      return splitRecord(q, { numeric }).map(item => ({ ...q, ...item }));
+    });
+    const docs = whole.map((q, i) => {
       const [cat, sub, alt] = finalCat(q);
       return {
         _id: new ObjectId(),
