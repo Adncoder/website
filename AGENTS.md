@@ -234,6 +234,9 @@ and there it ran questions together, answers and all, or left the answer at
 the end of the question text with the answer line blank, so a moderator reading
 straight through read the answer aloud. It also kept page headers, footers,
 and page numbers ("Round: Replacement 04", "Page 27 of 68", "schizophrenia 3").
+Some of the quizbowl the other imports bring in carries the footer of the
+packets qbreader.org got it from ("SCOP B Round 11 Page 4 of 4"), and the tool
+takes those off too, leaving the rest of that quizbowl alone.
 `tools/repair-kshsaa-questions.js` repairs them in place with `splitRecord`
 (`server/kshsaa/split-answers.js`): a record keeps its first question, and the
 rest become new questions in its packet, counted as read if it was. Math and

@@ -5,8 +5,9 @@
 //   - answers still inside the question text, so the answer line is blank
 //     and a moderator reading straight through reads the answer aloud;
 //   - several questions run into one record, answers and all;
-//   - page headers, footers, and page numbers on the answer lines, which the
-//     converted quizbowl sets have a few of too ("SCOP B Round 11 Page 4 of 4").
+//   - page headers, footers, and page numbers on the answer lines. Some of
+//     the quizbowl the other imports bring in has a footer too, from the
+//     packets qbreader.org got it from ("SCOP B Round 11 Page 4 of 4").
 // Every damaged record is split into the questions it holds: the record keeps
 // the first, and the rest become new questions in the same packet, counted as
 // read if the record was. A question split across records ("...has the
@@ -75,13 +76,13 @@ if (argv.undo) {
 }
 
 // The real KSHSAA questions are every kshsaaImport set but the ones the
-// giveaway imports and the question bank make (SET_PREFIX in
-// routes/kshsaa-round.js). Of the converted quizbowl, only the footers.
+// quizbowl imports and the question bank make (SET_PREFIX in
+// routes/kshsaa-round.js). Of the quizbowl, only the footers.
 const records = await tossups.find({
   kshsaaImport: true,
   $or: [
     { 'set.name': { $not: /^(QB |SJA )/ } },
-    { 'set.name': /^QB Converted/, answer: /\bSCOP\s+[A-Z]\s+Round\s+\d/ }
+    { 'set.name': /^QB /, answer: /\bSCOP\s+[A-Z]\s/ }
   ]
 }).toArray();
 

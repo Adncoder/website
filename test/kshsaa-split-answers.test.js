@@ -44,6 +44,8 @@ describe('splitRecord', () => {
     assert.equal(answer('(Sigmund) Freud 57 Round: Replacement 07'), '(Sigmund) Freud');
     assert.equal(answer('franchise Round: Consolation Replacement'), 'franchise');
     assert.equal(answer('Selfie stick Page 62 of 68'), 'Selfie stick');
+    assert.equal(answer('mass extinction events SCOP B  Round 10 Page 2 of 4'), 'mass extinction events');
+    assert.equal(answer('Mulan SCOP A Replacements Page 2 of 4'), 'Mulan');
     assert.equal(answer('Translation: I used to go to Germany every year. Language Arts'), 'Translation: I used to go to Germany every year.');
   });
 

@@ -17,8 +17,9 @@
 
 const ROUND_HEADER = /\s*\bRound:\s*(?:(?:Consolation|Championship|Champ|Semi-Final|Replacement)\b\s*)*(?:\d{1,2}\b)?(?:\s*\/\s*Page:\s*\d+)?/gi;
 const PAGE_FOOTER = /\s*\bPage\s+\d+\s+of\s+\d+\b/gi;
-// the converted quizbowl sets' own footer: "SCOP B Round 11 Page 4 of 4"
-const SCOP_FOOTER = /\s*\bSCOP\s+[A-Z]\s+Round\s+\d+\s+Page\s+\d+(?:\s+of\s+\d+)?/gi;
+// the footer of the SCOP packets some quizbowl imports come from:
+// "SCOP B Round 11 Page 4 of 4", "SCOP A Replacements Page 3 of 4"
+const SCOP_FOOTER = /\s*\bSCOP\s+[A-Z]\s+(?:Round\s+\d+|Replacements?)\s+Page\s+\d+(?:\s+of\s+\d+)?/gi;
 const ANSWER_LABEL = /\s*\bAnswer\s*:\s*/i;
 // where one question runs into the next, the next one's number in its
 // category: "... Answer: France 3 Name both the branch ..."
