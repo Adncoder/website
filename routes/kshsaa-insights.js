@@ -935,8 +935,7 @@ function renderDifficulty () {
       '<table class="table table-sm align-middle mb-0"><thead><tr><th>Question</th><th>Answer</th><th>From</th>' +
       '<th class="num">Read</th></tr></thead><tbody>' +
       dead.map(function (q) {
-        var text = String(q.question || '(question no longer in the database)');
-        return '<tr><td class="small">' + esc(text.length > 160 ? text.slice(0, 160) + '...' : text) + '</td>' +
+        return '<tr><td class="small">' + esc(q.question || '(question no longer in the database)') + '</td>' +
           '<td class="small">' + esc(q.answer || '') + '</td><td class="small text-secondary">' + esc(SOURCES[q.source] || '') + '</td>' +
           '<td class="num">' + q.read + '</td></tr>';
       }).join('') + '</tbody></table></div></div></div>'
