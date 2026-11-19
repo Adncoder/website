@@ -46,8 +46,11 @@ export const over = (a, b) => exact(a.n * b.d, a.d * b.n * b.rad, a.rad * b.rad,
 export const toNumber = v => (v.n / v.d) * Math.sqrt(v.rad) * Math.PI ** v.pi;
 export const same = (a, b) => a.n === b.n && a.d === b.d && a.rad === b.rad && a.pi === b.pi;
 
-// units a player might type after the number
-const UNITS = /\b(degrees?|deg|radians?|units?|squared?|sq|cubic|cu|cm|mm|km|meters?|inch(es)?|in|ft|feet|foot|yd|yards?|miles?|mi|mph|hours?|hrs?|hr|minutes?|mins?|min|seconds?|secs?|sec|ways|sides|edges|faces|vertices|diagonals|dollars?|cents?|percent|pounds?|lbs?)\b\.?/g;
+// Units a player might type after the number. Compound ones come off first,
+// whole, so "m/s" is never read as m divided by s; by then the text is lower
+// case and a middle dot has become *.
+const COMPOUND_UNITS = /\b(kg\s*\*?\s*m\s*\/\s*s(ec)?|n\s*\*?\s*s|m\s*\/\s*s(ec)?\s*\/\s*s(ec)?|m\s*\/\s*s(ec)?\s*(\^\s*2|²|2)?|km\s*\/\s*hr?|mi\s*\/\s*hr?|kg\s*\/\s*m\s*(\^\s*3|³|3)?|g\s*\/\s*cm\s*(\^\s*3|³|3)?|g\s*\/\s*ml|n\s*\/\s*m|j\s*\/\s*s|kw\s*\*?\s*h)(?![a-z0-9])/g;
+const UNITS = /\b(degrees?|deg|radians?|units?|squared?|sq|cubic|cu|cm|mm|km|meters?|metres?|m|inch(es)?|in|ft|feet|foot|yd|yards?|miles?|mi|mph|hours?|hrs?|hr|h|minutes?|mins?|min|seconds?|secs?|sec|s|ways|sides|edges|faces|vertices|diagonals|dollars?|cents?|percent|pounds?|lbs?|newtons?|n|joules?|j|kilojoules?|kj|watts?|w|kilowatts?|kw|kwh|kilowatt hours?|kilograms?|kg|grams?|g|ohms?|amps?|amperes?|a|volts?|v|hertz|hz|pascals?|pa|kelvins?|k|celsius|c|fahrenheit|f|calories?|cal|liters?|litres?|l|ml|per|times)\b\.?/g;
 
 function tokenize (text) {
   const s = text
@@ -58,11 +61,11 @@ function tokenize (text) {
     .replace(/π/g, ' pi ')
     // before the units, which would take the "square" out of "square root"
     .replace(/\b(square root of|square root|radical|root|rad|sqrt)\b/g, ' sqrt ')
+    .replace(COMPOUND_UNITS, ' ')
     .replace(UNITS, ' ')
     .replace(/\b(negative|minus)\b/g, '-')
     .replace(/\b(over|divided by)\b/g, '/')
-    .replace(/\btimes\b/g, '*')
-    .replace(/[$%°]/g, ' ')
+    .replace(/[$%°ωΩµ]/g, ' ')
     .replace(/(\d),(?=\d{3}(\D|$))/g, '$1');
   const out = [];
   const token = /(\d+\.\d+|\.\d+|\d+|sqrt|pi|[-+*/()])/y;
@@ -211,19 +214,48 @@ export function toPlain (v) {
   return (v.n < 0 ? '-' : '') + top + (bottom ? '/' + (v.d !== 1 && v.pi === -1 ? '(' + bottom + ')' : bottom) : '');
 }
 
-/** @param {Answer} answer @returns {string} TeX */
-export function answerTex (answer) {
+/**
+ * A value written as a decimal when it ends (halves, fifths, sixteenths, any
+ * fraction over 2s and 5s), or null.
+ * @param {Exact} v
+ * @returns {?string}
+ */
+export function toDecimal (v) {
+  if (v.rad !== 1 || v.pi !== 0) return null;
+  let d = v.d;
+  while (d % 2 === 0) d /= 2;
+  while (d % 5 === 0) d /= 5;
+  return d === 1 ? String(+(v.n / v.d).toFixed(12)) : null;
+}
+
+/**
+ * @param {Answer} answer
+ * @param {{decimal?: boolean}} [options] - decimal: show it the way physics
+ *   writes answers, 137.2 rather than 686/5, and an exact one that does not
+ *   end with its value to three figures beside it
+ * @returns {string} TeX
+ */
+export function answerTex (answer, { decimal = false } = {}) {
   if (answer.text != null) return '\\text{' + answer.text + '}';
   if (answer.list) {
     const inside = answer.list.map(toTex).join(',\\ ');
     return answer.ordered ? '(' + inside + ')' : inside;
   }
-  return toTex(answer);
+  if (!decimal) return toTex(answer);
+  const written = toDecimal(answer);
+  if (written == null) return toTex(answer) + ' \\approx ' + +toNumber(answer).toPrecision(3);
+  // thousands commas in the whole part only
+  const [whole, part] = written.split('.');
+  return group(whole) + (part ? '.' + part : '');
 }
 
-/** @param {Answer} answer @returns {string} something check() accepts */
-export function answerPlain (answer) {
+/**
+ * @param {Answer} answer
+ * @param {{decimal?: boolean}} [options]
+ * @returns {string} something check() accepts
+ */
+export function answerPlain (answer, { decimal = false } = {}) {
   if (answer.text != null) return answer.text;
   if (answer.list) return answer.list.map(toPlain).join(', ');
-  return toPlain(answer);
+  return (decimal && toDecimal(answer)) || toPlain(answer);
 }

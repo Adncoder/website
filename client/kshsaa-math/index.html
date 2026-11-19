@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Math Bowl</title>
-<meta name="description" content="Scholars Bowl math practice: drills with KSHSAA time limits, Pascal's triangle, flash anzan, speed tricks, and every formula worth knowing.">
+<meta name="description" content="Scholars Bowl math and physics practice: drills with KSHSAA time limits, Pascal's triangle, flash anzan, speed tricks, and every formula worth knowing.">
 <link rel="icon" href="/kshsaa/logo.svg" type="image/svg+xml">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <style>
@@ -192,7 +192,7 @@ footer{max-width:1176px;border-top:1px solid var(--line);margin:0 auto;padding:2
 
 <header>
   <a class="brand" href="./"><span class="mark">&Sigma;</span><span>Math Bowl<small>SCHOLARS BOWL PRACTICE</small></span></a>
-  <p class="header-note">Math is the other category you get better at by doing a lot of it. Every problem here is made fresh, and its answer is worked out, not looked up.</p>
+  <p class="header-note">Math, and the physics that is mostly math, get better with a lot of doing. Every problem here is made fresh, and its answer is worked out, not looked up.</p>
 </header>
 
 <main>
@@ -203,10 +203,11 @@ footer{max-width:1176px;border-top:1px solid var(--line);margin:0 auto;padding:2
     <button class="mode" data-mode="pascal"><span>02</span> Pascal's triangle</button>
     <button class="mode" data-mode="anzan"><span>03</span> Flash anzan</button>
     <button class="mode" data-mode="tricks"><span>04</span> Speed tricks</button>
-    <button class="mode" data-mode="formulas"><span>05</span> Formula sheet</button>
-    <button class="mode" data-mode="cards"><span>06</span> Flashcards</button>
-    <button class="mode" data-mode="missed"><span>07</span> Missed <b id="missedCount"></b></button>
-    <button class="mode" data-mode="progress"><span>08</span> Your progress</button>
+    <button class="mode" data-mode="physics"><span>05</span> Physics</button>
+    <button class="mode" data-mode="formulas"><span>06</span> Formula sheet</button>
+    <button class="mode" data-mode="cards"><span>07</span> Flashcards</button>
+    <button class="mode" data-mode="missed"><span>08</span> Missed <b id="missedCount"></b></button>
+    <button class="mode" data-mode="progress"><span>09</span> Your progress</button>
   </nav>
   <div class="settings">
     <label class="check"><input type="checkbox" id="timer" checked> KSHSAA time limits</label>
@@ -232,14 +233,14 @@ footer{max-width:1176px;border-top:1px solid var(--line);margin:0 auto;padding:2
 
   <section id="mixed" class="panel">
     <div class="toolbar">
-      <span class="chip" id="focusChip" hidden><span id="focusName"></span><button type="button" id="focusClear" aria-label="Back to all topics">&times;</button></span>
+      <span class="chip" id="topicsChip" hidden><span id="topicsName"></span><button type="button" id="topicsClear" aria-label="Back to all topics">&times;</button></span>
       <details class="topics" id="topicBox">
-        <summary id="topicSummary">Topics</summary>
-        <div class="topic-grid" id="topicGrid"></div>
+        <summary id="topicsSummary">Topics</summary>
+        <div class="topic-grid" id="topicsGrid"></div>
         <div class="topic-actions"><button class="link" type="button" id="topicsAll">All</button><button class="link" type="button" id="topicsNone">None</button></div>
       </details>
     </div>
-    <div id="mixedCard"></div>
+    <div id="topicsCard"></div>
   </section>
 
   <section id="pascal" class="panel" hidden>
@@ -287,6 +288,18 @@ footer{max-width:1176px;border-top:1px solid var(--line);margin:0 auto;padding:2
     <div class="trick-list" id="trickList"></div>
     <div class="lesson" id="lesson"></div>
     <div id="tricksCard"></div>
+  </section>
+
+  <section id="physics" class="panel" hidden>
+    <div class="toolbar">
+      <span class="chip" id="physicsChip" hidden><span id="physicsName"></span><button type="button" id="physicsClear" aria-label="Back to all physics topics">&times;</button></span>
+      <details class="topics">
+        <summary id="physicsSummary">Topics</summary>
+        <div class="topic-grid" id="physicsGrid"></div>
+        <div class="topic-actions"><button class="link" type="button" id="physicsAll">All</button><button class="link" type="button" id="physicsNone">None</button></div>
+      </details>
+    </div>
+    <div id="physicsCard"></div>
   </section>
 
   <section id="formulas" class="panel" hidden>

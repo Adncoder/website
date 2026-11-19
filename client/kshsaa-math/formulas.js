@@ -3,6 +3,7 @@
 // flashcard (name on the front, formula on the back). `skill` names the drill
 // that practices it, for the sheet's "Practice" button.
 
+import { ELECTRIC, ENERGY, FORCES, MOTION, WAVES } from './drills/physics.js';
 import { T } from './tex.js';
 
 const f = (topic, name, tex, note = '', skill = null) => ({ topic, name, tex, note, skill });
@@ -231,7 +232,71 @@ export const FORMULAS = [
   f(NUMBERS, 'Zeros at the end of n!', T`\left\lfloor \frac{n}{5} \right\rfloor + \left\lfloor \frac{n}{25} \right\rfloor + \left\lfloor \frac{n}{125} \right\rfloor + \cdots`, 'Count the factors of 5.'),
   f(NUMBERS, 'Constants', T`\pi \approx 3.14159 \qquad e \approx 2.71828 \qquad \sqrt{2} \approx 1.414 \qquad \sqrt{3} \approx 1.732 \qquad \varphi = \frac{1 + \sqrt{5}}{2} \approx 1.618`),
   f(NUMBERS, 'Squares to know', T`11^2 = 121 \quad 12^2 = 144 \quad 13^2 = 169 \quad 14^2 = 196 \quad 15^2 = 225 \quad 16^2 = 256 \quad 17^2 = 289 \quad 18^2 = 324 \quad 19^2 = 361 \quad 25^2 = 625`, '', 'squares'),
-  f(NUMBERS, 'Powers of 2', T`2^5 = 32 \quad 2^6 = 64 \quad 2^7 = 128 \quad 2^8 = 256 \quad 2^9 = 512 \quad 2^{10} = 1024 \quad 2^{12} = 4096`, '', 'cubes-powers')
+  f(NUMBERS, 'Powers of 2', T`2^5 = 32 \quad 2^6 = 64 \quad 2^7 = 128 \quad 2^8 = 256 \quad 2^9 = 512 \quad 2^{10} = 1024 \quad 2^{12} = 4096`, '', 'cubes-powers'),
+
+  f(MOTION, 'Average speed', T`v = \frac{d}{t}`, 'Total distance over total time, never the average of the speeds.'),
+  f(MOTION, 'Acceleration', T`a = \frac{v - v_0}{t}`, 'In m/s², the change in velocity each second.', 'kin-acceleration'),
+  f(MOTION, 'Velocity after accelerating', T`v = v_0 + at`, '', 'kin-final-velocity'),
+  f(MOTION, 'Distance while accelerating', T`d = v_0t + \tfrac12 at^2`, '', 'kin-displacement'),
+  f(MOTION, 'Distance from the average velocity', T`d = \frac{v_0 + v}{2}\,t`, 'Only for steady acceleration.', 'kin-displacement'),
+  f(MOTION, 'Velocity without the time', T`v^2 = v_0^2 + 2ad`, 'A car stopping from v at a deceleration a covers v²/2a.', 'kin-stopping'),
+  f(MOTION, 'Free fall', T`v = gt \qquad d = \tfrac12 gt^2 \qquad g = 9.8 \text{ m/s}^2`, 'From rest. After 1, 2, 3 seconds: 4.9, 19.6, 44.1 m.', 'free-fall'),
+  f(MOTION, 'Time to fall a height', T`t = \sqrt{\frac{2h}{g}}`, '', 'free-fall'),
+  f(MOTION, 'Thrown horizontally', T`t = \sqrt{\frac{2h}{g}} \qquad \text{range} = v_x t`, 'The fall takes as long as a straight drop; the sideways speed never changes.', 'horizontal-launch'),
+  f(MOTION, 'Launched at an angle', T`t = \frac{2v\sin\theta}{g} \qquad h_{\max} = \frac{(v\sin\theta)^2}{2g} \qquad R = \frac{v^2\sin 2\theta}{g}`, 'The range is longest at 45 degrees, and 30 and 60 degrees land at the same place.', 'angle-launch'),
+
+  f(FORCES, "Newton's second law", T`F = ma`, 'Newtons are kg·m/s².', 'newton-second'),
+  f(FORCES, 'Weight', T`W = mg`, 'Mass is the same on the Moon; weight is about a sixth.', 'weight'),
+  f(FORCES, "Newton's third law", T`F_{A \text{ on } B} = -F_{B \text{ on } A}`, 'Equal and opposite, on different objects.'),
+  f(FORCES, 'Friction', T`f = \mu N`, 'Kinetic friction while sliding; static friction can be anything up to that, just enough to stop motion.', 'friction-coefficient'),
+  f(FORCES, 'On a ramp', T`F_{\parallel} = mg\sin\theta \qquad N = mg\cos\theta`, 'A box at rest on a ramp has static friction equal to mg sin θ. It slides once tan θ is more than μs.', 'incline'),
+  f(FORCES, 'Sliding down a frictionless ramp', T`a = g\sin\theta`, 'The mass cancels.', 'incline'),
+  f(FORCES, 'In an elevator', T`N = m(g + a)`, 'Speeding up going up feels heavier; speeding up going down, use g − a.', 'elevator'),
+  f(FORCES, "Hooke's law", T`F = kx`, 'The spring pulls back toward its rest length.', 'hookes-law'),
+  f(FORCES, 'Centripetal acceleration and force', T`a = \frac{v^2}{r} \qquad F = \frac{mv^2}{r}`, 'Toward the center of the circle.', 'centripetal'),
+  f(FORCES, 'Universal gravitation', T`F = \frac{Gm_1m_2}{r^2} \qquad G = 6.67 \times 10^{-11}\ \tfrac{\text{N}\cdot\text{m}^2}{\text{kg}^2}`, 'Double the distance, a quarter the force.', 'gravitation-ratio'),
+  f(FORCES, 'Torque', T`\tau = rF\sin\theta`, 'A seesaw balances when the torques on each side are equal.'),
+
+  f(ENERGY, 'Kinetic energy', T`KE = \tfrac12 mv^2`, 'Double the speed, four times the energy.', 'kinetic-energy'),
+  f(ENERGY, 'Gravitational potential energy', T`PE = mgh`, '', 'potential-energy'),
+  f(ENERGY, 'Speed after a drop', T`v = \sqrt{2gh}`, 'From mgh = ½mv²; the mass cancels.', 'drop-speed'),
+  f(ENERGY, 'Spring potential energy', T`PE = \tfrac12 kx^2`),
+  f(ENERGY, 'Work', T`W = Fd\cos\theta`, 'Only the force along the motion does work. In joules, N·m.', 'work-power'),
+  f(ENERGY, 'Power', T`P = \frac{W}{t} = Fv`, 'In watts, joules per second. One horsepower is about 746 W.', 'work-power'),
+  f(ENERGY, 'Efficiency', T`\frac{W_{\text{out}}}{W_{\text{in}}} \times 100\%`, '', 'work-power'),
+  f(ENERGY, 'Mechanical advantage', T`\text{MA} = \frac{F_{\text{out}}}{F_{\text{in}}}`, 'Ideal: the input distance over the output distance.'),
+  f(ENERGY, 'Momentum', T`p = mv`, 'In kg·m/s.', 'momentum'),
+  f(ENERGY, 'Impulse', T`J = F\Delta t = \Delta p`, 'Stretching out the stopping time is what lowers the force.', 'impulse'),
+  f(ENERGY, 'Conservation of momentum', T`m_1v_1 + m_2v_2 = m_1v_1' + m_2v_2'`, 'In every collision; kinetic energy is kept only in elastic ones.', 'collision'),
+  f(ENERGY, 'Objects that stick together', T`v = \frac{m_1v_1 + m_2v_2}{m_1 + m_2}`, '', 'collision'),
+
+  f(ELECTRIC, "Ohm's law", T`V = IR`, 'Volts, amps, ohms.', 'ohms-law'),
+  f(ELECTRIC, 'Resistors in series', T`R = R_1 + R_2 + \cdots`, 'The same current through each.', 'resistors'),
+  f(ELECTRIC, 'Resistors in parallel', T`\frac{1}{R} = \frac{1}{R_1} + \frac{1}{R_2} + \cdots \qquad R = \frac{R_1R_2}{R_1 + R_2}`, 'The same voltage across each; the total is less than the smallest.', 'resistors'),
+  f(ELECTRIC, 'Electric power', T`P = IV = I^2R = \frac{V^2}{R}`, '', 'electric-power'),
+  f(ELECTRIC, 'Electric energy', T`E = Pt`, 'Kilowatts times hours gives kilowatt-hours; 1 kWh is 3.6 million joules.', 'electric-power'),
+  f(ELECTRIC, 'Charge and current', T`Q = It`, 'Coulombs, amps, seconds.'),
+  f(ELECTRIC, "Coulomb's law", T`F = \frac{kq_1q_2}{r^2} \qquad k = 8.99 \times 10^9\ \tfrac{\text{N}\cdot\text{m}^2}{\text{C}^2}`, 'Like charges repel; double the distance, a quarter the force.'),
+  f(ELECTRIC, 'Transformers', T`\frac{V_p}{V_s} = \frac{N_p}{N_s}`, 'Voltage steps by the ratio of the turns.'),
+  f(ELECTRIC, 'Capacitance', T`Q = CV \qquad E = \tfrac12 CV^2`),
+
+  f(WAVES, 'Wave speed', T`v = f\lambda`, '', 'wave-speed'),
+  f(WAVES, 'Period and frequency', T`T = \frac{1}{f}`, '', 'wave-speed'),
+  f(WAVES, 'Speeds to know', T`\text{sound in air} \approx 343 \text{ m/s} \qquad c = 3.00 \times 10^8 \text{ m/s}`, 'Sound is faster in water (about 1500 m/s) and in steel.', 'echo'),
+  f(WAVES, 'Echo distance', T`d = \frac{vt}{2}`, 'There and back.', 'echo'),
+  f(WAVES, 'Pendulum', T`T = 2\pi\sqrt{\frac{L}{g}}`, 'Not the mass, not the swing (for small swings).', 'pendulum'),
+  f(WAVES, 'Mass on a spring', T`T = 2\pi\sqrt{\frac{m}{k}}`),
+  f(WAVES, 'Index of refraction and Snell\'s law', T`n = \frac{c}{v} \qquad n_1\sin\theta_1 = n_2\sin\theta_2`, 'Light bends toward the normal going into a slower medium.'),
+  f(WAVES, 'Lenses and mirrors', T`\frac{1}{f} = \frac{1}{d_o} + \frac{1}{d_i} \qquad m = -\frac{d_i}{d_o} = \frac{h_i}{h_o}`, 'A real image is on the far side of a lens, in front of a mirror.', 'lens'),
+  f(WAVES, 'Photon energy', T`E = hf \qquad h = 6.63 \times 10^{-34}\ \text{J}\cdot\text{s}`),
+  f(WAVES, 'Density', T`\rho = \frac{m}{V}`, 'Water is 1 g/cm³, 1000 kg/m³.', 'density'),
+  f(WAVES, 'Buoyant force', T`F_b = \rho_{\text{fluid}}Vg`, 'The weight of the fluid pushed aside (Archimedes).', 'density'),
+  f(WAVES, 'Pressure', T`P = \frac{F}{A} \qquad P = \rho gh`, 'In pascals, N/m². Air at sea level is about 101,300 Pa.', 'pressure'),
+  f(WAVES, 'Heat', T`Q = mc\Delta T`, "Water's c is 4.18 J/(g·°C), or 1 cal/(g·°C).", 'specific-heat'),
+  f(WAVES, 'Temperature scales', T`K = {}^\circ\!C + 273 \qquad {}^\circ\!F = \tfrac95\,{}^\circ\!C + 32`, 'Water freezes at 0 °C, 32 °F, 273 K; Celsius and Fahrenheit meet at −40.', 'temperature'),
+  f(WAVES, 'Gas laws', T`PV = nRT \qquad P_1V_1 = P_2V_2 \qquad \frac{V_1}{T_1} = \frac{V_2}{T_2}`, 'Temperatures in kelvins. Boyle, then Charles.'),
+  f(WAVES, 'Half-life', T`N = N_0\left(\tfrac12\right)^{t/T}`, '', 'half-life'),
+  f(WAVES, 'Mass and energy', T`E = mc^2`)
 ];
 
 /** Topics in sheet order. */

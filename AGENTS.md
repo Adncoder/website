@@ -158,7 +158,7 @@ redeploy.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
-| `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
+| `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice, with physics as its own mode. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
 | `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
 | `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks and months, checking what an add-on sends, ranks and streaks, codes and their hashes |
 | `server/kshsaa/anki-addon/` | The Anki add-on, in Python: `stats.py` counts each day from Anki's review log, `client.py` sends the counts, `__init__.py` wires both into Anki. `test_stats.py` tests the counting and stays out of the download |
@@ -529,6 +529,17 @@ and 2√3 compare as they should, and reads what people type: "9 sqrt 3",
 counts when it is right to the places typed (two or more). An answer asked for
 as a fraction carries `form: 'fraction'`, and a decimal for it is turned back
 rather than marked wrong.
+
+Physics (`drills/physics.js`, five topics named "Physics: …") has its own mode,
+like speed tricks, and stays out of the math drills; its formulas are on the
+same sheet. It is written the way the archive's 240 numeric physics questions
+are: each one says which g to use, 9.8 or 10 m/s², and most get 30 seconds. Its
+answers are still exact (9.8 is 49/5) but shown as decimals (`decimal: true`,
+which `skills.js` adds to every physics problem): 137.2 N, not 686/5, and one
+that never ends with its value to three figures beside it. Typed units come off
+before an answer is read, compound ones whole, so "14 m/s" is never m divided
+by s. A box at rest on a ramp has friction mg sin θ, not μN; the ramp drill
+teaches exactly that.
 
 ### Anki leaderboard
 

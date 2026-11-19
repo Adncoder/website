@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { anzanRun } from '../client/kshsaa-math/anzan.js';
-import { answerPlain, check, exact, frac, int, parse, pi, root, same, times, toNumber, toPlain } from '../client/kshsaa-math/exact.js';
+import { answerPlain, answerTex, check, exact, frac, int, parse, pi, root, same, times, toNumber, toPlain } from '../client/kshsaa-math/exact.js';
 import { FORMULAS } from '../client/kshsaa-math/formulas.js';
 import { cleanRecord } from '../client/kshsaa-math/progress.js';
 import { makeRng } from '../client/kshsaa-math/rng.js';
@@ -355,8 +355,174 @@ const SECOND_WAY = {
   'cubes-powers': d => { let p = 1; for (let i = 0; i < d.b; i++) p *= d.a; return p; },
   'fraction-decimal': (d, answer, problem) => (problem.unit === '%' ? 100 : 1) * d.a / d.b,
   'roots-perfect': (d, answer, problem) => { assert.ok(problem.prompt.includes(String(d.a ** d.b).slice(-3))); return d.a; },
-  divisibility: d => (d.a % d.b === 0 ? 'yes' : 'no')
+  divisibility: d => (d.a % d.b === 0 ? 'yes' : 'no'),
+
+  // physics: motion by stepping and bisection, forces from vector
+  // components, a pendulum swung numerically, the rest put back into its law
+  'kin-acceleration': (d, answer) => {
+    const a = toNumber(answer);
+    let v = d.v0;
+    for (let i = 0; i < d.t; i++) v += d.v > d.v0 ? a : -a;
+    assert.ok(near(v, d.v), 'the rate does not get from v0 to v');
+    return a;
+  },
+  'kin-final-velocity': d => { let v = d.v0; for (let i = 0; i < d.t; i++) v += d.a; return v; },
+  'kin-displacement': d => (d.v0 + (d.v0 + d.a * d.t)) / 2 * d.t,
+  'kin-stopping': d => {
+    if (d.kind === 'stop') return d.v0 / 2 * (d.v0 / d.a); // average speed times the time to stop
+    const t = bisect(t => d.v0 * t + d.a * t * t / 2 - d.d, 0, 100);
+    return d.v0 + d.a * t;
+  },
+  'free-fall': d => (d.kind === 'distance' ? d.g * d.t / 2 * d.t : d.kind === 'velocity' ? stepsOf(d.t, d.g) : bisect(t => d.g * t * t / 2 - d.h, 0, 100)),
+  'horizontal-launch': d => {
+    const t = bisect(t => d.h - d.g * t * t / 2, 0, 100);
+    return d.kind === 'time' ? t : d.kind === 'impact' ? d.g * t : d.v * t;
+  },
+  'angle-launch': d => {
+    const [vx, vy] = [d.v * Math.cos(rad(d.angle)), d.v * Math.sin(rad(d.angle))];
+    const height = t => vy * t - 10 * t * t / 2;
+    const landing = bisect(height, 1e-9 + vy / 10, 1000);
+    if (d.kind === 'time') return landing;
+    if (d.kind === 'range') return vx * landing;
+    let [lo, hi] = [0, landing]; // the top, by ternary search
+    for (let i = 0; i < 200; i++) { const m1 = lo + (hi - lo) / 3; const m2 = hi - (hi - lo) / 3; if (height(m1) < height(m2)) lo = m1; else hi = m2; }
+    return height(lo);
+  },
+  'newton-second': (d, answer) => {
+    const x = toNumber(answer);
+    const [F, m, a] = d.kind === 'F' ? [x, d.m, d.a] : d.kind === 'm' ? [d.F, x, d.a] : [d.F, d.m, x];
+    assert.ok(near(F, m * a), 'F is not ma');
+    return x;
+  },
+  weight: d => d.m * d.g * d.factor,
+  incline: d => {
+    const th = rad(d.angle);
+    const m = d.m ?? 1;
+    const W = [0, -m * (d.g ?? 9.8)];
+    const along = -(W[0] * Math.cos(th) + W[1] * Math.sin(th)); // down the ramp
+    const into = -(W[0] * -Math.sin(th) + W[1] * Math.cos(th)); // into the ramp
+    return d.kind === 'normal' ? into : d.kind === 'slide' ? along / m : d.kind === 'mu' ? along / into : along;
+  },
+  'friction-coefficient': d => (d.kind === 'mu' ? d.f / d.N : d.mu * d.m * d.g),
+  // the floor's push less the weight is what accelerates the person
+  elevator: (d, answer) => { assert.ok(near(toNumber(answer) - d.m * d.g, d.m * d.a)); return toNumber(answer); },
+  'hookes-law': (d, answer) => {
+    const x = toNumber(answer);
+    if (d.kind === 'k') assert.ok(near(x * d.x, d.F));
+    else if (d.kind === 'x') assert.ok(near(d.k * x / 100, d.F));
+    else assert.ok(near(x, d.k * d.x));
+    return x;
+  },
+  centripetal: d => {
+    // second differences of the position on the circle at the start
+    const w = d.v / d.rad;
+    const at = t => [d.rad * Math.cos(w * t), d.rad * Math.sin(w * t)];
+    const h = 1e-4;
+    const [a, b, c] = [at(-h), at(0), at(h)];
+    const acc = Math.hypot(a[0] - 2 * b[0] + c[0], a[1] - 2 * b[1] + c[1]) / (h * h);
+    return d.kind === 'a' ? acc : d.m * acc;
+  },
+  'gravitation-ratio': d => (d.a * d.b / (d.c * d.c)) / (1 * 1 / (1 * 1)),
+  'kinetic-energy': (d, answer) => {
+    if (d.kind === 'KE') return d.m * d.v * d.v / 2;
+    assert.ok(near(d.m * toNumber(answer) ** 2 / 2, d.KE));
+    return toNumber(answer);
+  },
+  'potential-energy': d => d.m * d.g * d.h,
+  // from the time of the fall, not from energy
+  'drop-speed': d => d.g * bisect(t => d.g * t * t / 2 - d.h, 0, 100),
+  'work-power': d => (d.kind === 'work' ? d.F * d.d : d.kind === 'efficiency' ? d.out / d.inn * 100 : d.F * d.d / d.t),
+  momentum: (d, answer) => {
+    if (d.kind === 'p') return d.m * d.v;
+    assert.ok(near(d.m * toNumber(answer), d.p));
+    return toNumber(answer);
+  },
+  impulse: d => (d.kind === 'force' ? d.m * d.v / d.t : d.F * d.t),
+  collision: (d, answer) => {
+    const v = toNumber(answer);
+    if (d.kind === 'stick') assert.ok(near((d.m1 + d.m2) * v, d.m1 * d.v1), 'momentum is not kept');
+    else assert.ok(near(d.m1 * v, d.m2 * d.v2), 'momentum is not kept');
+    return v;
+  },
+  'energy-factor': d => (d.m * (d.s ** 2) / 2) / (1 * 1 / 2),
+  'ohms-law': (d, answer) => {
+    const x = toNumber(answer);
+    if (d.kind === 'I') assert.ok(near(x * d.R, d.V));
+    else if (d.kind === 'R') assert.ok(near(d.I * x, d.V));
+    else assert.ok(near(x, d.I * d.R));
+    return x;
+  },
+  resistors: d => {
+    const parallel = 1 / sum(d.list.map(r => 1 / r));
+    return d.kind === 'series' ? sum(d.list) : d.kind === 'mixed' ? parallel + d.extra : parallel;
+  },
+  'electric-power': d => {
+    if (d.kind === 'kwh') return d.w * d.h * 3600 / 3.6e6;
+    if (d.kind === 'current') return d.P / d.V;
+    if (d.kind === 'IV') return d.V * d.V / (d.V / d.I);
+    if (d.kind === 'IR') return d.I * (d.I * d.R);
+    return (d.V / d.R) * d.V;
+  },
+  'wave-speed': (d, answer) => {
+    const x = toNumber(answer);
+    if (d.kind === 'period') assert.ok(near(x * d.f, 1));
+    else if (d.kind === 'lambda') assert.ok(near(d.f * x, d.v));
+    else if (d.kind === 'f') assert.ok(near(x * d.lambda, d.v));
+    else assert.ok(near(x, d.f * d.lambda));
+    return x;
+  },
+  echo: d => d.v * (d.t / 2),
+  pendulum: d => swingPeriod(d.L, d.g),
+  density: d => (d.kind === 'density' ? d.m / d.V : (1000 * d.V) * d.g),
+  // the weight of the water above each square meter
+  pressure: d => (d.kind === 'FA' ? d.F / d.A : (1000 * d.h * 1) * d.g / 1),
+  'specific-heat': d => d.m * d.c * d.dT,
+  // by the fixed points: water freezes at 0 °C, 32 °F, 273 K and boils at 100 °C, 212 °F, 373 K
+  temperature: d => {
+    const on = (x, [lo1, hi1], [lo2, hi2]) => lo2 + (x - lo1) * (hi2 - lo2) / (hi1 - lo1);
+    const C = [0, 100]; const F = [32, 212]; const K = [273, 373];
+    if (d.kind === 'CK') return on(d.c, C, K);
+    if (d.kind === 'KC') return on(d.c + 273, K, C);
+    if (d.kind === 'CF') return on(d.c, C, F);
+    return on(9 * d.c / 5 + 32, F, C);
+  },
+  lens: d => {
+    const di = 1 / (1 / d.f - 1 / d.d);
+    return d.kind === 'mag' ? di / d.d : di;
+  },
+  'half-life': d => { let left = d.start; for (let t = 0; t < d.t; t += d.half) left /= 2; return left; }
 };
+
+// a root of f between lo and hi, where f changes sign
+function bisect (f, lo, hi) {
+  if (Math.sign(f(lo)) === Math.sign(f(hi))) throw new Error('no sign change');
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2;
+    if (Math.sign(f(mid)) === Math.sign(f(lo))) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+// speed after t seconds of falling, a second at a time
+const stepsOf = (t, g) => { let v = 0; for (let i = 0; i < t; i++) v += g; return v; };
+// a small-angle pendulum swung numerically (RK4), timed between swings
+function swingPeriod (L, g) {
+  const accel = th => -(g / L) * th;
+  let [th, w, t] = [0.01, 0, 0];
+  const dt = 1e-4;
+  const crossings = [];
+  while (crossings.length < 3) {
+    const k1 = [w, accel(th)];
+    const k2 = [w + dt / 2 * k1[1], accel(th + dt / 2 * k1[0])];
+    const k3 = [w + dt / 2 * k2[1], accel(th + dt / 2 * k2[0])];
+    const k4 = [w + dt * k3[1], accel(th + dt * k3[0])];
+    const next = th + dt / 6 * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+    w += dt / 6 * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+    if (Math.sign(next) !== Math.sign(th) && th !== 0) crossings.push(t + dt * th / (th - next));
+    th = next;
+    t += dt;
+  }
+  return crossings[2] - crossings[0];
+}
 
 // x^2 + b x + c with the given roots, by multiplying the factors out
 function expandRoots (p, q) {
@@ -397,7 +563,9 @@ for (const skill of SKILLS) {
       assert.ok(!check(answer, wrong).ok, 'wrong answer accepted: ' + where + ' -> ' + wrong);
 
       const second = SECOND_WAY[skill.id](problem.data, answer, problem);
-      const tolerance = ['derivative', 'derivative-rules', 'limit-factor', 'lhopital', 'vertex', 'period-amplitude'].includes(skill.id) ? 1e-4 : 1e-7;
+      // physics answers read as decimals are accepted too
+      if (problem.decimal) assert.ok(check(answer, answerPlain(answer, { decimal: true })).ok, 'decimal answer rejected: ' + where);
+      const tolerance = ['derivative', 'derivative-rules', 'limit-factor', 'lhopital', 'vertex', 'period-amplitude', 'centripetal', 'pendulum'].includes(skill.id) ? 1e-4 : 1e-7;
       if (answer.text != null) {
         assert.equal(String(second), answer.text, where);
       } else if (answer.list) {
@@ -449,6 +617,28 @@ test('check accepts equal forms and a decimal right to the places typed', () => 
   assert.ok(check(frac(1, 3), '0.33').ok && check(frac(1, 3), '.333').ok && !check(frac(1, 3), '0.3').ok);
   assert.ok(check(frac(17, 2), '8.5').ok && check(frac(17, 2), '8 1/2').ok && check(frac(17, 2), '17/2').ok);
   assert.ok(!check(int(12), '').ok && !check(int(12), '13').ok && !check(int(12), 'twelve').ok);
+});
+
+test('physics answers read with their units', () => {
+  const cases = [
+    ['73.5 N', frac(147, 2)], ['73.5 newtons', frac(147, 2)], ['14 m/s', int(14)], ['9.8 m/s²', frac(49, 5)], ['9.8 m/s^2', frac(49, 5)], ['9.8 m/s/s', frac(49, 5)],
+    ['4 meters per second squared', int(4)], ['2000 kg·m/s', int(2000)], ['2000 kg m/s', int(2000)], ['2,000 kilogram meters per second', int(2000)], ['15 N·s', int(15)],
+    ['4 Ω', int(4)], ['4 ohms', int(4)], ['0.5 A', frac(1, 2)], ['0.5 amps', frac(1, 2)], ['12 V', int(12)], ['60 W', int(60)], ['1,000 J', int(1000)], ['440 Hz', int(440)],
+    ['98000 Pa', int(98000)], ['300 K', int(300)], ['25 °C', int(25)], ['77 °F', int(77)], ['2π s', pi(2)], ['1000 kg/m³', int(1000)], ['2.7 g/cm^3', frac(27, 10)],
+    ['0.6 kWh', frac(3, 5)], ['250 N/m', int(250)], ['20 m/sec', int(20)], ['9 times', int(9)], ['-3 m/s', int(-3)]
+  ];
+  for (const [typed, expected] of cases) {
+    const got = parse(typed);
+    assert.ok(got && same(got, expected), typed + ' parsed as ' + JSON.stringify(got));
+  }
+  // and what the page shows
+  assert.equal(answerTex(frac(686, 5), { decimal: true }), '137.2');
+  assert.equal(answerTex(int(98000), { decimal: true }), '98{,}000');
+  assert.equal(answerTex(frac(98765, 4), { decimal: true }), '24{,}691.25');
+  assert.equal(answerTex(frac(5, 6), { decimal: true }), '\\frac{5}{6} \\approx 0.833');
+  assert.equal(answerPlain(frac(147, 2), { decimal: true }), '73.5');
+  assert.equal(answerPlain(frac(5, 6), { decimal: true }), '5/6');
+  assert.equal(answerTex(frac(147, 2)), '\\frac{147}{2}', 'math answers stay exact');
 });
 
 test('an answer asked for as a fraction has to be typed as one', () => {

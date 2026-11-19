@@ -9,7 +9,7 @@ import { answerTex, check } from './exact.js';
 import { FORMULAS, FORMULA_TOPICS } from './formulas.js';
 import { cleanRecord, loadRecord, saveRecord } from './progress.js';
 import { makeRng } from './rng.js';
-import { SKILLS, TOPICS, TRICKS, skillById } from './skills.js';
+import { PHYSICS_TOPICS, SKILLS, TOPICS, TRICKS, skillById } from './skills.js';
 
 // KaTeX draws the math. Without it (offline, say) the TeX shows as written.
 const KATEX = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.mjs';
@@ -20,14 +20,30 @@ const katexReady = Promise.race([
 ]);
 
 const SETTINGS_KEY = 'math-bowl-settings-v1';
-const DRILL_TOPICS = TOPICS.filter(t => t !== TRICKS);
-const DRILLS = SKILLS.filter(s => s.topic !== TRICKS);
+// speed tricks and physics have modes of their own
+const DRILL_TOPICS = TOPICS.filter(t => t !== TRICKS && !PHYSICS_TOPICS.includes(t));
+const DRILLS = SKILLS.filter(s => DRILL_TOPICS.includes(s.topic));
 const TRICK_SKILLS = SKILLS.filter(s => s.topic === TRICKS);
+const PHYSICS_SKILLS = SKILLS.filter(s => PHYSICS_TOPICS.includes(s.topic));
+// how a unit reads after an answer
+const UNIT_TEX = {
+  '°': '^\\circ',
+  '%': '\\%',
+  'm/s²': '\\ \\text{m/s}^2',
+  'kg·m/s': '\\ \\text{kg}{\\cdot}\\text{m/s}',
+  N·s: '\\ \\text{N}{\\cdot}\\text{s}',
+  Ω: '\\ \\Omega',
+  '°C': '\\ {}^\\circ\\text{C}',
+  '°F': '\\ {}^\\circ\\text{F}',
+  'g/cm³': '\\ \\text{g/cm}^3'
+};
+const unitTex = unit => (unit ? UNIT_TEX[unit] ?? '\\ \\text{' + unit + '}' : '');
 const MODES = {
   mixed: ['MIXED DRILLS', 'Drills'],
   pascal: ['COMBINATIONS', "Pascal's triangle"],
   anzan: ['MENTAL ADDITION', 'Flash anzan'],
   tricks: ['VEDIC AND MENTAL MATH', 'Speed tricks'],
+  physics: ['PHYSICS BY THE NUMBERS', 'Physics'],
   formulas: ['REFERENCE', 'Formula sheet'],
   cards: ['MEMORY', 'Flashcards'],
   missed: ['REVIEW', 'Missed problems'],
@@ -45,7 +61,7 @@ const CARD_HTML = `<div class="card-top"><span class="kicker"></span><span class
 <button class="ghost reveal" type="button">Show answer</button>
 <button class="ghost skip" type="button">Skip</button>
 </form>
-<p class="tip">Fractions as 3/8, roots as 9√3 or 9 sqrt 3, pi as π or pi, a point as (2, -5). A decimal counts when it is right to the places you type.</p>
+<p class="tip">Fractions as 3/8, roots as 9√3 or 9 sqrt 3, pi as π or pi, a point as (2, -5). Units are optional. A decimal counts when it is right to the places you type.</p>
 <div class="hint" hidden></div>
 <div class="result" hidden><p class="verdict" role="status"></p><div class="steps"></div><button class="primary next" type="button">Next <kbd>↵</kbd></button></div>`;
 
@@ -62,7 +78,6 @@ record.missed = record.missed.filter(m => skillById(m.skill));
 const settings = readSettings();
 const session = { done: 0, right: 0, streak: 0 };
 let mode = 'mixed';
-let focusSkill = null;
 let lastSkill = null;
 let trick = TRICK_SKILLS.some(s => s.id === settings.trick) ? settings.trick : 'all';
 const pascalStats = { asked: 0, right: 0 };
@@ -309,8 +324,7 @@ class ProblemCard {
     const p = this.problem;
     const ms = now() - this.started;
     const late = $('timer').checked && ms / 1000 > this.limit;
-    const unit = p.unit === '°' ? '^\\circ' : p.unit === '%' ? '\\%' : '';
-    const answer = '[[' + answerTex(p.answer) + unit + ']]';
+    const answer = '[[' + answerTex(p.answer, { decimal: p.decimal }) + unitTex(p.unit) + ']]';
     this.input.readOnly = true;
     this.result.hidden = false;
     this.nextButton.hidden = false;
@@ -327,10 +341,6 @@ class ProblemCard {
 
 // ---------- drills ----------
 
-function chosenTopics () {
-  return Array.isArray(settings.topics) ? settings.topics.filter(t => DRILL_TOPICS.includes(t)) : DRILL_TOPICS;
-}
-
 /** A skill from the pool, leaning toward the ones missed most and never the same twice in a row. */
 function pickSkill (pool) {
   const weight = s => {
@@ -343,38 +353,77 @@ function pickSkill (pool) {
   return lastSkill;
 }
 
-const mixedCard = new ProblemCard($('mixedCard'), {
-  empty: 'Pick at least one topic above.',
-  next: () => {
-    const pool = focusSkill ? [skillById(focusSkill)] : DRILLS.filter(s => chosenTopics().includes(s.topic));
-    return pool.length ? makeProblem(pickSkill(pool)) : null;
-  },
-  after: recordDrill
-});
-
-function drawTopics () {
-  const grid = $('topicGrid');
-  grid.replaceChildren();
-  for (const topic of DRILL_TOPICS) {
-    const label = el('label', 'check');
-    const box = el('input');
-    box.type = 'checkbox';
-    box.value = topic;
-    box.checked = chosenTopics().includes(topic);
-    box.addEventListener('change', () => setTopics([...grid.querySelectorAll('input:checked')].map(b => b.value)));
-    label.append(box, topic + ' ', el('span', 'muted', '(' + DRILLS.filter(s => s.topic === topic).length + ')'));
-    grid.append(label);
+/**
+ * Drills over a set of topics, the ones picked kept in settings[key], or one
+ * skill alone (the formula sheet's Practice button). Drills and Physics are
+ * each one. `prefix` is the start of its element ids: Grid, Summary, Chip,
+ * Name, Clear, All, None, Card.
+ */
+class TopicDrill {
+  constructor ({ topics, key, prefix, label = t => t }) {
+    Object.assign(this, { topics, key, prefix, label, focus: null });
+    this.skills = SKILLS.filter(s => topics.includes(s.topic));
+    this.card = new ProblemCard($(prefix + 'Card'), {
+      empty: 'Pick at least one topic above.',
+      next: () => {
+        const pool = this.focus ? [skillById(this.focus)] : this.skills.filter(s => this.chosen().includes(s.topic));
+        return pool.length ? makeProblem(pickSkill(pool)) : null;
+      },
+      after: recordDrill
+    });
+    $(prefix + 'All').addEventListener('click', () => this.set(topics.slice()));
+    $(prefix + 'None').addEventListener('click', () => this.set([]));
+    $(prefix + 'Clear').addEventListener('click', () => {
+      this.focus = null;
+      $(prefix + 'Chip').hidden = true;
+      this.card.next();
+    });
   }
-  const n = chosenTopics().length;
-  $('topicSummary').textContent = 'Topics: ' + (n === DRILL_TOPICS.length ? 'all ' + n : n + ' of ' + DRILL_TOPICS.length);
+
+  chosen () {
+    const saved = settings[this.key];
+    return Array.isArray(saved) ? saved.filter(t => this.topics.includes(t)) : this.topics;
+  }
+
+  draw () {
+    const grid = $(this.prefix + 'Grid');
+    grid.replaceChildren();
+    for (const topic of this.topics) {
+      const label = el('label', 'check');
+      const box = el('input');
+      box.type = 'checkbox';
+      box.value = topic;
+      box.checked = this.chosen().includes(topic);
+      box.addEventListener('change', () => this.set([...grid.querySelectorAll('input:checked')].map(b => b.value)));
+      label.append(box, this.label(topic) + ' ', el('span', 'muted', '(' + this.skills.filter(s => s.topic === topic).length + ')'));
+      grid.append(label);
+    }
+    const n = this.chosen().length;
+    $(this.prefix + 'Summary').textContent = 'Topics: ' + (n === this.topics.length ? 'all ' + n : n + ' of ' + this.topics.length);
+  }
+
+  set (topics) {
+    settings[this.key] = topics;
+    saveSettings();
+    this.draw();
+    this.card.next();
+  }
+
+  practice (id) {
+    this.focus = id;
+    $(this.prefix + 'Name').textContent = 'Only: ' + skillById(id).name;
+    $(this.prefix + 'Chip').hidden = false;
+  }
 }
 
-function setTopics (topics) {
-  settings.topics = topics;
-  saveSettings();
-  drawTopics();
-  mixedCard.next();
-}
+const drills = new TopicDrill({ topics: DRILL_TOPICS, key: 'topics', prefix: 'topics' });
+const physics = new TopicDrill({
+  topics: PHYSICS_TOPICS,
+  key: 'physicsTopics',
+  prefix: 'physics',
+  // "Physics: motion" is just "Motion" inside the Physics mode
+  label: t => t.slice(t.indexOf(':') + 2, t.indexOf(':') + 3).toUpperCase() + t.slice(t.indexOf(':') + 3)
+});
 
 /** Drill one skill, from the formula sheet's Practice button. */
 function practiceSkill (id) {
@@ -386,11 +435,11 @@ function practiceSkill (id) {
     tricksCard.next();
     return;
   }
-  focusSkill = id;
-  $('focusName').textContent = 'Only: ' + skill.name;
-  $('focusChip').hidden = false;
-  showMode('mixed');
-  mixedCard.next();
+  const where = PHYSICS_TOPICS.includes(skill.topic) ? 'physics' : 'mixed';
+  const drill = where === 'physics' ? physics : drills;
+  drill.practice(id);
+  showMode(where);
+  drill.card.next();
 }
 
 // ---------- Pascal's triangle ----------
@@ -756,13 +805,14 @@ function importProgress () {
 
 // ---------- modes ----------
 
-const CARDS = { mixed: mixedCard, pascal: pascalCard, tricks: tricksCard, missed: missedCard };
+const CARDS = { mixed: drills.card, pascal: pascalCard, tricks: tricksCard, physics: physics.card, missed: missedCard };
 
 function badge () {
   if (mode === 'mixed') return DRILLS.length + ' drills in ' + DRILL_TOPICS.length + ' topics';
   if (mode === 'pascal') return 'Rows 0 to 14';
   if (mode === 'anzan') return '1 to 5 digits, up to 100 numbers';
   if (mode === 'tricks') return TRICK_SKILLS.length + ' tricks';
+  if (mode === 'physics') return PHYSICS_SKILLS.length + ' problems in ' + PHYSICS_TOPICS.length + ' topics';
   if (mode === 'formulas' || mode === 'cards') return FORMULAS.length + ' formulas';
   if (mode === 'missed') return record.missed.length + ' to redo';
   return '';
@@ -798,14 +848,6 @@ for (const id of ['timer', 'autoNext', 'weak']) {
     if (id === 'timer' && CARDS[mode]?.problem && !CARDS[mode].done) CARDS[mode].startClock();
   });
 }
-
-$('topicsAll').addEventListener('click', () => setTopics(DRILL_TOPICS.slice()));
-$('topicsNone').addEventListener('click', () => setTopics([]));
-$('focusClear').addEventListener('click', () => {
-  focusSkill = null;
-  $('focusChip').hidden = true;
-  mixedCard.next();
-});
 
 for (const id of ['pKind', 'pMax', 'pEdges']) {
   $(id).addEventListener('change', () => {
@@ -881,7 +923,8 @@ async function start () {
   $('aMinus').checked = Boolean(settings.aMinus);
   fill($('fTopic'), ['all', ...FORMULA_TOPICS], 'all', v => (v === 'all' ? 'All topics' : v));
   fill($('cTopic'), ['all', ...FORMULA_TOPICS], FORMULA_TOPICS.includes(settings.cTopic) ? settings.cTopic : 'all', v => (v === 'all' ? 'All topics' : v));
-  drawTopics();
+  drills.draw();
+  physics.draw();
   drawTricks();
   persist();
   drawSession();
