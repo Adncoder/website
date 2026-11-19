@@ -1,8 +1,9 @@
 // The bar across the top of every KSHSAA page: the logo, the sections, and a
 // way back to QBReader. Put KSHSAA_HEAD in a page's <head> and
-// ${kshsaaNav('/kshsaa-stats')} where the bar goes. The Spanish practice page
-// is a static file (client/kshsaa-spanish/) and carries its own copy, and the
-// QBReader navbar's KSHSAA menu (client/ssi/nav.html) lists the same sections.
+// ${kshsaaNav('/kshsaa-stats')} where the bar goes. The Spanish and math
+// practice pages are static files (client/kshsaa-spanish/, client/kshsaa-math/)
+// and carry their own copies, and the QBReader navbar's KSHSAA menu
+// (client/ssi/nav.html) lists the same sections.
 //
 // Pages that belong to a section without being its first page pass that
 // section's path: the packet download and the Octopus Arcade sit under Read a
@@ -12,7 +13,9 @@
 const SECTIONS = [
   ['/kshsaa-play', 'Read a round'],
   ['/kshsaa-stats', 'Stats'],
-  ['/kshsaa-spanish/', 'Spanish practice']
+  ['/kshsaa-spanish/', 'Spanish practice'],
+  ['/kshsaa-math/', 'Math practice'],
+  ['/kshsaa-anki', 'Anki leaderboard']
 ];
 
 export const KSHSAA_HEAD = `<link rel="icon" href="/kshsaa/logo.svg" type="image/svg+xml">

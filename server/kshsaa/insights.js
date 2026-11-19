@@ -10,6 +10,7 @@
 
 import { CATEGORIES } from '../../routes/kshsaa-round.js';
 import { celerityOf, monthKeyOf, playersInGame } from './game-stats.js';
+import { reboundsIn } from './rebounds.js';
 import { PLAYER_PRIOR, WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from './room-model.js';
 
 // category questions heard before calling someone strong or weak there
@@ -59,11 +60,14 @@ export function computeInsights (allGames, filters, questionInfo, isVarsity) {
       p.games++;
       p.heard += heard;
     }
+    const rebounds = reboundsIn(g);
     for (const b of g.buzzes || []) {
       if (!b.player || held.has(b.player)) continue; // the other school, or holding back
       const p = playerFor(b.player);
       addBuzz(p, b);
-      if (b.value > 0) {
+      // an answer after the other team missed was not a race, so where it
+      // came says nothing about how early this player buzzes
+      if (b.value > 0 && !rebounds.has(b)) {
         const c = celerityOf(b.wordIndex, b.wordCount);
         if (c != null) p.celerities.push(c);
       }
@@ -141,11 +145,20 @@ export function computeInsights (allGames, filters, questionInfo, isVarsity) {
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
+  // the team's average player, to say how hard a D is in answers of 16
+  const average = Object.fromEntries(CATEGORIES.map(c => [c, teamIn(c)]));
+  const typicalAt = D => +soloAnswers(average, D, model.teamWorth).toFixed(1);
+
   return {
     gamesUsed: games.length,
     // how hard each level plays, with the reference level at 1
     difficulty: Object.fromEntries(Object.entries(model.difficulty).map(([l, d]) => [l, round4(d)])),
     reference: model.reference,
+    // each tournament's own D, and how many of 16 the team's average player
+    // would answer alone there, against the same at the reference level
+    tournaments: model.tournaments.map(t => ({ ...t, difficulty: round4(t.difficulty), typical: typicalAt(t.difficulty) })),
+    referencePractice: model.referencePractice,
+    typicalAtReference: model.reference ? typicalAt(model.difficulty[model.reference]) : null,
     // the team's average strength in each category, and answer worth
     teamStrength: Object.fromEntries(CATEGORIES.map(c => [c, round4(teamIn(c))])),
     teamWorth: round4(model.teamWorth),
@@ -167,6 +180,7 @@ function questionDifficulty (games, questionInfo) {
   for (const g of games) {
     if (!Array.isArray(g.questionIds)) continue;
     const level = g.level || 'untagged';
+    const rebounds = reboundsIn(g);
     g.questionIds.slice(0, g.tossupsRead || g.questionIds.length).forEach((id, i) => {
       const info = questionInfo.get(String(id));
       const source = info ? info.source : 'unknown';
@@ -176,7 +190,8 @@ function questionDifficulty (games, questionInfo) {
       grp.read++;
       if (right) {
         grp.answered++;
-        const c = celerityOf(right.wordIndex, right.wordCount);
+        // the buzz point is where a question gets answered in a race
+        const c = rebounds.has(right) ? null : celerityOf(right.wordIndex, right.wordCount);
         if (c != null) grp.celerities.push(c);
       }
       if (buzzes.some(b => b.value < 0)) grp.negged++;

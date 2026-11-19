@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Math Bowl</title>
+<meta name="description" content="Scholars Bowl math and physics practice: drills with KSHSAA time limits, Pascal's triangle, flash anzan, speed tricks, and every formula worth knowing.">
+<link rel="icon" href="/kshsaa/logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<style>
+:root{--ink:#1f2733;--muted:#5d6b82;--line:#dde3ee;--paper:#f6f8fb;--white:#fff;--accent:#1f5fd1;--accent-ink:#fff;--accent-soft:#e8f0ff;--good:#16794a;--good-soft:#e3f4ea;--bad:#b42318;--bad-soft:#fdecea;--warn:#8a5a00;--warn-soft:#fff4d6;--font:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--font);font-size:16px;line-height:1.5}
+button,input,select{font:inherit}
+button{cursor:pointer;border-radius:8px;border:1px solid transparent;padding:9px 15px;font-size:14px;font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid #8fb0f0;outline-offset:2px}
+[hidden]{display:none!important}
+kbd{font:12px var(--font);opacity:.7}
+.primary{background:var(--accent);color:var(--accent-ink)}
+.primary:hover{background:#174bb0}
+.ghost{background:var(--white);border-color:var(--line);color:var(--ink)}
+.ghost:hover{background:#eef2f8}
+.link{background:none;border:0;padding:0;color:var(--accent);font-weight:600;font-size:inherit}
+select,input[type=text],input[type=search]{border:1px solid #c9d2e1;border-radius:8px;background:var(--white);color:var(--ink);padding:9px 10px;font-size:15px}
+
+/* the bar across every KSHSAA page */
+.kshsaa-bar{background:#eef1f7;border-bottom:1px solid #d9e0ec;padding:10px 20px}
+.kshsaa-nav{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:8px 24px;max-width:1200px;margin:auto}
+.kshsaa-nav a{color:#4a5b7d;font-size:14px;text-decoration:none}
+.kshsaa-nav a:hover{text-decoration:underline}
+.kshsaa-nav a[aria-current]{color:#1f3864;font-weight:700}
+.kshsaa-links{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 24px}
+
+header{max-width:1240px;margin:auto;padding:22px 32px;display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line)}
+.brand{display:flex;gap:12px;align-items:center;color:var(--ink);text-decoration:none;font-size:22px;font-weight:750;letter-spacing:-.5px}
+.mark{display:grid;place-items:center;background:var(--accent);color:#fff;width:44px;height:44px;border-radius:12px;font:600 26px Georgia,serif}
+.brand small{display:block;font-size:10px;letter-spacing:1.7px;margin-top:1px;color:var(--muted)}
+.header-note{font-size:13px;color:var(--muted);text-align:right;max-width:420px}
+
+main{max-width:1240px;margin:0 auto;display:grid;grid-template-columns:240px minmax(0,1fr);gap:40px;padding:28px 32px 56px}
+.eyebrow{font-size:12px;letter-spacing:1.5px;font-weight:700;color:var(--muted)}
+aside>.eyebrow{padding-left:12px}
+nav.modes{display:grid;gap:4px;margin:12px 0 20px}
+.mode{display:flex;align-items:center;gap:10px;background:none;border:0;padding:10px 12px;text-align:left;border-radius:8px;color:var(--ink);font-size:14px;font-weight:600}
+.mode span{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.mode b{margin-left:auto;font-size:12px;background:var(--bad-soft);color:var(--bad);border-radius:10px;padding:0 7px}
+.mode b:empty{display:none}
+.mode.active{background:var(--ink);color:#fff}
+.mode.active span{color:#aac4ff}
+.mode:hover:not(.active){background:#e7ecf4}
+.settings{border-top:1px solid var(--line);padding:18px 12px 4px}
+.check{display:flex;align-items:center;gap:9px;font-size:14px;margin:0 0 12px;cursor:pointer}
+.check input{width:17px;height:17px;accent-color:var(--accent);flex:none}
+.session{margin:8px 12px;padding-top:18px;border-top:1px solid var(--line)}
+.session-stats{display:flex;gap:22px;margin-top:10px}
+.session-stats strong{display:block;font-size:26px;line-height:1.2;font-weight:650;font-variant-numeric:tabular-nums}
+.session-stats small{font-size:12px;color:var(--muted)}
+.session p{font-size:12px;color:var(--muted);margin:12px 0 0}
+
+.workspace-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-end;margin-bottom:18px;flex-wrap:wrap}
+h1{font-weight:600;letter-spacing:-1px;font-size:34px;line-height:1.15;margin:4px 0 0}
+.badge{font-size:12px;background:var(--accent-soft);color:#1b3f8a;padding:5px 10px;border-radius:6px}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-bottom:16px}
+.toolbar label{font-size:14px;display:flex;gap:6px;align-items:center}
+.toolbar .check{margin:0}
+.chip{display:inline-flex;gap:6px;align-items:center;background:var(--accent-soft);color:#1b3f8a;border-radius:16px;padding:4px 6px 4px 12px;font-size:13px;font-weight:600}
+.chip button{background:none;border:0;padding:0 6px;color:inherit;font-size:15px}
+details.topics{background:var(--white);border:1px solid var(--line);border-radius:10px;padding:10px 14px}
+details.topics summary{cursor:pointer;font-size:14px;font-weight:600}
+.topic-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:2px 16px;margin:12px 0 4px}
+.topic-grid .check{margin:4px 0}
+.topic-actions{display:flex;gap:12px;margin-top:6px;font-size:13px}
+
+.card{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:22px 26px;box-shadow:0 6px 24px #1f27330a}
+.card-top{display:flex;justify-content:space-between;gap:10px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+.clock{font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink)}
+.clock.over{color:var(--bad)}
+.clockbar{height:4px;background:#edf1f7;border-radius:2px;margin:10px 0 0;overflow:hidden}
+.clockbar span{display:block;height:100%;width:0;background:var(--accent);transition:width .1s linear}
+.clockbar.over span{background:var(--bad)}
+.prompt{font-size:clamp(21px,2.4vw,27px);line-height:1.5;margin:22px 0 24px;overflow-wrap:anywhere;min-height:2.5em}
+.prompt .katex{font-size:1.08em}
+.answer-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.answer-row input{flex:1 1 200px;max-width:320px;font-size:18px;padding:10px 12px}
+.unit{font-size:18px;color:var(--muted);min-width:0}
+.unit:empty{display:none}
+.keys{display:flex;gap:4px}
+.keys button{padding:8px 10px;font-weight:500}
+.tip{font-size:12px;color:var(--muted);margin:10px 0 0}
+.hint,.lesson{margin-top:16px;padding:12px 16px;background:var(--accent-soft);border-radius:10px;font-size:15px;line-height:1.7}
+.result{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+.verdict{font-size:17px;font-weight:650;margin:0 0 8px}
+.verdict.good{color:var(--good)}
+.verdict.bad{color:var(--bad)}
+.verdict.note{color:var(--warn)}
+.steps{font-size:15px;color:#33405a;line-height:1.75;margin-bottom:14px}
+.empty{color:var(--muted);font-size:16px}
+.math.raw{font-family:ui-monospace,Consolas,monospace;font-size:.85em;background:#f1f4f9;padding:1px 4px;border-radius:4px}
+
+/* Pascal's triangle */
+.pascal-layout{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
+@media(min-width:1180px){.pascal-layout{grid-template-columns:minmax(340px,1fr) auto}}
+.stat-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.stat{background:var(--white);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+.stat small{display:block;font-size:12px;color:var(--muted)}
+.stat strong{font-size:19px;font-variant-numeric:tabular-nums}
+.triangle-box{background:var(--white);border:1px solid var(--line);border-radius:14px;padding:14px 10px;overflow-x:auto}
+.triangle-box h2{font-size:14px;margin:0 0 10px 6px}
+.triangle{display:grid;gap:3px;justify-items:center;min-width:max-content;padding:0 6px}
+.tri-row{display:flex;gap:3px;align-items:center}
+.tri-row .n{width:20px;text-align:right;color:var(--muted);font-size:11px;margin-right:4px}
+.cell{min-width:26px;padding:1px 4px;text-align:center;border-radius:11px;border:1px solid var(--line);font-size:12px;font-variant-numeric:tabular-nums;background:#fbfcfe}
+.tri-row.on .cell{border-color:#9db8ef;background:var(--accent-soft)}
+.tri-row .cell.hit{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
+.tri-hidden{color:var(--muted);font-size:14px;padding:30px 10px;text-align:center}
+
+/* flash anzan */
+.anzan-screen{height:min(46vh,380px);display:grid;place-items:center;background:#111827;color:#f8fafc;border-radius:14px;font-size:clamp(70px,15vw,170px);font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:2px;user-select:none;margin-bottom:16px}
+.anzan-screen.small{font-size:clamp(22px,3vw,30px);font-weight:500;letter-spacing:0;color:#cbd5e1;text-align:center;padding:20px;line-height:1.5}
+.anzan-screen.minus{color:#fca5a5}
+.anzan-screen.count{color:#64748b}
+.anzan-answer{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.anzan-answer input{font-size:20px;max-width:220px}
+.sequence{font-size:14px;color:var(--muted);overflow-wrap:anywhere;margin-top:8px}
+
+/* speed tricks */
+.trick-list{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px}
+.trick-list button{background:var(--white);border:1px solid var(--line);color:var(--ink);font-weight:500;padding:6px 11px;font-size:13px}
+.trick-list button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+.lesson{margin:0 0 16px;background:#fff8e6}
+.lesson h2{font-size:15px;margin:0 0 4px}
+
+/* formula sheet and flashcards */
+.formula-list h2{font-size:20px;letter-spacing:-.3px;margin:30px 0 10px}
+.formula-list h2:first-child{margin-top:0}
+.formula{background:var(--white);border:1px solid var(--line);border-radius:12px;padding:12px 18px;margin-bottom:10px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:start}
+.formula h3{font-size:15px;margin:0}
+.formula .math.display{grid-column:1/-1;overflow-x:auto;overflow-y:hidden;padding:4px 0}
+.formula .note{grid-column:1/-1;margin:0;font-size:13px;color:var(--muted)}
+.formula button{padding:4px 10px;font-size:12px}
+.flashcard{min-height:300px;display:flex;flex-direction:column;justify-content:center;text-align:center;gap:12px}
+.flashcard .front{font-size:clamp(22px,3vw,30px);font-weight:600}
+.flashcard .math.display{overflow-x:auto;overflow-y:hidden;font-size:1.15em}
+.flashcard .note{color:var(--muted);font-size:14px;margin:0}
+.flash-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+
+/* progress */
+.summary{display:flex;gap:28px;flex-wrap:wrap;background:var(--ink);color:#fff;padding:20px 24px;border-radius:12px;margin-bottom:22px}
+.summary strong{display:block;font-size:28px;color:#aac4ff;font-variant-numeric:tabular-nums}
+.summary span{font-size:13px}
+#progress h2{font-size:19px;margin:26px 0 10px}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line)}
+th{font-size:12px;color:var(--muted);font-weight:600}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tr.topic-row td{font-weight:700;background:#eef2f8}
+.meter{height:6px;background:#e3e8f1;border-radius:3px;min-width:60px}
+.meter span{display:block;height:6px;border-radius:3px;background:var(--good)}
+.transfer{display:flex;gap:10px;flex-wrap:wrap;margin-top:26px}
+.muted{color:var(--muted);font-size:13px}
+
+footer{max-width:1176px;border-top:1px solid var(--line);margin:0 auto;padding:20px 0;color:var(--muted);font-size:11px;letter-spacing:1.5px}
+
+@media(max-width:980px){
+  main{grid-template-columns:200px minmax(0,1fr);gap:24px;padding:24px 20px}
+  header{padding:18px 20px}
+  footer{margin:0 20px}
+}
+@media(max-width:720px){
+  .header-note{display:none}
+  main{display:block;padding:16px 16px 40px}
+  aside>.eyebrow,.session{display:none}
+  nav.modes{grid-template-columns:1fr 1fr;margin:0 0 12px}
+  .mode{font-size:13px;padding:9px 10px}
+  .settings{display:flex;flex-wrap:wrap;gap:0 16px;padding:12px 0 6px;margin-bottom:8px}
+  h1{font-size:28px}
+  .card{padding:18px 16px}
+  .stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .answer-row input{max-width:none}
+  .brand{font-size:20px}
+}
+</style>
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="kshsaa-bar"><div class="kshsaa-nav" aria-label="KSHSAA sections">
+<a href="/kshsaa-play" style="display:inline-flex;align-items:center;gap:6px;font-weight:700;font-size:16px;color:#1f2733;text-decoration:none"><img src="/kshsaa/logo.svg" alt="" width="22" height="22"><span><span style="color:#1f5fd1">Scholars</span> Bowl</span></a><span class="kshsaa-links">
+<a href="/kshsaa-play">Read a round</a><a href="/kshsaa-stats">Stats</a><a href="/kshsaa-spanish/">Spanish practice</a><a href="/kshsaa-math/" aria-current="page">Math practice</a><a href="/kshsaa-anki">Anki leaderboard</a>
+</span><a href="/" style="font-size:12px">QBReader &rarr;</a></div></div>
+
+<header>
+  <a class="brand" href="./"><span class="mark">&Sigma;</span><span>Math Bowl<small>SCHOLARS BOWL PRACTICE</small></span></a>
+  <p class="header-note">Math, and the physics that is mostly math, get better with a lot of doing. Every problem here is made fresh, and its answer is worked out, not looked up.</p>
+</header>
+
+<main>
+<aside>
+  <div class="eyebrow">PRACTICE</div>
+  <nav class="modes" aria-label="Practice mode">
+    <button class="mode active" data-mode="mixed"><span>01</span> Drills</button>
+    <button class="mode" data-mode="pascal"><span>02</span> Pascal's triangle</button>
+    <button class="mode" data-mode="anzan"><span>03</span> Flash anzan</button>
+    <button class="mode" data-mode="tricks"><span>04</span> Speed tricks</button>
+    <button class="mode" data-mode="physics"><span>05</span> Physics</button>
+    <button class="mode" data-mode="formulas"><span>06</span> Formula sheet</button>
+    <button class="mode" data-mode="cards"><span>07</span> Flashcards</button>
+    <button class="mode" data-mode="missed"><span>08</span> Missed <b id="missedCount"></b></button>
+    <button class="mode" data-mode="progress"><span>09</span> Your progress</button>
+  </nav>
+  <div class="settings">
+    <label class="check"><input type="checkbox" id="timer" checked> KSHSAA time limits</label>
+    <label class="check"><input type="checkbox" id="autoNext" checked> Next problem when right</label>
+    <label class="check"><input type="checkbox" id="weak" checked> More of what I miss</label>
+  </div>
+  <div class="session">
+    <div class="eyebrow">THIS SESSION</div>
+    <div class="session-stats">
+      <div><strong id="sDone">0</strong><small>answered</small></div>
+      <div><strong id="sAcc">&mdash;</strong><small>right</small></div>
+      <div><strong id="sStreak">0</strong><small>streak</small></div>
+    </div>
+    <p id="saveNote">Progress stays in this browser.</p>
+  </div>
+</aside>
+
+<section class="workspace">
+  <div class="workspace-head">
+    <div><div class="eyebrow" id="kicker"></div><h1 id="title"></h1></div>
+    <span class="badge" id="badge"></span>
+  </div>
+
+  <section id="mixed" class="panel">
+    <div class="toolbar">
+      <span class="chip" id="topicsChip" hidden><span id="topicsName"></span><button type="button" id="topicsClear" aria-label="Back to all topics">&times;</button></span>
+      <details class="topics" id="topicBox">
+        <summary id="topicsSummary">Topics</summary>
+        <div class="topic-grid" id="topicsGrid"></div>
+        <div class="topic-actions"><button class="link" type="button" id="topicsAll">All</button><button class="link" type="button" id="topicsNone">None</button></div>
+      </details>
+    </div>
+    <div id="topicsCard"></div>
+  </section>
+
+  <section id="pascal" class="panel" hidden>
+    <div class="stat-row">
+      <div class="stat"><small>Question</small><strong id="pNum">1</strong></div>
+      <div class="stat"><small>Correct</small><strong id="pRight">0</strong></div>
+      <div class="stat"><small>Accuracy</small><strong id="pAcc">&mdash;</strong></div>
+      <div class="stat"><small>Current (n, k)</small><strong id="pNK">(&ndash;, &ndash;)</strong></div>
+    </div>
+    <div class="toolbar">
+      <label>Ask <select id="pKind">
+        <option value="pascal">C(n, k)</option>
+        <option value="pascal-row-sum">Row sums</option>
+        <option value="binomial-coefficient">Binomial coefficients</option>
+        <option value="binomial-term">The r-th term</option>
+      </select></label>
+      <label>Max row <select id="pMax"></select></label>
+      <label class="check"><input type="checkbox" id="pEdges"> Include the 1s on the edges</label>
+      <label class="check"><input type="checkbox" id="pShow" checked> Show the triangle while answering</label>
+    </div>
+    <div class="pascal-layout">
+      <div id="pascalCard"></div>
+      <div class="triangle-box"><h2 id="triTitle">Pascal's triangle</h2><div id="triangle"></div></div>
+    </div>
+  </section>
+
+  <section id="anzan" class="panel" hidden>
+    <div class="toolbar">
+      <label>Digits <select id="aDigits"></select></label>
+      <label>Each number <select id="aSpeed"></select></label>
+      <label>Numbers <select id="aCount"></select></label>
+      <label class="check"><input type="checkbox" id="aMinus"> Some subtracted</label>
+    </div>
+    <div class="anzan-screen small" id="aScreen" aria-live="off">Numbers flash one at a time. Keep a running total in your head, then type it.</div>
+    <div class="anzan-answer">
+      <button class="primary" type="button" id="aStart">Start <kbd>space</kbd></button>
+      <form id="aForm" class="anzan-answer" hidden><input type="text" id="aInput" inputmode="numeric" autocomplete="off" aria-label="Your total" placeholder="Total"><button class="primary" type="submit">Check <kbd>↵</kbd></button></form>
+      <button class="ghost" type="button" id="aStop" hidden>Stop</button>
+    </div>
+    <p class="verdict" id="aVerdict" role="status"></p>
+    <p class="sequence" id="aSequence"></p>
+  </section>
+
+  <section id="tricks" class="panel" hidden>
+    <div class="trick-list" id="trickList"></div>
+    <div class="lesson" id="lesson"></div>
+    <div id="tricksCard"></div>
+  </section>
+
+  <section id="physics" class="panel" hidden>
+    <div class="toolbar">
+      <span class="chip" id="physicsChip" hidden><span id="physicsName"></span><button type="button" id="physicsClear" aria-label="Back to all physics topics">&times;</button></span>
+      <details class="topics">
+        <summary id="physicsSummary">Topics</summary>
+        <div class="topic-grid" id="physicsGrid"></div>
+        <div class="topic-actions"><button class="link" type="button" id="physicsAll">All</button><button class="link" type="button" id="physicsNone">None</button></div>
+      </details>
+    </div>
+    <div id="physicsCard"></div>
+  </section>
+
+  <section id="formulas" class="panel" hidden>
+    <div class="toolbar">
+      <input type="search" id="fSearch" placeholder="Search formulas" aria-label="Search formulas">
+      <label>Topic <select id="fTopic"></select></label>
+      <span class="muted" id="fCount"></span>
+    </div>
+    <div class="formula-list" id="formulaList"></div>
+  </section>
+
+  <section id="cards" class="panel" hidden>
+    <div class="toolbar"><label>Topic <select id="cTopic"></select></label><span class="muted" id="cCount"></span></div>
+    <div class="card flashcard" id="flashcard">
+      <div class="eyebrow" id="cKicker"></div>
+      <div class="front" id="cFront"></div>
+      <div id="cBack" hidden></div>
+      <div class="flash-actions">
+        <button class="primary" type="button" id="cShow">Show formula <kbd>space</kbd></button>
+        <button class="ghost" type="button" id="cMiss" hidden>Missed it <kbd>1</kbd></button>
+        <button class="primary" type="button" id="cGot" hidden>Knew it <kbd>2</kbd></button>
+      </div>
+    </div>
+  </section>
+
+  <section id="missed" class="panel" hidden>
+    <p class="muted">Problems you missed or gave up on, until you get them right.</p>
+    <div id="missedCard"></div>
+  </section>
+
+  <section id="progress" class="panel" hidden>
+    <div class="summary" id="summary"></div>
+    <h2>Drills</h2>
+    <div class="table-wrap" id="skillTable"></div>
+    <h2>Flash anzan</h2>
+    <div class="table-wrap" id="anzanTable"></div>
+    <h2>Flashcards</h2>
+    <div class="table-wrap" id="cardTable"></div>
+    <div class="transfer">
+      <button class="ghost" type="button" id="exportBtn">Export progress</button>
+      <button class="ghost" type="button" id="importBtn">Import progress</button>
+      <button class="ghost" type="button" id="resetBtn">Start over</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+    </div>
+    <p class="muted" id="transferNote">Progress is saved in this browser only. Export it to move it to another device; importing replaces what is saved here.</p>
+  </section>
+</section>
+</main>
+<footer>MATH BOWL &middot; SCHOLARS BOWL PRACTICE</footer>
+</body>
+</html>

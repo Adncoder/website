@@ -158,11 +158,17 @@ redeploy.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
+| `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice, with physics as its own mode. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
+| `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
+| `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks and months, checking what an add-on sends, ranks and streaks, codes and their hashes |
+| `server/kshsaa/anki-addon/` | The Anki add-on, in Python: `stats.py` counts each day from Anki's review log, `client.py` sends the counts, `__init__.py` wires both into Anki. `test_stats.py` tests the counting and stays out of the download |
+| `server/kshsaa/zip.js` | Writes the zip the add-on downloads as (an `.ankiaddon` is a zip) |
+| `server/kshsaa/rebounds.js` | Which right answers came after every other team had missed, which celerity leaves out |
 | `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round). Serves the page only |
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js`, `test/kshsaa-same-answer.test.js`, `test/kshsaa-split-answers.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, and the archive repair under `node --test` |
+| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, the Anki leaderboard and zip writer, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` and `anki-board.js` are files of their own |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
@@ -170,12 +176,12 @@ redeploy.
 | `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser, and their replacement tossups. `npm test` runs it in Node, so it imports nothing but `same-answer.js` |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
-| `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
+| `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level, and each tournament, plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
 | `server/kshsaa/squad-plan.js` | Reads and writes the Roster tab's squad plan: squads, pools, and which pools fill each squad's rotating spots |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
 | `tools/seed-generated-questions.js`, `tools/seed-year-in-review.js` | Load the question bank's review queue: computed math and science, and hand-written Year in Review by level. Dry run unless `--write` |
-| `tools/repair-kshsaa-questions.js` | Repairs the archive questions the packet parser broke, saving each record to `kshsaa_repair_backup` first. Dry run unless `--write`; `--undo --write` puts everything back |
+| `tools/repair-kshsaa-questions.js` | Repairs the archive questions the packet parser broke, and corrects the answer keys the packets got wrong (`WRONG_KEYS`), saving each record to `kshsaa_repair_backup` first. Dry run unless `--write`; `--undo --write` puts everything back |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -248,6 +254,12 @@ with no answer (`ANSWERED` in `kshsaa-round.js`): before the repair that is
 every one whose answer is still in its question text, and after it the 33
 whose answer is nowhere in the data.
 
+A few keys are wrong in the packets themselves: KSHSAA 2004-2005 State keys
+a 3 volt battery across 36 ohms as 108 amperes, where the current is 1/12 of
+an amp. The tool's `WRONG_KEYS` list corrects these the same way, finding each
+by set and question so a re-import is caught again. To fix another, work the
+answer out, add it to the list, and run the tool.
+
 Year in Review uses only questions written this calendar year or last. The year
 comes from the set name (the spring year of a `24-25` season, else the latest
 year in the name), because imported sets store a placeholder `set.year`; only
@@ -294,11 +306,12 @@ answers, and counts its pick as read. Once a game is saved its questions stay
 as they are.
 
 Every page puts `${KSHSAA_HEAD}` in its `<head>` and `${kshsaaNav('/kshsaa-…')}`
-at the top of the body; change the bar there, not in a page. The Spanish
-practice page is a static file and keeps its own copy, and the QBReader navbar's
-KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has three
-sections; the other pages are tabs inside one, and pass that section's path to
-`kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
+at the top of the body; change the bar there, not in a page. The Spanish and
+math practice pages are static files and keep their own copies, and the QBReader
+navbar's KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has
+five sections (Read a round, Stats, Spanish practice, Math practice, Anki
+leaderboard); the other pages are tabs inside one, and pass that section's path
+to `kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
 (`readTabs()` from `nav.js`), and Insights, Tournaments, and the question bank
 are tabs under Stats, whose tab lists are written out in each of those
 pages.
@@ -497,6 +510,73 @@ the other one by that much. MODAQ's buzz menu opens a player's Correct and
 Wrong on hover, which scripted clicks do not do; focus the player's menu item
 and send it ArrowRight.
 
+### Math practice
+
+`/kshsaa-math/` is a static page like Spanish practice: no server code, no
+build, and progress in the browser's `localStorage` (export and import move
+it). Its files are real browser modules, so the template-literal trap above
+does not apply and lint reads them as code. KaTeX draws the math, imported from
+jsdelivr; without it the TeX shows as written.
+
+Every problem is made fresh from a seeded random generator, and its answer is
+computed, never looked up. A skill in `client/kshsaa-math/drills/` returns
+`{ prompt, answer, steps, data }`: text with TeX between double square brackets
+(`tex.js`; double brackets so a template's `${}` never collides with them), an
+exact answer, and the numbers it was built from. `npm test` makes 250 problems
+of every skill and works each answer out a second way from `data` (counting,
+brute force, coordinates, numeric calculus), so a new skill needs an entry in
+`SECOND_WAY` in `test/kshsaa-math.test.js` or the tests fail. Each skill's
+`seconds` is the time KSHSAA would give a question like it (checked against the
+archive's 1,220 math questions: 10, 30, 45, 60, 90).
+
+`exact.js` keeps answers as (n/d)·√r·π^k in lowest terms, so 6/8, 0.75, √12,
+and 2√3 compare as they should, and reads what people type: "9 sqrt 3",
+"9 radical 3", "3 1/5", "negative 1/32", "(2, -5)", units and all. A decimal
+counts when it is right to the places typed (two or more). An answer asked for
+as a fraction carries `form: 'fraction'`, and a decimal for it is turned back
+rather than marked wrong.
+
+Physics (`drills/physics.js`, five topics named "Physics: …") has its own mode,
+like speed tricks, and stays out of the math drills; its formulas are on the
+same sheet. It is written the way the archive's 240 numeric physics questions
+are: each one says which g to use, 9.8 or 10 m/s², and most get 30 seconds. Its
+answers are still exact (9.8 is 49/5) but shown as decimals (`decimal: true`,
+which `skills.js` adds to every physics problem): 137.2 N, not 686/5, and one
+that never ends with its value to three figures beside it. Typed units come off
+before an answer is read, compound ones whole, so "14 m/s" is never m divided
+by s. A box at rest on a ramp has friction mg sin θ, not μN; the ramp drill
+teaches exactly that.
+
+### Anki leaderboard
+
+Players install the add-on from `/kshsaa-anki/addon` (the zip is built per
+download, with this site's address written into its `config.json`) and paste a
+code. The add-on counts each Anki day from the review log: a review is any
+answer, counted every time, which is what Anki shows as "studied N cards
+today", and rescheduling by hand is not one. It sends the last 60 days when
+Anki opens, after studying, and after each sync, so a missed send fills itself
+in and phone reviews count once the computer's Anki syncs them. The server
+takes the days with reviews, deletes any other stored day in the window the
+add-on looked at (`from`), and ranks by reviews, ties sharing a rank. Weeks run
+Monday to Sunday and days are the player's own Anki days, labeled with the date
+they began.
+
+Codes are 12 characters from an alphabet without 0, O, 1, or I, stored only as
+SHA-256 hashes: a lost code is replaced (the old one stops working, in the
+add-on and on the board), never looked up. The board is not public: a player
+signs in with their code, or anyone with a stats or reader sign-in sees it, and
+only the stats password manages players and prizes. The add-on's "Open the
+leaderboard" passes the code after the `#`, which never reaches the server's
+logs, and the page signs in with it and takes it out of the address. Wrong codes
+are capped per address and sends per player.
+
+Every Anki name the add-on uses (its hooks, `QueryOp`, `day_cutoff`, the Tools
+menu) was checked to exist in Anki 26.5's own files; older versions were not
+checked, and the page asks for 2.1.50 or newer. Test the counting with
+`python -m unittest test_stats` in `server/kshsaa/anki-addon/`.
+The add-on cannot be run outside Anki, so try a change in a throwaway profile
+(`anki -b <empty folder>`), never in a player's own.
+
 ### Sign-in
 
 Two passwords, both server environment variables. `STATS_PASSWORD` opens
@@ -535,6 +615,17 @@ Celerity is accumulated **only on correct buzzes**, matching qbreader's
 lucky early buzz tops the board — so the players table defaults to points per
 question.
 
+Celerity also leaves out **rebounds**: right answers given after every other
+team had already missed (`reboundsIn` in `server/kshsaa/rebounds.js`). Under
+KSHSAA rules a team that interrupts and misses loses 5 and the question goes to
+the other team, which then has no reason to interrupt and waits for the end, so
+where that answer came says nothing about how early the player knew it. With
+three or more teams, an answer after only some of them missed was still a race
+and counts. The rule is the same for the Stats table, Insights' "late" habit,
+and the question difficulty table's buzz point, and either order of stored
+buzzes works (the reader stores the right answer first, the tournament grid
+the wrong one).
+
 A player is credited with a game, and its questions heard, for being on a
 team's list with tossups heard — buzzing is not required. Every wrong answer
 counts against buzz accuracy, the 0-point ones included; `negs` counts only −5s.
@@ -560,6 +651,26 @@ team builder's "On questions at" names. A category is flagged "work on" when
 the player got at most 60% of the answers their own usual level would have in
 those rooms, at least 1.5 short, and is below the team there, so players weak
 everywhere do not get arbitrary flags.
+
+D is set by whatever decides how hard the questions were: the level, for
+practice games (each level reads its own pools), and the tournament itself,
+for tournament games, since a tournament's writers set its difficulty whatever
+level it was entered as. A tournament is the same name at the same level in the
+same school year (`tournamentOf`). Its D is fitted the same way as a level's,
+from how often nobody answered given who was in the room, plus `EVENT_PRIOR`
+(16) questions as hard as its label's typical tournament (that label's
+tournaments taken together). Our players' strengths come from practice as well,
+which is what puts a tournament's D on the same scale, so a player who swept an
+easy tournament does not come out stronger for it. D = 1 is varsity practice;
+with no practice games in the filters it is the typical varsity tournament
+(`referencePractice`), and then JV and varsity tournaments cannot be compared,
+having no players in common. Insights lists each tournament's D and how many
+of 16 the team's average player would answer alone there. With no tournament
+games stored, every number is what it was before this rule: comparing the two
+versions on the real games (2026-11-17) changed none of 5,978 numbers.
+`EVENT_PRIOR` was picked by simulating seasons of tournaments over the real
+practice games; refit it by predicting each tournament game from the others
+once ten or so tournaments are in.
 
 On the Overview, squad chips toggle, so several can be on at once, and a
 checkbox on each player adds anyone to the group or takes them off a picked
@@ -647,7 +758,9 @@ PORT=3028 STATS_PASSWORD=claude-test-pw node server.js
 Use a throwaway password rather than the real one from `.env`. Lint passing is
 not verification for these pages: load the page, generate a round, and click the
 flow you changed. For layout work, assert measured element rects rather than
-eyeballing a screenshot.
+eyeballing a screenshot. On a network that inspects TLS, MongoDB fails with
+"unable to verify the first certificate"; add `--use-system-ca` to `node`, as
+`npm run dev:local` does.
 
 ## How to Approach a Task
 

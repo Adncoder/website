@@ -30,9 +30,20 @@
 // answers there count neither for nor against them, and a tossup one of them
 // answered is skipped, since a JV player who knew it would have been racing
 // them at the end.
+//
+// D is set by what decides how hard the questions were. In practice that is
+// the level (varsity, JV, beginner): our rounds draw each level from its own
+// pools. A tournament's questions are whatever its writers wrote, whatever the
+// level on its flyer, so each tournament gets its own D, measured the same
+// way, from how often nobody answered given who was in the room. Our players
+// come into tournaments with strengths their practice games already measure,
+// which is what ties a tournament's D to the same scale. A tournament is
+// pulled toward the typical tournament of its label (every tossup of every
+// tournament with that label, together) by EVENT_PRIOR questions' worth, so
+// one odd round does not make it look easy or hard.
 
 import { CATEGORIES, CATEGORY_BY_QUESTION } from '../../routes/kshsaa-round.js';
-import { kindOf, playersInGame } from './game-stats.js';
+import { kindOf, monthKeyOf, playersInGame } from './game-stats.js';
 
 /** Questions per category in a 16-question round. */
 export const WEIGHTS = Object.fromEntries(CATEGORIES.map(c => [c, CATEGORY_BY_QUESTION.filter(x => x === c).length]));
@@ -43,6 +54,9 @@ export const PLAYER_PRIOR = 32;
 export const CATEGORY_PRIOR = 32;
 // a school we play at a tournament starts out as strong as our lineup
 const OPPONENT_PRIOR = 8;
+// a tournament starts out as hard as the typical tournament of its label, by
+// one round's worth: a tournament of six rounds weighs its own six to that one
+export const EVENT_PRIOR = 16;
 // the level every strength is measured against, when its games are in
 const LEVEL_ORDER = ['varsity', 'jv', 'beginner', 'untagged'];
 const MAX_ROUNDS = 500;
@@ -97,16 +111,41 @@ export function soloAnswers (strength, D, worth = 1) {
  */
 
 /**
+ * Which tournament a tournament game was played at: the same name at the same
+ * label in the same school year, so its rounds share one D.
+ * @param {object} g - a stored game
+ * @returns {{key: string, name: string, season: string}}
+ */
+export function tournamentOf (g) {
+  const name = String(g.tournament || 'Tournament').trim().replace(/\s+/g, ' ');
+  const [y, m] = monthKeyOf(g.playedAt).split('-').map(Number);
+  const season = (m >= 8 ? y : y - 1) + '-' + String((m >= 8 ? y + 1 : y) % 100).padStart(2, '0');
+  return { key: [name.toLowerCase(), g.level || 'untagged', season].join('|'), name, season };
+}
+
+/**
+ * @typedef {object} RoomTournament
+ * @property {string} name
+ * @property {string} level - the level it was entered under, or 'untagged'
+ * @property {string} season - the school year, 2026-27
+ * @property {number} games
+ * @property {number} read - tossups that count toward its difficulty
+ * @property {number} answered - of those, answered by somebody
+ * @property {number} difficulty - its D, on the reference level's scale
+ */
+
+/**
  * Fits the model to a set of games.
  * @param {object[]} games - stored games
  * @param {function(string): boolean} isVarsity - whether a player is on a varsity squad or pool
- * @param {{player?: number, category?: number, groupOf?: function(object): string}} [options]
- * @returns {{reference: ?string, difficulty: Object<string, number>, team: number,
+ * @param {{player?: number, category?: number, event?: number, groupOf?: function(object): string}} [options]
+ * @returns {{reference: ?string, referencePractice: boolean, difficulty: Object<string, number>, tournaments: RoomTournament[], team: number,
  *   categoryFactor: Object<string, number>, teamWorth: number, players: Map<string, RoomPlayer>}}
  */
 export function fitRoomModel (games, isVarsity, options = {}) {
   const mP = options.player ?? PLAYER_PRIOR;
   const mC = options.category ?? CATEGORY_PRIOR;
+  const mE = options.event ?? EVENT_PRIOR;
   const C = CATEGORIES.length;
 
   // everyone who can answer: our players by name, and one stand-in for the
@@ -117,7 +156,13 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     if (!byName.has(name)) { byName.set(name, units.length); units.push({ name, opponent: false }); }
     return byName.get(name);
   };
-  const levels = [];
+  // what sets each tossup's D: a practice level, or one tournament
+  const groups = [];
+  const groupIndex = new Map();
+  const groupFor = (key, make) => {
+    if (!groupIndex.has(key)) { groupIndex.set(key, groups.length); groups.push({ ...make(), games: 0 }); }
+    return groupIndex.get(key);
+  };
   const tossups = [];
   const W = [];
   const H = [];
@@ -134,7 +179,11 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     const heard = [...playersInGame(g)].filter(([name]) => !held.has(name));
     const lineup = new Map((g.lineup || []).map(p => [p.name, p]));
     const level = g.level || 'untagged';
-    if (!levels.includes(level)) levels.push(level);
+    const event = kindOf(g) === 'tournament' ? tournamentOf(g) : null;
+    const d = event
+      ? groupFor('event|' + event.key, () => ({ label: level, event: true, name: event.name, season: event.season }))
+      : groupFor('level|' + level, () => ({ label: level, event: false }));
+    groups[d].games++;
     let opponent = -1;
     if ((g.teams || []).some(t => t.opponent)) {
       opponent = units.length;
@@ -175,7 +224,7 @@ export function fitRoomModel (games, isVarsity, options = {}) {
       for (const [u, a] of room) H[u * C + c] += a;
       if (winner !== -1) W[winner * C + c] += 1;
       for (const u of negs) negCount[u]++;
-      tossups.push({ c, level: levels.indexOf(level), room: [...room], winner, negs, group });
+      tossups.push({ c, d, room: [...room], winner, negs, group });
     }
   }
   grow();
@@ -184,8 +233,22 @@ export function fitRoomModel (games, isVarsity, options = {}) {
   const players = units.map((u, i) => i).filter(i => !units[i].opponent);
   const s = new Array(U * C).fill(1);
   const overall = new Array(U).fill(1);
-  const D = levels.map(() => 1);
-  const ref = LEVEL_ORDER.map(l => levels.indexOf(l)).find(i => i !== -1) ?? 0;
+  const D = groups.map(() => 1);
+  const read = groups.map(() => 0);
+  for (const t of tossups) read[t.d]++;
+  // tournaments by the label they were entered under
+  const eventLabels = {};
+  groups.forEach((grp, i) => { if (grp.event) (eventLabels[grp.label] ||= []).push(i); });
+  // each label's tournaments taken together: the typical tournament of that label
+  let pooled = {};
+  const practiceOf = label => groupIndex.get('level|' + label);
+  // a level's D: its practice games', or with none, its tournaments' together
+  const levelD = label => (practiceOf(label) !== undefined ? D[practiceOf(label)] : pooled[label]);
+  // the level every strength is measured against: varsity practice when the
+  // games include it
+  const labels = [...new Set(groups.map(grp => grp.label))];
+  const reference = LEVEL_ORDER.find(l => practiceOf(l) !== undefined) ??
+    LEVEL_ORDER.find(l => labels.includes(l)) ?? labels[0] ?? null;
   let E = new Array(U * C).fill(0);
   let team = 1;
   let factor = new Array(C).fill(1);
@@ -193,12 +256,12 @@ export function fitRoomModel (games, isVarsity, options = {}) {
 
   const exposures = () => {
     E = new Array(U * C).fill(0);
-    const inv = levels.map(() => 0);
+    const inv = groups.map(() => 0);
     for (const t of tossups) {
-      let total = D[t.level];
+      let total = D[t.d];
       for (const [u, a] of t.room) total += a * s[u * C + t.c];
       for (const [u, a] of t.room) E[u * C + t.c] += a / total;
-      inv[t.level] += 1 / total;
+      inv[t.d] += 1 / total;
       t.total = total;
     }
     return inv;
@@ -246,15 +309,27 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     // how hard each level plays: its unanswered tossups over their exposure,
     // plus half a question as hard as the reference level (D = 1 here) so no
     // level comes out 0
-    const none = levels.map(() => 0);
-    for (const t of tossups) if (t.winner === -1) none[t.level]++;
-    levels.forEach((l, i) => { D[i] = (none[i] + 0.5) / (inv[i] + 0.5); });
+    const none = groups.map(() => 0);
+    for (const t of tossups) if (t.winner === -1) none[t.d]++;
+    groups.forEach((grp, i) => { if (!grp.event) D[i] = (none[i] + 0.5) / (inv[i] + 0.5); });
+    // and each tournament: the same, plus EVENT_PRIOR questions as hard as
+    // the typical tournament of its label
+    pooled = {};
+    for (const [label, members] of Object.entries(eventLabels)) {
+      const sum = list => members.reduce((x, i) => x + list[i], 0);
+      pooled[label] = (sum(none) + 0.5) / (sum(inv) + 0.5);
+      for (const i of members) {
+        const prior = mE * inv[i] / read[i];
+        D[i] = (none[i] + prior * pooled[label]) / (inv[i] + prior);
+      }
+    }
 
     // strengths only mean anything against D, so measure them in varsity's
-    const unit = D[ref];
+    const unit = reference === null ? 1 : levelD(reference);
     for (let i = 0; i < s.length; i++) s[i] /= unit;
     for (let u = 0; u < U; u++) overall[u] /= unit;
     for (let i = 0; i < D.length; i++) D[i] /= unit;
+    for (const label of Object.keys(pooled)) pooled[label] /= unit;
 
     let change = 0;
     for (let i = 0; i < s.length; i++) {
@@ -305,9 +380,19 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     }
   }
 
+  const answered = groups.map(() => 0);
+  for (const t of tossups) if (t.winner !== -1) answered[t.d]++;
   return {
-    reference: levels.length ? levels[ref] : null,
-    difficulty: Object.fromEntries(levels.map((l, i) => [l, D[i]])),
+    reference,
+    // whether D = 1 is the reference level's practice games, or (with none in
+    // these games) its typical tournament
+    referencePractice: reference !== null && practiceOf(reference) !== undefined,
+    // each level's D from its practice games, or its tournaments' together
+    // when it has none
+    difficulty: Object.fromEntries(labels.map(label => [label, levelD(label)])),
+    tournaments: groups.flatMap((grp, i) => (grp.event
+      ? [{ name: grp.name, level: grp.label, season: grp.season, games: grp.games, read: read[i], answered: answered[i], difficulty: D[i] }]
+      : [])),
     team,
     categoryFactor: Object.fromEntries(CATEGORIES.map((c, i) => [c, factor[i]])),
     teamWorth,

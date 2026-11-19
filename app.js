@@ -15,6 +15,8 @@ import kshsaaInsightsRouter from './routes/kshsaa-insights.js';
 import kshsaaQuestionsRouter from './routes/kshsaa-questions.js';
 import kshsaaTournamentsRouter from './routes/kshsaa-tournaments.js';
 import kshsaaSpanishRouter from './routes/kshsaa-spanish.js';
+import kshsaaMathRouter from './routes/kshsaa-math.js';
+import kshsaaAnkiRouter from './routes/kshsaa-anki.js';
 
 import cookieSession from 'cookie-session';
 import express from 'express';
@@ -64,6 +66,8 @@ app.use('/kshsaa-insights', kshsaaInsightsRouter);
 app.use('/kshsaa-questions', kshsaaQuestionsRouter);
 app.use('/kshsaa-tournaments', kshsaaTournamentsRouter);
 app.use('/kshsaa-spanish', kshsaaSpanishRouter);
+app.use('/kshsaa-math', kshsaaMathRouter);
+app.use('/kshsaa-anki', kshsaaAnkiRouter);
 app.use(indexRouter);
 
 export default app;
