@@ -549,9 +549,28 @@ teaches exactly that.
 
 ### Anki leaderboard
 
-Players install the add-on from `/kshsaa-anki/addon` (the zip is built per
-download, with this site's address written into its `config.json`) and paste a
-code. The add-on counts each Anki day from the review log: a review is any
+Players install the add-on from AnkiWeb and paste a code. In Anki they choose
+Tools > Add-ons > Get Add-ons and paste the number in `ANKIWEB_ID`
+(`routes/kshsaa-anki.js`). The add-on is listed as "Automatic Card Counts" at
+https://ankiweb.net/shared/info/1953309465, so a new version reaches players as
+an Anki update. `/kshsaa-anki/addon` builds the same add-on as a file: an
+`.ankiaddon` zip, built per download, with the address it was downloaded from
+written into its `config.json`. The page offers the file as a fallback, and it
+is also the file uploaded to AnkiWeb.
+
+To release a change to the add-on:
+1. Bump `VERSION` in `client.py`, then merge and deploy.
+2. Download `/kshsaa-anki/addon` from the main site's address, not a backup
+   host's.
+3. Upload it to the AnkiWeb listing as a new version. That takes the AnkiWeb
+   account it was first uploaded from.
+
+Keep AnkiWeb's minimum version at 2.1.50, like the page. Entering a code saves
+the whole config, address included, in the player's `meta.json`, and Anki keeps
+saved values over a new default. So moving the site to a new address first
+needs a version that reads `server` from `config.json` only.
+
+The add-on counts each Anki day from the review log: a review is any
 answer, counted every time, which is what Anki shows as "studied N cards
 today", and rescheduling by hand is not one. It sends the last 60 days when
 Anki opens, after studying, and after each sync, so a missed send fills itself
