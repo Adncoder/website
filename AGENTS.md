@@ -171,7 +171,7 @@ redeploy.
 | `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser, and their replacement tossups. `npm test` runs it in Node, so it imports nothing but `same-answer.js` |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
-| `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
+| `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level, and each tournament, plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
 | `server/kshsaa/squad-plan.js` | Reads and writes the Roster tab's squad plan: squads, pools, and which pools fill each squad's rotating spots |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
@@ -572,6 +572,26 @@ team builder's "On questions at" names. A category is flagged "work on" when
 the player got at most 60% of the answers their own usual level would have in
 those rooms, at least 1.5 short, and is below the team there, so players weak
 everywhere do not get arbitrary flags.
+
+D is set by whatever decides how hard the questions were: the level, for
+practice games (each level reads its own pools), and the tournament itself,
+for tournament games, since a tournament's writers set its difficulty whatever
+level it was entered as. A tournament is the same name at the same level in the
+same school year (`tournamentOf`). Its D is fitted the same way as a level's,
+from how often nobody answered given who was in the room, plus `EVENT_PRIOR`
+(16) questions as hard as its label's typical tournament (that label's
+tournaments taken together). Our players' strengths come from practice as well,
+which is what puts a tournament's D on the same scale, so a player who swept an
+easy tournament does not come out stronger for it. D = 1 is varsity practice;
+with no practice games in the filters it is the typical varsity tournament
+(`referencePractice`), and then JV and varsity tournaments cannot be compared,
+having no players in common. Insights lists each tournament's D and how many
+of 16 the team's average player would answer alone there. With no tournament
+games stored, every number is what it was before this rule: comparing the two
+versions on the real games (2026-11-17) changed none of 5,978 numbers.
+`EVENT_PRIOR` was picked by simulating seasons of tournaments over the real
+practice games; refit it by predicting each tournament game from the others
+once ten or so tournaments are in.
 
 On the Overview, squad chips toggle, so several can be on at once, and a
 checkbox on each player adds anyone to the group or takes them off a picked

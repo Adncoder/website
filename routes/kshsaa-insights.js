@@ -232,6 +232,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     <p class="note">Buzz point: how much of the question was left when the right answer came (1.00 is the first word).
     Spread: how much that varied &mdash; a high spread means questions swing between easy and hard.
     Both leave out answers given after the other team missed: nobody was left to race, so a good team waits for the end.</p>
+    <div id="tournamentDifficulty"></div>
     <div id="dead"></div>
   </div>
 </div>
@@ -915,6 +916,30 @@ $('printFocus').onclick = printFocus;
 
 // ---------- question difficulty ----------
 
+// Each tournament's own difficulty from the room model, easiest first: a
+// varsity tournament that read middle school questions shows up at the top.
+function renderTournaments () {
+  var list = (DATA.tournaments || []).slice().sort(function (a, b) { return a.difficulty - b.difficulty; });
+  if (!list.length) { $('tournamentDifficulty').innerHTML = ''; return; }
+  // with no practice games in the filters, the scale is the level's typical tournament
+  var ref = DATA.referencePractice ? levelName(DATA.reference) + ' practice' : 'the typical ' + levelName(DATA.reference) + ' tournament';
+  $('tournamentDifficulty').innerHTML = '<h2>How hard each tournament played</h2>' +
+    '<div class="card"><div class="card-body p-0"><div class="table-responsive">' +
+    '<table class="table table-sm align-middle mb-0"><thead><tr><th>Tournament</th><th>Entered as</th><th class="num">Games</th>' +
+    '<th class="num">Answered by anyone</th><th class="num">Difficulty</th><th class="num">Our average player</th></tr></thead><tbody>' +
+    list.map(function (t) {
+      return '<tr><td>' + esc(t.name) + ' <span class="text-secondary small">' + esc(t.season) + '</span></td>' +
+        '<td>' + esc(levelName(t.level)) + '</td><td class="num">' + t.games + '</td>' +
+        '<td class="num">' + (t.read ? Math.round(100 * t.answered / t.read) : 0) + '%</td>' +
+        '<td class="num">' + t.difficulty.toFixed(2) + '</td><td class="num">' + t.typical.toFixed(1) + ' of 16</td></tr>';
+    }).join('') + '</tbody></table></div></div></div>' +
+    '<p class="note">Difficulty comes from how often nobody answered, given who was in the room: ' + esc(ref) + ' is 1.00, and lower is easier. ' +
+    'Our average player: how many of a round&rsquo;s 16 they would answer with nobody else buzzing' +
+    (DATA.typicalAtReference == null ? '' : ' (' + DATA.typicalAtReference.toFixed(1) + ' at ' + esc(ref) + ')') + '. ' +
+    'Strengths use each tournament&rsquo;s own difficulty, not the level it was entered as, so sweeping an easy tournament counts for less. ' +
+    'A tournament starts out as hard as the typical one entered at its level, by one round&rsquo;s worth, so a few rounds say less than many.</p>';
+}
+
 function levelName (key) {
   var hit = DATA.levels.filter(function (l) { return l.key === key; })[0];
   return hit ? hit.label : 'Untagged';
@@ -930,6 +955,7 @@ function renderDifficulty () {
         '<td class="num">' + (r.spread == null ? '-' : r.spread.toFixed(2)) + '</td></tr>';
     }).join('')
     : '<tr><td colspan="7" class="text-secondary small">No games in these filters recorded their questions yet.</td></tr>';
+  renderTournaments();
   var dead = DATA.questions.dead;
   $('dead').innerHTML = dead.length
     ? '<h2>Questions nobody answered</h2><div class="card"><div class="card-body p-0"><div class="table-responsive">' +

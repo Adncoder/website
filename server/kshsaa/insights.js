@@ -145,11 +145,20 @@ export function computeInsights (allGames, filters, questionInfo, isVarsity) {
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
+  // the team's average player, to say how hard a D is in answers of 16
+  const average = Object.fromEntries(CATEGORIES.map(c => [c, teamIn(c)]));
+  const typicalAt = D => +soloAnswers(average, D, model.teamWorth).toFixed(1);
+
   return {
     gamesUsed: games.length,
     // how hard each level plays, with the reference level at 1
     difficulty: Object.fromEntries(Object.entries(model.difficulty).map(([l, d]) => [l, round4(d)])),
     reference: model.reference,
+    // each tournament's own D, and how many of 16 the team's average player
+    // would answer alone there, against the same at the reference level
+    tournaments: model.tournaments.map(t => ({ ...t, difficulty: round4(t.difficulty), typical: typicalAt(t.difficulty) })),
+    referencePractice: model.referencePractice,
+    typicalAtReference: model.reference ? typicalAt(model.difficulty[model.reference]) : null,
     // the team's average strength in each category, and answer worth
     teamStrength: Object.fromEntries(CATEGORIES.map(c => [c, round4(teamIn(c))])),
     teamWorth: round4(model.teamWorth),
