@@ -19,6 +19,7 @@ import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
+import { reboundsIn } from '../server/kshsaa/rebounds.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
 import { formatSquadPlan, parseSquadPlan } from '../server/kshsaa/squad-plan.js';
@@ -797,11 +798,17 @@ function emptyTotals () {
   return { games: new Set(), heard: 0, correct: 0, wrong: 0, negs: 0, points: 0, celSum: 0, celCount: 0 };
 }
 
-function addBuzz (t, b) {
+/**
+ * @param {object} t - totals from emptyTotals()
+ * @param {object} b - a buzz
+ * @param {boolean} rebound - whether every other team had already missed it
+ */
+function addBuzz (t, b, rebound) {
   if (b.value > 0) {
     t.correct++;
-    // celerity is only meaningful on a correct buzz, same as qbreader
-    const c = celerityOf(b.wordIndex, b.wordCount);
+    // celerity is only meaningful on a correct buzz, same as qbreader, and
+    // only when somebody was still racing for it (see reboundsIn)
+    const c = rebound ? null : celerityOf(b.wordIndex, b.wordCount);
     if (c != null) { t.celSum += c; t.celCount++; }
   } else {
     // every wrong answer counts against accuracy, penalized or not
@@ -881,10 +888,11 @@ router.get('/data', requireAuth, async (req, res) => {
       if (main) p.perGame[gid] = { id: gid, label: g.label + ' (' + new Date(g.playedAt).toLocaleDateString() + ')', points: 0 };
     }
 
+    const rebounds = reboundsIn(g);
     for (const b of g.buzzes || []) {
       if (!b.player) continue; // the other school, in a tournament game
       const p = playerFor(b.player);
-      for (const t of bucketsFor(p)) addBuzz(t, b);
+      for (const t of bucketsFor(p)) addBuzz(t, b, rebounds.has(b));
       if (main) {
         const pc = p.byCategory[b.category] || (p.byCategory[b.category] = { correct: 0, wrong: 0 });
         if (b.value > 0) pc.correct++; else pc.wrong++;
@@ -1167,7 +1175,7 @@ var SORT_COLS = [
   { key: 'ppth', label: 'Points/question', tip: 'Points per tossup heard' },
   { key: 'adjusted', label: 'Adjusted', tip: 'Room-adjusted: how many of a 16-question round they would answer with nobody else buzzing' },
   { key: 'accuracy', label: 'Buzz accuracy', tip: 'Share of buzzes answered correctly, counting every wrong answer' },
-  { key: 'celerity', label: 'Celerity', tip: 'How early correct buzzes came: 1.000 is the first word, 0 the last' }
+  { key: 'celerity', label: 'Celerity', tip: 'How early correct buzzes came: 1.000 is the first word, 0 the last. Leaves out answers given after the other team missed, when nobody was left to race' }
 ];
 var RESULTS = [
   { value: 10, label: '+10 correct' },

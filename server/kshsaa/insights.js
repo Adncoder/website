@@ -10,6 +10,7 @@
 
 import { CATEGORIES } from '../../routes/kshsaa-round.js';
 import { celerityOf, monthKeyOf, playersInGame } from './game-stats.js';
+import { reboundsIn } from './rebounds.js';
 import { PLAYER_PRIOR, WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from './room-model.js';
 
 // category questions heard before calling someone strong or weak there
@@ -59,11 +60,14 @@ export function computeInsights (allGames, filters, questionInfo, isVarsity) {
       p.games++;
       p.heard += heard;
     }
+    const rebounds = reboundsIn(g);
     for (const b of g.buzzes || []) {
       if (!b.player || held.has(b.player)) continue; // the other school, or holding back
       const p = playerFor(b.player);
       addBuzz(p, b);
-      if (b.value > 0) {
+      // an answer after the other team missed was not a race, so where it
+      // came says nothing about how early this player buzzes
+      if (b.value > 0 && !rebounds.has(b)) {
         const c = celerityOf(b.wordIndex, b.wordCount);
         if (c != null) p.celerities.push(c);
       }
@@ -167,6 +171,7 @@ function questionDifficulty (games, questionInfo) {
   for (const g of games) {
     if (!Array.isArray(g.questionIds)) continue;
     const level = g.level || 'untagged';
+    const rebounds = reboundsIn(g);
     g.questionIds.slice(0, g.tossupsRead || g.questionIds.length).forEach((id, i) => {
       const info = questionInfo.get(String(id));
       const source = info ? info.source : 'unknown';
@@ -176,7 +181,8 @@ function questionDifficulty (games, questionInfo) {
       grp.read++;
       if (right) {
         grp.answered++;
-        const c = celerityOf(right.wordIndex, right.wordCount);
+        // the buzz point is where a question gets answered in a race
+        const c = rebounds.has(right) ? null : celerityOf(right.wordIndex, right.wordCount);
         if (c != null) grp.celerities.push(c);
       }
       if (buzzes.some(b => b.value < 0)) grp.negged++;

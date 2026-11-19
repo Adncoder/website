@@ -230,7 +230,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <tbody id="difficulty"></tbody></table>
     </div></div></div>
     <p class="note">Buzz point: how much of the question was left when the right answer came (1.00 is the first word).
-    Spread: how much that varied &mdash; a high spread means questions swing between easy and hard.</p>
+    Spread: how much that varied &mdash; a high spread means questions swing between easy and hard.
+    Both leave out answers given after the other team missed: nobody was left to race, so a good team waits for the end.</p>
     <div id="dead"></div>
   </div>
 </div>

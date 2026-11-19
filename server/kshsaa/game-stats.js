@@ -17,7 +17,8 @@ const LEVEL_KEYS = Object.keys(LEVELS);
  * qbreader measures that in characters; a word index is proportional to it and
  * is what MODAQ gives us, so use the word position against the buzzable-word
  * count the reader sent. Returns null when the denominator is unknown, which is
- * the case for games exported from MODAQ somewhere else.
+ * the case for games exported from MODAQ somewhere else. Callers leave out the
+ * answers in reboundsIn() (rebounds.js).
  * @param {?number} wordIndex
  * @param {?number} wordCount
  * @returns {?number}

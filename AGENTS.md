@@ -158,11 +158,12 @@ redeploy.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
+| `server/kshsaa/rebounds.js` | Which right answers came after every other team had missed, which celerity leaves out |
 | `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round). Serves the page only |
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-arcade.test.js`, `test/kshsaa-naqt.test.js`, `test/kshsaa-same-answer.test.js`, `test/kshsaa-split-answers.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, and the archive repair under `node --test` |
+| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, and rebounds under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` is a file of its own |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
@@ -535,6 +536,17 @@ Celerity is accumulated **only on correct buzzes**, matching qbreader's
 lucky early buzz tops the board — so the players table defaults to points per
 question.
 
+Celerity also leaves out **rebounds**: right answers given after every other
+team had already missed (`reboundsIn` in `server/kshsaa/rebounds.js`). Under
+KSHSAA rules a team that interrupts and misses loses 5 and the question goes to
+the other team, which then has no reason to interrupt and waits for the end, so
+where that answer came says nothing about how early the player knew it. With
+three or more teams, an answer after only some of them missed was still a race
+and counts. The rule is the same for the Stats table, Insights' "late" habit,
+and the question difficulty table's buzz point, and either order of stored
+buzzes works (the reader stores the right answer first, the tournament grid
+the wrong one).
+
 A player is credited with a game, and its questions heard, for being on a
 team's list with tossups heard — buzzing is not required. Every wrong answer
 counts against buzz accuracy, the 0-point ones included; `negs` counts only −5s.
@@ -647,7 +659,9 @@ PORT=3028 STATS_PASSWORD=claude-test-pw node server.js
 Use a throwaway password rather than the real one from `.env`. Lint passing is
 not verification for these pages: load the page, generate a round, and click the
 flow you changed. For layout work, assert measured element rects rather than
-eyeballing a screenshot.
+eyeballing a screenshot. On a network that inspects TLS, MongoDB fails with
+"unable to verify the first certificate"; add `--use-system-ca` to `node`, as
+`npm run dev:local` does.
 
 ## How to Approach a Task
 
