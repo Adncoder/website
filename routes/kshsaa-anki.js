@@ -34,6 +34,10 @@ const roster = qbreader.collection('kshsaa_roster');
 const ADDON_DIR = new URL('../server/kshsaa/anki-addon/', import.meta.url);
 // Anki compares this to decide whether a downloaded copy is newer
 const ADDON_MOD = 1795392000;
+// The add-on on AnkiWeb (ankiweb.net/shared/info/1953309465), uploaded from
+// /kshsaa-anki/addon. Players paste this number into Get Add-ons, so a new
+// version reaches them as an Anki update.
+const ANKIWEB_ID = '1953309465';
 
 const text = (v, max) => String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
 
@@ -265,6 +269,7 @@ ${KSHSAA_HEAD}
  .muted{color:#6b778c;font-size:.85rem}
  .code{font:600 1.4rem ui-monospace,Consolas,monospace;letter-spacing:.08em;background:#f1f4f9;border-radius:8px;padding:6px 12px;display:inline-block}
  .steps li{margin-bottom:6px}
+ .addon-id{font:600 1rem ui-monospace,Consolas,monospace;letter-spacing:.04em;background:#f1f4f9;border-radius:6px;padding:1px 7px;user-select:all}
  .table-wrap{overflow-x:auto}
  @media(max-width:640px){.hide-sm{display:none}.board td,.board th{padding:7px 5px}}
 </style></head><body>
@@ -305,11 +310,11 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
   <details class="panel" id="setup">
     <summary class="fw-semibold">Get on the board: install the add-on</summary>
     <ol class="steps mt-3 mb-2">
-      <li><a href="/kshsaa-anki/addon" download>Download the add-on</a> (a small file ending in .ankiaddon).</li>
-      <li>In Anki on a computer, choose Tools &rarr; Add-ons &rarr; Install from file&hellip; and pick it (or double-click the file), then restart Anki.</li>
+      <li>In Anki on a computer, choose Tools &rarr; Add-ons &rarr; Get Add-ons&hellip;, paste <span class="addon-id" id="addonId">${ANKIWEB_ID}</span> <button type="button" class="btn btn-outline-secondary btn-sm py-0" id="copyAddonId">Copy</button>, and restart Anki.</li>
       <li>When Anki asks, paste the code your captain gave you. To change it later: Tools &rarr; Scholars Bowl leaderboard &rarr; Enter my code.</li>
       <li>That's it. Your counts go out when Anki opens, when you finish studying, and after you sync. Studying on a phone counts once you sync on the computer.</li>
     </ol>
+    <p class="muted mb-2">Anki can't reach AnkiWeb? <a href="/kshsaa-anki/addon" download>Download the add-on file</a> and use Tools &rarr; Add-ons &rarr; Install from file&hellip; instead.</p>
     <p class="muted mb-0">Only numbers leave Anki: cards answered, new cards, and minutes for each day. No card text, no deck names. It needs a recent Anki (2.1.50 or newer).</p>
   </details>
 
@@ -481,6 +486,16 @@ $('savePrizes').addEventListener('click', async () => {
   } catch (e) {
     $('prizesMsg').textContent = e.message;
   }
+});
+
+// Copy the AnkiWeb number; where copying is blocked, select it for Ctrl+C
+$('copyAddonId').addEventListener('click', () => {
+  const button = $('copyAddonId');
+  const id = $('addonId').textContent.trim();
+  (navigator.clipboard ? navigator.clipboard.writeText(id) : Promise.reject(new Error('no clipboard'))).then(
+    () => { button.textContent = 'Copied'; },
+    () => { getSelection().selectAllChildren($('addonId')); button.textContent = 'Press Ctrl+C'; }
+  );
 });
 
 // The add-on's Open the leaderboard sends the code after the #, which never
