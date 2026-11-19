@@ -16,6 +16,9 @@
 // A question whose answer is nowhere in the data is listed and left alone;
 // rounds skip questions with no answer (routes/kshsaa-round.js).
 //
+// A few answer keys are wrong in the packets themselves (WRONG_KEYS). Those
+// are corrected too, the same way.
+//
 // USAGE
 //   node tools/repair-kshsaa-questions.js                  # report what it would change
 //   node tools/repair-kshsaa-questions.js --write          # apply
@@ -51,6 +54,19 @@ const sanitize = s => String(s || '')
   .trim();
 const oneLine = s => String(s || '').replace(/\s+/g, ' ').trim();
 const short = (s, n = 90) => { const t = oneLine(s); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
+
+// Answer keys the packets got wrong, worked out by hand. Each is found by set
+// and question, so a re-import is caught again, and changed only while it
+// still has the wrong key.
+const WRONG_KEYS = [
+  {
+    // current is V/R = 3/36 of an amp; the key multiplied
+    set: 'KSHSAA 2004-2005 STATE',
+    question: 'If a 3 volt battery is connected in a circuit with a resistor of 36 ohms, what is the current in the circuit?',
+    wrong: '108 amperes or 108 amps',
+    right: '1/12 of an ampere or 1/12 amp (accept one-twelfth of an amp, 0.083 amperes, 0.083 amps, 83 milliamperes, or 83 milliamps)'
+  }
+];
 
 console.log(argv.write ? 'WRITING to the database' : 'DRY RUN - nothing will be written (pass --write to apply)');
 console.log();
@@ -131,10 +147,22 @@ for (const list of packets.values()) {
   });
 }
 
+// the wrong keys, on whatever the rest of the repair leaves
+const corrected = [];
+for (const fix of WRONG_KEYS) {
+  const hits = [...plans.values()].filter(p => p.record.set?.name === fix.set && p.items.length === 1 && p.items[0].question === fix.question);
+  for (const p of hits.filter(p => p.items[0].answer === fix.wrong)) {
+    p.items = [{ question: p.items[0].question, answer: fix.right }];
+    p.same = false;
+    corrected.push(p);
+  }
+  if (!hits.some(p => p.items[0].answer === fix.right)) console.log('wrong key not found, nothing changed: ' + fix.set + ': ' + short(fix.question, 70) + '\n');
+}
+
 const changed = [...plans.values()].filter(p => !p.same);
 const split = changed.filter(p => p.items.length > 1);
 const found = changed.filter(p => p.items.length === 1 && !oneLine(p.record.answer) && p.items[0].answer);
-const cleaned = changed.filter(p => p.items.length === 1 && oneLine(p.record.answer) && p.items[0].answer);
+const cleaned = changed.filter(p => p.items.length === 1 && oneLine(p.record.answer) && p.items[0].answer && !corrected.includes(p));
 const unanswered = [...plans.values()].filter(p => p.items.some(item => !item.answer));
 const newCount = split.reduce((n, p) => n + p.items.length - 1, 0);
 
@@ -147,6 +175,7 @@ console.log('  run-together, split            : ' + split.length + ' records -> 
 console.log('  answer taken out of the question: ' + found.length);
 console.log('  answer line cleaned            : ' + cleaned.length);
 console.log('  split across records, joined   : ' + joins.length);
+console.log('  wrong answer key corrected     : ' + corrected.length);
 console.log('  already read in a round        : ' + changed.filter(p => usedIds.has(String(p.record._id))).length +
   ' (' + changed.filter(p => played.has(String(p.record._id))).length + ' in saved games)');
 console.log('still no answer anywhere         : ' + unanswered.length + ' (rounds skip these)');
@@ -163,6 +192,8 @@ sample('split', split, p => {
 sample('answer taken out of the question', found, p => console.log('  ' + short(p.items[0].question, 70) + '  ||  ' + short(p.items[0].answer, 40)));
 sample('answer line cleaned', cleaned, p => console.log('  ' + short(p.record.answer, 60) + '  ->  ' + short(p.items[0].answer, 40)));
 sample('joined', joins, p => console.log('  ' + short(p.items[0].question, 110) + '  ||  ' + p.items[0].answer));
+sample('wrong answer key corrected', corrected, p => console.log('  ' + p.record.set.name + ' / ' + (p.record.packet?.name || '?') + ' #' + p.record.number +
+  ' (' + p.record._id + '): ' + p.items[0].question + '\n    was: ' + oneLine(p.record.answer) + '\n    now: ' + p.items[0].answer));
 console.log('\nstill no answer anywhere:');
 unanswered.forEach(p => console.log('  ' + p.record.set.name + ' / ' + (p.record.packet?.name || '?') + ' #' + p.record.number +
   ' (' + p.record._id + '): ' + short(p.items[0].question, 80)));

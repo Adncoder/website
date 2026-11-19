@@ -181,7 +181,7 @@ redeploy.
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
 | `import-kshsaa.js`, `import-beginner.js`, `import-jv.js`, `import-varsity.js`, `import-current-events.js` | Operator scripts that load questions into MongoDB; run by hand with `MONGODB_URI` set. All but the first share `server/kshsaa/qbreader-import.js` |
 | `tools/seed-generated-questions.js`, `tools/seed-year-in-review.js` | Load the question bank's review queue: computed math and science, and hand-written Year in Review by level. Dry run unless `--write` |
-| `tools/repair-kshsaa-questions.js` | Repairs the archive questions the packet parser broke, saving each record to `kshsaa_repair_backup` first. Dry run unless `--write`; `--undo --write` puts everything back |
+| `tools/repair-kshsaa-questions.js` | Repairs the archive questions the packet parser broke, and corrects the answer keys the packets got wrong (`WRONG_KEYS`), saving each record to `kshsaa_repair_backup` first. Dry run unless `--write`; `--undo --write` puts everything back |
 
 Round structure follows the official KSHSAA manual, verified against 117 real
 packets: 1 World Language, 3 Language Arts, 3 Science/Health, 3 Social Studies,
@@ -253,6 +253,12 @@ three uses:"), so run it again after a re-import. Rounds skip any question
 with no answer (`ANSWERED` in `kshsaa-round.js`): before the repair that is
 every one whose answer is still in its question text, and after it the 33
 whose answer is nowhere in the data.
+
+A few keys are wrong in the packets themselves: KSHSAA 2004-2005 State keys
+a 3 volt battery across 36 ohms as 108 amperes, where the current is 1/12 of
+an amp. The tool's `WRONG_KEYS` list corrects these the same way, finding each
+by set and question so a re-import is caught again. To fix another, work the
+answer out, add it to the list, and run the tool.
 
 Year in Review uses only questions written this calendar year or last. The year
 comes from the set name (the spring year of a `24-25` season, else the latest
