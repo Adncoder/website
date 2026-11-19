@@ -159,12 +159,16 @@ redeploy.
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
+| `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
+| `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks and months, checking what an add-on sends, ranks and streaks, codes and their hashes |
+| `server/kshsaa/anki-addon/` | The Anki add-on, in Python: `stats.py` counts each day from Anki's review log, `client.py` sends the counts, `__init__.py` wires both into Anki. `test_stats.py` tests the counting and stays out of the download |
+| `server/kshsaa/zip.js` | Writes the zip the add-on downloads as (an `.ankiaddon` is a zip) |
 | `server/kshsaa/rebounds.js` | Which right answers came after every other team had missed, which celerity leaves out |
 | `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round). Serves the page only |
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` is a file of its own |
+| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, the Anki leaderboard and zip writer, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` and `anki-board.js` are files of their own |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
@@ -299,8 +303,9 @@ Every page puts `${KSHSAA_HEAD}` in its `<head>` and `${kshsaaNav('/kshsaa-…')
 at the top of the body; change the bar there, not in a page. The Spanish and
 math practice pages are static files and keep their own copies, and the QBReader
 navbar's KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has
-four sections (Read a round, Stats, Spanish practice, Math practice); the
-other pages are tabs inside one, and pass that section's path to `kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
+five sections (Read a round, Stats, Spanish practice, Math practice, Anki
+leaderboard); the other pages are tabs inside one, and pass that section's path
+to `kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
 (`readTabs()` from `nav.js`), and Insights, Tournaments, and the question bank
 are tabs under Stats, whose tab lists are written out in each of those
 pages.
@@ -524,6 +529,36 @@ and 2√3 compare as they should, and reads what people type: "9 sqrt 3",
 counts when it is right to the places typed (two or more). An answer asked for
 as a fraction carries `form: 'fraction'`, and a decimal for it is turned back
 rather than marked wrong.
+
+### Anki leaderboard
+
+Players install the add-on from `/kshsaa-anki/addon` (the zip is built per
+download, with this site's address written into its `config.json`) and paste a
+code. The add-on counts each Anki day from the review log: a review is any
+answer, counted every time, which is what Anki shows as "studied N cards
+today", and rescheduling by hand is not one. It sends the last 60 days when
+Anki opens, after studying, and after each sync, so a missed send fills itself
+in and phone reviews count once the computer's Anki syncs them. The server
+takes the days with reviews, deletes any other stored day in the window the
+add-on looked at (`from`), and ranks by reviews, ties sharing a rank. Weeks run
+Monday to Sunday and days are the player's own Anki days, labeled with the date
+they began.
+
+Codes are 12 characters from an alphabet without 0, O, 1, or I, stored only as
+SHA-256 hashes: a lost code is replaced (the old one stops working, in the
+add-on and on the board), never looked up. The board is not public: a player
+signs in with their code, or anyone with a stats or reader sign-in sees it, and
+only the stats password manages players and prizes. The add-on's "Open the
+leaderboard" passes the code after the `#`, which never reaches the server's
+logs, and the page signs in with it and takes it out of the address. Wrong codes
+are capped per address and sends per player.
+
+Every Anki name the add-on uses (its hooks, `QueryOp`, `day_cutoff`, the Tools
+menu) was checked to exist in Anki 26.5's own files; older versions were not
+checked, and the page asks for 2.1.50 or newer. Test the counting with
+`python -m unittest test_stats` in `server/kshsaa/anki-addon/`.
+The add-on cannot be run outside Anki, so try a change in a throwaway profile
+(`anki -b <empty folder>`), never in a player's own.
 
 ### Sign-in
 

@@ -14,7 +14,8 @@ const SECTIONS = [
   ['/kshsaa-play', 'Read a round'],
   ['/kshsaa-stats', 'Stats'],
   ['/kshsaa-spanish/', 'Spanish practice'],
-  ['/kshsaa-math/', 'Math practice']
+  ['/kshsaa-math/', 'Math practice'],
+  ['/kshsaa-anki', 'Anki leaderboard']
 ];
 
 export const KSHSAA_HEAD = `<link rel="icon" href="/kshsaa/logo.svg" type="image/svg+xml">
