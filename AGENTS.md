@@ -158,12 +158,13 @@ redeploy.
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
 | `routes/kshsaa-spanish.js` | Spanish practice |
+| `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
 | `server/kshsaa/rebounds.js` | Which right answers came after every other team had missed, which celerity leaves out |
 | `routes/kshsaa-arcade.js` | Octopus Arcade: Friday fun rounds (`/kshsaa-arcade`, a tab under Read a round). Serves the page only |
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, and rebounds under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` is a file of its own |
+| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` is a file of its own |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
@@ -295,11 +296,11 @@ answers, and counts its pick as read. Once a game is saved its questions stay
 as they are.
 
 Every page puts `${KSHSAA_HEAD}` in its `<head>` and `${kshsaaNav('/kshsaa-…')}`
-at the top of the body; change the bar there, not in a page. The Spanish
-practice page is a static file and keeps its own copy, and the QBReader navbar's
-KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has three
-sections; the other pages are tabs inside one, and pass that section's path to
-`kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
+at the top of the body; change the bar there, not in a page. The Spanish and
+math practice pages are static files and keep their own copies, and the QBReader
+navbar's KSHSAA menu (`client/ssi/nav.html`) lists the same sections. The bar has
+four sections (Read a round, Stats, Spanish practice, Math practice); the
+other pages are tabs inside one, and pass that section's path to `kshsaaNav`. Download packet (`/kshsaa-round`) is a tab under Read a round
 (`readTabs()` from `nav.js`), and Insights, Tournaments, and the question bank
 are tabs under Stats, whose tab lists are written out in each of those
 pages.
@@ -497,6 +498,32 @@ tabs tick their timers once a second, so a clock in the background tab can lag
 the other one by that much. MODAQ's buzz menu opens a player's Correct and
 Wrong on hover, which scripted clicks do not do; focus the player's menu item
 and send it ArrowRight.
+
+### Math practice
+
+`/kshsaa-math/` is a static page like Spanish practice: no server code, no
+build, and progress in the browser's `localStorage` (export and import move
+it). Its files are real browser modules, so the template-literal trap above
+does not apply and lint reads them as code. KaTeX draws the math, imported from
+jsdelivr; without it the TeX shows as written.
+
+Every problem is made fresh from a seeded random generator, and its answer is
+computed, never looked up. A skill in `client/kshsaa-math/drills/` returns
+`{ prompt, answer, steps, data }`: text with TeX between double square brackets
+(`tex.js`; double brackets so a template's `${}` never collides with them), an
+exact answer, and the numbers it was built from. `npm test` makes 250 problems
+of every skill and works each answer out a second way from `data` (counting,
+brute force, coordinates, numeric calculus), so a new skill needs an entry in
+`SECOND_WAY` in `test/kshsaa-math.test.js` or the tests fail. Each skill's
+`seconds` is the time KSHSAA would give a question like it (checked against the
+archive's 1,220 math questions: 10, 30, 45, 60, 90).
+
+`exact.js` keeps answers as (n/d)·√r·π^k in lowest terms, so 6/8, 0.75, √12,
+and 2√3 compare as they should, and reads what people type: "9 sqrt 3",
+"9 radical 3", "3 1/5", "negative 1/32", "(2, -5)", units and all. A decimal
+counts when it is right to the places typed (two or more). An answer asked for
+as a fraction carries `form: 'fraction'`, and a decimal for it is turned back
+rather than marked wrong.
 
 ### Sign-in
 
