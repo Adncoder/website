@@ -48,6 +48,31 @@ export const KINDS = { practice: 'Practice', tournament: 'Tournaments' };
 export const kindOf = g => (g.kind === 'tournament' ? 'tournament' : 'practice');
 
 /**
+ * How a tournament game's other team was kept (tournament-game.js):
+ * 'recorded' question by question, 'unrecorded', or 'chair' when there was no
+ * other team. Games entered before sheets could say are 'recorded'.
+ * @param {object} g - a stored game
+ * @returns {'recorded'|'unrecorded'|'chair'}
+ */
+export const opponentModeOf = g => g.opponentMode || 'recorded';
+
+/**
+ * How a tournament game came out for our team: 'win', 'loss', 'tie', 'chair'
+ * (no other team, so neither), or null when the sheet did not say.
+ * @param {object} g - a stored game
+ * @returns {?('win'|'loss'|'tie'|'chair')}
+ */
+export function resultOf (g) {
+  const mode = opponentModeOf(g);
+  if (mode === 'chair') return 'chair';
+  if (['win', 'loss', 'tie'].includes(g.result)) return g.result;
+  if (mode === 'unrecorded') return null;
+  const us = (g.teams || []).find(t => !t.opponent)?.score ?? 0;
+  const them = (g.teams || []).find(t => t.opponent)?.score ?? 0;
+  return us > them ? 'win' : us < them ? 'loss' : 'tie';
+}
+
+/**
  * The month, level, and practice/tournament filters from a query string,
  * validated, plus tests for a game's month key, level key, and the game itself.
  * @param {object} query - req.query

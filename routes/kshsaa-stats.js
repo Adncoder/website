@@ -18,7 +18,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
-import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters } from '../server/kshsaa/game-stats.js';
+import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters, resultOf } from '../server/kshsaa/game-stats.js';
 import { reboundsIn } from '../server/kshsaa/rebounds.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
@@ -974,7 +974,9 @@ router.get('/data', requireAuth, async (req, res) => {
       heldBack: heldBackIn(g, isVarsity).size,
       playedAt: g.playedAt,
       tossupsRead: g.tossupsRead,
-      teams: (g.teams || []).map(t => ({ name: t.name, score: t.score }))
+      teams: (g.teams || []).map(t => ({ name: t.name, score: t.score ?? null, opponent: Boolean(t.opponent) })),
+      // a tournament sheet may not have the other team's score, or who won
+      result: kindOf(g) === 'tournament' ? resultOf(g) : null
     })),
     players: playerRows,
     categoryNames: CATEGORIES
@@ -1641,13 +1643,22 @@ function gameDays (games) {
   return days;
 }
 
+// each team's score, the winner's highlighted: in a tournament game, by the
+// result stored with it, since a sheet can be missing the other team's score,
+// or have no other team at all (a chair)
+function teamClass (g, t, best, tied) {
+  if (g.kind !== 'tournament') return tied && t.score === best ? 'res-tie' : (t.score === best ? 'res-win' : 'res-loss');
+  if (g.result === 'tie') return 'res-tie';
+  if (g.result !== 'win' && g.result !== 'loss') return '';
+  return (g.result === 'win') === !t.opponent ? 'res-win' : 'res-loss';
+}
+
 function gameRow (g, hidden) {
-  var best = Math.max.apply(null, g.teams.map(function (t) { return t.score; }));
+  var best = Math.max.apply(null, g.teams.map(function (t) { return t.score || 0; }));
   var tied = g.teams.filter(function (t) { return t.score === best; }).length > 1;
   var score = g.teams.map(function (t) {
-    var cls = tied && t.score === best ? 'res-tie' : (t.score === best ? 'res-win' : 'res-loss');
-    return '<span class="res ' + cls + '">' + esc(t.name) + ': <span class="sc">' + t.score + '</span></span>';
-  }).join('');
+    return '<span class="res ' + teamClass(g, t, best, tied) + '">' + esc(t.name) + ': <span class="sc">' + (t.score == null ? '?' : t.score) + '</span></span>';
+  }).join('') + (g.result === 'chair' ? ' <span class="small text-secondary">a chair</span>' : '');
   return '<tr class="rowlink grow"' + (hidden ? ' hidden' : '') + ' data-id="' + g.id + '" title="See scorers, rename, or fix this game">' +
     '<td class="text-secondary ps-4">' + new Date(g.playedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + '</td>' +
     '<td>' + esc(g.label) + (g.kind === 'tournament' ? ' <span class="lvl">Tournament</span>' : '') +

@@ -930,15 +930,25 @@ function renderTournaments () {
     list.map(function (t) {
       return '<tr><td>' + esc(t.name) + ' <span class="text-secondary small">' + esc(t.season) + '</span></td>' +
         '<td>' + esc(levelName(t.level)) + '</td><td class="num">' + t.games + '</td>' +
-        '<td class="num">' + (t.read ? Math.round(100 * t.answered / t.read) : 0) + '%</td>' +
-        '<td class="num">' + t.difficulty.toFixed(2) + '</td><td class="num">' + t.typical.toFixed(1) + ' of 16</td></tr>';
+        '<td class="num">' + (t.estimated ? '&asymp;' : '') + (t.read ? Math.round(100 * t.answered / t.read) : 0) + '%</td>' +
+        '<td class="num">' + (guessed(t) ? '&asymp;' : '') + t.difficulty.toFixed(2) + '</td><td class="num">' + t.typical.toFixed(1) + ' of 16</td></tr>';
     }).join('') + '</tbody></table></div></div></div>' +
     '<p class="note">Difficulty comes from how often nobody answered, given who was in the room: ' + esc(ref) + ' is 1.00, and lower is easier. ' +
     'Our average player: how many of a round&rsquo;s 16 they would answer with nobody else buzzing' +
     (DATA.typicalAtReference == null ? '' : ' (' + DATA.typicalAtReference.toFixed(1) + ' at ' + esc(ref) + ')') + '. ' +
     'Strengths use each tournament&rsquo;s own difficulty, not the level it was entered as, so sweeping an easy tournament counts for less. ' +
-    'A tournament starts out as hard as the typical one entered at its level, by one round&rsquo;s worth, so a few rounds say less than many.</p>';
+    'A tournament starts out as hard as the typical one entered at its level, by one round&rsquo;s worth, so a few rounds say less than many.' +
+    (list.some(function (t) { return t.estimated; })
+      ? ' &asymp;: some of its sheets have no record of the other team&rsquo;s points, so whether anyone answered the questions we missed there is estimated.'
+      : '') +
+    (list.some(guessed)
+      ? ' On a difficulty, &asymp; means none of its sheets has the other team&rsquo;s points: it assumes the schools we played were as strong as our lineup, so take it as a rough guess.'
+      : '') + '</p>';
 }
+
+// a tournament none of whose sheets has the other team's side, so its
+// difficulty is an assumption (room-model.js), not a measurement
+function guessed (t) { return t.unrecordedGames > 0 && t.unrecordedGames === t.games; }
 
 function levelName (key) {
   var hit = DATA.levels.filter(function (l) { return l.key === key; })[0];
