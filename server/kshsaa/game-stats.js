@@ -7,7 +7,7 @@
 // paper scoresheet afterwards (kind: 'tournament'): one team is ours, and the
 // other team's buzzes carry no player, since we only know that they answered.
 
-import { LEVELS } from '../../routes/kshsaa-round.js';
+import { LEVELS } from './round-shape.js';
 
 const LEVEL_KEYS = Object.keys(LEVELS);
 

@@ -42,7 +42,7 @@
 // tournament with that label, together) by EVENT_PRIOR questions' worth, so
 // one odd round does not make it look easy or hard.
 
-import { CATEGORIES, CATEGORY_BY_QUESTION } from '../../routes/kshsaa-round.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION } from './round-shape.js';
 import { kindOf, monthKeyOf, playersInGame } from './game-stats.js';
 
 /** Questions per category in a 16-question round. */

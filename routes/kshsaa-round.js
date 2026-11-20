@@ -21,6 +21,9 @@ import { tossups } from '../database/qbreader/collections.js';
 import mathTierOf, { MATH_TIERS, isComputation } from '../server/kshsaa/math-tier.js';
 import languageTierOf from '../server/kshsaa/language-tier.js';
 import { KSHSAA_HEAD, kshsaaNav, readTabs } from '../server/kshsaa/nav.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, ROUND_SHAPE } from '../server/kshsaa/round-shape.js';
+
+export { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS };
 
 const router = Router();
 
@@ -48,24 +51,22 @@ const NOT_A_LANGUAGE_QUESTION = { $nor: [{ $and: THREE_LANGUAGES }] };
 // is run, hundreds more whose answer is still inside the question text.
 const ANSWERED = { answer_sanitized: { $nin: [null, ''] } };
 
-// [label, count, filter] - official KSHSAA round shape, 16 questions
-const DISTRIBUTION = [
-  ['World Language', 1, {
+// Where each category's questions come from
+const FILTER = {
+  'World Language': {
     kshsaa_category: { $regex: 'foreign language|world language', $options: 'i' },
     ...IS_LANGUAGE_QUESTION
-  }],
-  ['Language Arts', 3, { category: 'Literature', ...NOT_A_LANGUAGE_QUESTION }],
-  ['Science/Health', 3, { category: 'Science', alternate_subcategory: { $ne: 'Math' }, ...NOT_A_LANGUAGE_QUESTION }],
-  ['Social Studies', 3, { category: 'Social Science', ...NOT_A_LANGUAGE_QUESTION }],
-  ['Mathematics', 3, { alternate_subcategory: 'Math', ...NOT_A_LANGUAGE_QUESTION }],
-  ['Fine Arts', 2, { category: 'Fine Arts', ...NOT_A_LANGUAGE_QUESTION }],
-  ['Year in Review', 1, { category: 'Current Events', ...NOT_A_LANGUAGE_QUESTION }]
-];
+  },
+  'Language Arts': { category: 'Literature', ...NOT_A_LANGUAGE_QUESTION },
+  'Science/Health': { category: 'Science', alternate_subcategory: { $ne: 'Math' }, ...NOT_A_LANGUAGE_QUESTION },
+  'Social Studies': { category: 'Social Science', ...NOT_A_LANGUAGE_QUESTION },
+  Mathematics: { alternate_subcategory: 'Math', ...NOT_A_LANGUAGE_QUESTION },
+  'Fine Arts': { category: 'Fine Arts', ...NOT_A_LANGUAGE_QUESTION },
+  'Year in Review': { category: 'Current Events', ...NOT_A_LANGUAGE_QUESTION }
+};
 
-/** Category label of every slot in a full round, in reading order. */
-export const CATEGORY_BY_QUESTION = DISTRIBUTION.flatMap(([label, count]) => Array(count).fill(label));
-/** Category labels in reading order, deduplicated. */
-export const CATEGORIES = DISTRIBUTION.map(([label]) => label);
+// [label, count, filter] - the official KSHSAA round shape (round-shape.js), 16 questions
+const DISTRIBUTION = ROUND_SHAPE.map(([label, count]) => [label, count, FILTER[label]]);
 
 // Every question these pages use was imported with kshsaaImport: true, and its
 // set name says where it came from. Anything without one of these prefixes is
@@ -88,45 +89,8 @@ export function sourceOf (setName) {
   return Object.keys(SET_PREFIX).find(key => name.startsWith(SET_PREFIX[key])) || 'kshsaa';
 }
 
-// Question pools for each level, most preferred first. What rises is how hard
-// the clues are and how many of them there are: the giveaway lines of middle
-// school quizbowl (Beginner), the last two sentences of easy high school
-// quizbowl (JV), and the last two to four of regular high school quizbowl,
-// with converted quizbowl and then the real KSHSAA archive -- past state and
-// regional rounds -- behind them (Varsity). A later pool is used only once
-// the earlier ones have nothing unread left in a category: the giveaway and
-// converted sets have no World Language and next to no math, so those slots
-// come from the KSHSAA archive at every level. The current-events import
-// (import-current-events.js) holds nothing but recent Year in Review
-// questions, so every level reads it first. Approved question bank questions
-// (mostly computed math) sit alongside the archive at every level.
-//
-// Math and World Language are also sorted into tiers (math-tier.js,
-// language-tier.js), and each level reads only its own: `math` and `language`
-// below. The reader's math menu can override `math`. Year in Review questions
-// written for the question bank carry the level they were written for
-// (`kshsaa_level`), and each level reads its own plus the ones written for
-// none, which is every imported one.
-export const LEVELS = {
-  varsity: {
-    label: 'Varsity',
-    pools: [['varsity', 'converted', 'current'], ['kshsaa', 'generated']],
-    math: ['basic', 'intermediate', 'advanced'],
-    language: ['intermediate', 'advanced']
-  },
-  jv: {
-    label: 'JV',
-    pools: [['jv', 'current'], ['kshsaa', 'generated'], ['converted']],
-    math: ['basic', 'intermediate'],
-    language: ['basic', 'intermediate']
-  },
-  beginner: {
-    label: 'Beginner',
-    pools: [['beginner', 'current'], ['jv'], ['kshsaa', 'generated'], ['converted']],
-    math: ['basic'],
-    language: ['basic']
-  }
-};
+// LEVELS (round-shape.js) holds each level's pools, most preferred first, and
+// the math and World Language tiers it reads.
 
 /**
  * The level a Year in Review question was written for, or 'any'.
