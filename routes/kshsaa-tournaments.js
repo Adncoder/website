@@ -17,7 +17,8 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
 import { getSquads, nameCanonicalizer, requireAuth } from './kshsaa-stats.js';
-import { cleanNotes, kindOf, monthKeyOf, monthLabel, seasonStartKey } from '../server/kshsaa/game-stats.js';
+import { kindOf, monthKeyOf, monthLabel, opponentModeOf, resultOf, seasonStartKey } from '../server/kshsaa/game-stats.js';
+import { MAX_QUESTIONS, SLOTS, tournamentGame } from '../server/kshsaa/tournament-game.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -25,108 +26,9 @@ const router = Router();
 const games = qbreader.collection('kshsaa_games');
 const roster = qbreader.collection('kshsaa_roster');
 
-// player slots on the scoresheet: five starters and a sub
-const SLOTS = 6;
-
-const text = (v, max) => String(v ?? '').trim().slice(0, max);
-
-/**
- * A game from the entry grid, checked and turned into the stored shape. Throws
- * with a message for whoever is typing it in.
- * @param {object} body - { tournament, date, level, round, team, opponent,
- *   players: [{name, from, to}], questions: [{category, us: {player, value} | null, them: 10 | -5 | null}],
- *   notes: [{questionNumber, player, text}] }
- * @param {function(string): string} fix - name canonicalizer
- */
-function tournamentGame (body, fix) {
-  const tournament = text(body.tournament, 80);
-  if (!tournament) throw new Error('which tournament was it?');
-  const date = String(body.date || '');
-  // midday in Kansas, so the game files under the right day and month
-  const playedAt = new Date(date + 'T18:00:00Z');
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(playedAt.getTime())) throw new Error('the tournament needs a date');
-  const team = text(body.team, 60) || 'SJA';
-  const opponent = text(body.opponent, 60);
-  if (!opponent) throw new Error('who was the opponent?');
-  if (opponent.toLowerCase() === team.toLowerCase()) throw new Error('the opponent needs a different name from our team');
-
-  const questions = Array.isArray(body.questions) ? body.questions : [];
-  if (!questions.length || questions.length > 30) throw new Error('a game has 1 to 30 questions');
-  const read = questions.length;
-
-  // who played, and for which questions: a sub who came in at question 9
-  // heard 8 of them
-  const lineup = [];
-  const span = {};
-  for (const p of (Array.isArray(body.players) ? body.players : []).slice(0, SLOTS + 4)) {
-    const name = fix(text(p?.name, 60));
-    if (!name) continue;
-    if (span[name]) throw new Error(name + ' is listed twice');
-    const from = p.from == null || p.from === '' ? 1 : Number(p.from);
-    const to = p.to == null || p.to === '' ? read : Number(p.to);
-    if (!(Number.isInteger(from) && Number.isInteger(to) && from >= 1 && from <= to && to <= read)) {
-      throw new Error(name + ' has to be in for questions somewhere from 1 to ' + read);
-    }
-    span[name] = [from, to];
-    lineup.push({ name, from, to });
-  }
-  if (!lineup.length) throw new Error('list who played');
-
-  const buzzes = [];
-  const categories = questions.map((q, i) => {
-    const n = i + 1;
-    const category = CATEGORIES.includes(q?.category) ? q.category : (CATEGORY_BY_QUESTION[i] || 'Other');
-    const us = q?.us?.player ? { player: fix(text(q.us.player, 60)), value: Number(q.us.value) } : null;
-    const them = q?.them == null || q.them === '' ? null : Number(q.them);
-    if (us) {
-      if (!span[us.player]) throw new Error('question ' + n + ' is credited to ' + us.player + ', who is not listed as playing');
-      if (n < span[us.player][0] || n > span[us.player][1]) throw new Error(us.player + ' was not in for question ' + n);
-      if (us.value !== 10 && us.value !== -5) throw new Error('question ' + n + ': our answer counts +10 or -5');
-    }
-    if (them != null && them !== 10 && them !== -5) throw new Error('question ' + n + ': their answer counts +10 or -5');
-    // one team answers a question correctly, and only the first team to
-    // interrupt can lose points on it
-    if (us && them != null && us.value === them) {
-      throw new Error('question ' + n + ': both teams cannot ' + (them > 0 ? 'get it right' : 'lose 5 points'));
-    }
-    const entry = (player, teamName, value) => ({
-      player, team: teamName, questionNumber: n, category, value, wordIndex: null, wordCount: null, charCount: null
-    });
-    const both = [];
-    if (us) both.push(entry(us.player, team, us.value));
-    if (them != null) both.push(entry(null, opponent, them));
-    // the wrong answer came first
-    buzzes.push(...both.sort((a, b) => a.value - b.value));
-    return category;
-  });
-
-  const score = name => buzzes.reduce((s, b) => s + (b.team === name ? b.value : 0), 0);
-  const round = text(body.round, 20);
-  return {
-    kind: 'tournament',
-    tournament,
-    round,
-    opponent,
-    label: tournament + (round ? ', round ' + round : '') + ' vs ' + opponent,
-    playedAt,
-    level: LEVELS[body.level] ? body.level : null,
-    tossupsRead: read,
-    categories,
-    wordCounts: null,
-    charCounts: null,
-    lineup,
-    teams: [
-      { name: team, players: lineup.map(p => p.name), score: score(team) },
-      { name: opponent, players: [], score: score(opponent), opponent: true }
-    ],
-    heardByPlayer: Object.fromEntries(lineup.map(p => [team + '|' + p.name, p.to - p.from + 1])),
-    buzzes,
-    notes: cleanNotes(body.notes, n => Boolean(span[n]), fix)
-  };
-}
-
 const ours = g => (g.teams || []).find(t => !t.opponent) || { name: '', players: [], score: 0 };
-const theirs = g => (g.teams || []).find(t => t.opponent) || { name: g.opponent || '', score: 0 };
+// a chair game has no other team, and an unrecorded sheet may not have their score
+const theirs = g => (g.teams || []).find(t => t.opponent) || { name: g.opponent || '', score: null };
 
 router.get('/data', requireAuth, async (req, res) => {
   try {
@@ -153,7 +55,10 @@ router.get('/data', requireAuth, async (req, res) => {
         playedAt: g.playedAt,
         month: monthKeyOf(g.playedAt),
         score: ours(g).score,
-        opponentScore: theirs(g).score,
+        opponentScore: theirs(g).score ?? null,
+        // how the other side was kept, and how the game came out (game-stats.js)
+        mode: opponentModeOf(g),
+        result: resultOf(g),
         notes: (g.notes || []).length,
         players: ours(g).players.map(name => {
           const mine = (g.buzzes || []).filter(b => b.player === name);
@@ -172,6 +77,9 @@ router.get('/data', requireAuth, async (req, res) => {
   }
 });
 
+// what the page says once a game is saved
+const saved = doc => ({ label: doc.label, score: ours(doc).score, opponentScore: theirs(doc).score ?? null, mode: doc.opponentMode, result: resultOf(doc) });
+
 router.post('/save', requireAuth, async (req, res) => {
   try {
     const doc = tournamentGame(req.body || {}, await nameCanonicalizer());
@@ -180,16 +88,16 @@ router.post('/save', requireAuth, async (req, res) => {
       const old = await games.findOne({ _id: id });
       if (!old || kindOf(old) !== 'tournament') return res.status(404).json({ error: 'that tournament game is gone' });
       await games.updateOne({ _id: id }, { $set: { ...doc, editedAt: new Date() } });
-      return res.json({ ok: true, id: String(id), label: doc.label, score: doc.teams[0].score, opponentScore: doc.teams[1].score });
+      return res.json({ ok: true, id: String(id), ...saved(doc) });
     }
     // the same sheet typed in twice
     const same = (await games.find({ kind: 'tournament', tournament: doc.tournament }).toArray()).find(g =>
       monthKeyOf(g.playedAt) === monthKeyOf(doc.playedAt) && new Date(g.playedAt).getUTCDate() === doc.playedAt.getUTCDate() &&
-      (g.round || '') === doc.round && theirs(g).name.toLowerCase() === doc.opponent.toLowerCase() &&
+      (g.round || '') === doc.round && (theirs(g).name || '').toLowerCase() === (doc.opponent || '').toLowerCase() &&
       ours(g).name.toLowerCase() === doc.teams[0].name.toLowerCase());
     if (same) return res.status(409).json({ error: 'that game is already entered - find it in the list below to change it' });
     const r = await games.insertOne({ ...doc, enteredAt: new Date() });
-    res.json({ ok: true, id: String(r.insertedId), label: doc.label, score: doc.teams[0].score, opponentScore: doc.teams[1].score });
+    res.json({ ok: true, id: String(r.insertedId), ...saved(doc) });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
@@ -229,6 +137,8 @@ ${KSHSAA_HEAD}
  .keys kbd{background:#eef1f7;color:#33415c;border:1px solid #d9e0ec;font-size:.75rem;padding:.05rem .3rem}
  .res-win{color:#1d6b40;font-weight:600}
  .res-loss{color:#6b7280}
+ .res-tie{color:#8a6100;font-weight:600}
+ .res-unknown{color:#6b7280;font-style:italic}
  /* printed scoresheets: two games to a page, nothing else prints */
  #printSheet{display:none}
  @media print{
@@ -306,7 +216,20 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <datalist id="squadList"></datalist></div>
         <div class="col-md-4"><label class="form-label" for="fOpp">Opponent</label>
           <input class="form-control form-control-sm" id="fOpp" placeholder="Hays"></div>
+        <div class="col-md-3"><label class="form-label" for="fMode">Their points</label>
+          <select class="form-select form-select-sm" id="fMode">
+            <option value="recorded">On the sheet, by question</option>
+            <option value="unrecorded">Not on the sheet</option>
+            <option value="chair">None: we played a chair</option>
+          </select></div>
+        <div class="col-md-2 d-none" id="finalBox"><label class="form-label" for="fFinal">Their final score</label>
+          <input class="form-control form-control-sm" id="fFinal" inputmode="numeric" placeholder="if written"></div>
+        <div class="col-md-3 d-none" id="resultBox"><label class="form-label" for="fResult">Who won</label>
+          <select class="form-select form-select-sm" id="fResult">
+            <option value="">Not written down</option><option value="win">We won</option>
+            <option value="loss">We lost</option><option value="tie">Tied</option></select></div>
       </div>
+      <p class="note d-none" id="modeNote"></p>
 
       <div class="form-label mt-3">Players, by their number on the sheet</div>
       <div id="slots" class="row g-1"></div>
@@ -323,6 +246,11 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <th class="num">Score</th></tr></thead>
         <tbody id="grid"></tbody>
       </table></div>
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="addQ">+ Add a question</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="dropQ">Remove the last question</button>
+        <span class="note mt-0" id="qCount"></span>
+      </div>
 
       <div class="form-label mt-3">Notes</div>
       <div id="notes"></div>
@@ -359,7 +287,14 @@ var esc = function (s) {
   });
 };
 var SLOTS = ${SLOTS};
+var MAX_QUESTIONS = ${MAX_QUESTIONS};
 var DATA = null;
+// how the other team's side of the sheet was kept: 'recorded' by question,
+// 'unrecorded', or 'chair' (no other team), and the last one that was not a
+// chair, which the next game goes back to
+var MODE = 'recorded';
+var LAST_MODE = 'recorded';
+var RESULT_WORDS = { win: 'we won', loss: 'we lost', tie: 'tied' };
 var KNOWN_NAMES = [];
 // the form: who is in which slot, and what happened on each question
 var PLAYERS = [];
@@ -433,10 +368,54 @@ function resetForm (keepSetup) {
   NOTES = [];
   CURRENT = 0;
   NEG_NEXT = false;
+  $('fFinal').value = '';
+  $('fResult').value = '';
+  setMode(keepSetup ? LAST_MODE : 'recorded', true);
   renderSlots();
   renderGrid();
   renderNotes();
 }
+
+// the other team's side of the sheet: their buttons on every question, their
+// final score and who won, or nothing at all for a chair
+function setMode (mode, quiet) {
+  MODE = mode;
+  if (mode !== 'chair') LAST_MODE = mode;
+  $('fMode').value = mode;
+  $('fOpp').disabled = mode === 'chair';
+  $('fOpp').placeholder = mode === 'chair' ? 'no opponent' : 'Hays';
+  $('finalBox').classList.toggle('d-none', mode !== 'unrecorded');
+  $('resultBox').classList.toggle('d-none', mode !== 'unrecorded');
+  $('modeNote').classList.toggle('d-none', mode === 'recorded');
+  $('modeNote').textContent = mode === 'chair'
+    ? 'A chair: nobody to play, so the game counts in the stats but is neither a win nor a loss.'
+    : mode === 'unrecorded'
+      ? 'Type in our side only. Add their final score if the sheet has it, or else who won, if anyone knows.'
+      : '';
+  if (!quiet) renderGrid();
+}
+$('fMode').onchange = function () { setMode(this.value); };
+$('fFinal').oninput = function () { renderScores(); };
+$('fResult').onchange = function () { renderScores(); };
+
+// a question past the last one: a regular round's subjects, starting over
+function categoryFor (n) { return DATA.order[(n - 1) % DATA.order.length]; }
+
+// special rounds run past 16 questions, and a round can end early
+$('addQ').onclick = function () {
+  if (QUESTIONS.length >= MAX_QUESTIONS) return;
+  QUESTIONS.push({ category: categoryFor(QUESTIONS.length + 1), us: null, them: null });
+  renderGrid();
+  focusRow(QUESTIONS.length - 1);
+};
+$('dropQ').onclick = function () {
+  if (QUESTIONS.length <= 1) return;
+  var last = QUESTIONS[QUESTIONS.length - 1];
+  if ((last.us || last.them != null) && !confirm('Question ' + QUESTIONS.length + ' has points on it. Remove it anyway?')) return;
+  QUESTIONS.pop();
+  renderGrid();
+  focusRow(Math.min(CURRENT, QUESTIONS.length - 1));
+};
 
 function filledSlots () {
   var out = [];
@@ -460,7 +439,7 @@ function renderSlots () {
       '<span class="input-group-text">Q</span>' +
       '<input class="form-control sfrom" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.from) + '" placeholder="1" inputmode="numeric">' +
       '<span class="input-group-text">to</span>' +
-      '<input class="form-control sto" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.to) + '" placeholder="16" inputmode="numeric">' +
+      '<input class="form-control sto" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.to) + '" placeholder="' + QUESTIONS.length + '" inputmode="numeric">' +
       '</div></div>';
   }).join('');
   Array.prototype.forEach.call(document.querySelectorAll('.sname'), function (input) {
@@ -510,8 +489,10 @@ function rowHtml (n) {
     '<td><select class="form-select form-select-sm qcat" data-n="' + n + '">' + cats + '</select></td>' +
     '<td>' + (slots.length ? slots.map(function (k) { return chip(n, k, 10); }).join('') : '<span class="note">add players</span>') + '</td>' +
     '<td>' + slots.map(function (k) { return chip(n, k, -5); }).join('') + '</td>' +
-    '<td><button type="button" class="pk them' + (q.them === 10 ? ' yes' : '') + '" data-n="' + n + '" data-them="10" title="They got it">+10</button>' +
-    '<button type="button" class="pk them' + (q.them === -5 ? ' neg' : '') + '" data-n="' + n + '" data-them="-5" title="They lost 5">&minus;5</button></td>' +
+    '<td>' + (MODE === 'recorded'
+      ? '<button type="button" class="pk them' + (q.them === 10 ? ' yes' : '') + '" data-n="' + n + '" data-them="10" title="They got it">+10</button>' +
+        '<button type="button" class="pk them' + (q.them === -5 ? ' neg' : '') + '" data-n="' + n + '" data-them="-5" title="They lost 5">&minus;5</button>'
+      : '<span class="note mt-0">' + (MODE === 'chair' ? 'no opponent' : 'not recorded') + '</span>') + '</td>' +
     '<td class="num score"></td>';
 }
 
@@ -519,6 +500,11 @@ function renderGrid () {
   $('grid').innerHTML = QUESTIONS.map(function (q, i) {
     return '<tr tabindex="0" data-row="' + (i + 1) + '"' + (i === CURRENT ? ' class="on"' : '') + '>' + rowHtml(i + 1) + '</tr>';
   }).join('');
+  var n = QUESTIONS.length;
+  $('qCount').textContent = n + ' question' + (n === 1 ? '' : 's') + (n === DATA.order.length ? '' : ' (a regular round has ' + DATA.order.length + ')');
+  $('addQ').disabled = n >= MAX_QUESTIONS;
+  $('dropQ').disabled = n <= 1;
+  Array.prototype.forEach.call(document.querySelectorAll('.sto'), function (el) { el.placeholder = n; });
   renderScores();
 }
 
@@ -531,13 +517,23 @@ function renderRow (n) {
 function renderScores () {
   var us = 0;
   var them = 0;
+  var both = MODE === 'recorded';
   QUESTIONS.forEach(function (q, i) {
     if (q.us) us += q.us.value;
-    if (q.them != null) them += q.them;
+    if (both && q.them != null) them += q.them;
     var cell = document.querySelector('#grid tr[data-row="' + (i + 1) + '"] .score');
-    if (cell) cell.textContent = us + ' – ' + them;
+    if (cell) cell.textContent = both ? us + ' – ' + them : String(us);
   });
-  $('total').textContent = ($('fTeam').value.trim() || 'Us') + ' ' + us + ', ' + ($('fOpp').value.trim() || 'them') + ' ' + them;
+  var name = $('fTeam').value.trim() || 'Us';
+  var opp = $('fOpp').value.trim() || 'them';
+  var final = $('fFinal').value.trim();
+  var known = final !== '' && !isNaN(Number(final));
+  // who won only matters when the sheet has no final score for them
+  $('fResult').disabled = MODE === 'unrecorded' && known;
+  if (MODE === 'chair') { $('total').textContent = name + ' ' + us + ', against a chair'; return; }
+  if (both) { $('total').textContent = name + ' ' + us + ', ' + opp + ' ' + them; return; }
+  var result = known ? (us > Number(final) ? 'win' : us < Number(final) ? 'loss' : 'tie') : $('fResult').value;
+  $('total').textContent = name + ' ' + us + ', ' + opp + ' ' + (known ? final : '?') + ' (' + (RESULT_WORDS[result] || 'who won not written down') + ')';
 }
 $('fTeam').oninput = renderScores;
 $('fOpp').oninput = renderScores;
@@ -550,6 +546,7 @@ function setUs (n, k, value) {
   renderRow(n);
 }
 function setThem (n, value) {
+  if (MODE !== 'recorded') return;
   var q = QUESTIONS[n - 1];
   q.them = q.them === value ? null : value;
   if (q.us && q.them === q.us.value) q.us = null;
@@ -584,7 +581,8 @@ $('grid').addEventListener('keydown', function (e) {
   if (e.target.tagName === 'SELECT') return;
   var n = CURRENT + 1;
   var q = QUESTIONS[CURRENT];
-  var digit = '123456789'.indexOf(e.key) + 1;
+  // a key with no name would match '123456789' at the start, as player 1
+  var digit = e.key.length === 1 ? '123456789'.indexOf(e.key) + 1 : 0;
   if (digit && digit <= SLOTS) {
     if (!inFor(digit, n)) { $('saveMsg').textContent = 'no player ' + digit + ' in for question ' + n; return; }
     var value = NEG_NEXT ? -5 : 10;
@@ -594,6 +592,10 @@ $('grid').addEventListener('keydown', function (e) {
   } else if (e.key === '-') {
     NEG_NEXT = true;
     $('saveMsg').textContent = 'our -5 on question ' + n + ': which player?';
+    return;
+  } else if (MODE !== 'recorded' && 'oOxX'.indexOf(e.key) !== -1) {
+    e.preventDefault();
+    $('saveMsg').textContent = 'their points are set to ' + (MODE === 'chair' ? 'none: a chair' : 'not on the sheet');
     return;
   } else if (e.key === 'o' || e.key === 'O') {
     setThem(n, 10);
@@ -661,10 +663,13 @@ $('save').onclick = function () {
     level: $('fLevel').value,
     round: $('fRound').value,
     team: $('fTeam').value,
-    opponent: $('fOpp').value,
+    opponent: MODE === 'chair' ? '' : $('fOpp').value,
+    opponentMode: MODE,
+    opponentScore: MODE === 'unrecorded' ? $('fFinal').value : '',
+    result: MODE === 'unrecorded' ? $('fResult').value : '',
     players: PLAYERS.filter(function (p) { return p.name.trim(); }),
     questions: QUESTIONS.map(function (q) {
-      return { category: q.category, us: q.us ? { player: PLAYERS[q.us.k - 1].name, value: q.us.value } : null, them: q.them };
+      return { category: q.category, us: q.us ? { player: PLAYERS[q.us.k - 1].name, value: q.us.value } : null, them: MODE === 'recorded' ? q.them : null };
     }),
     notes: NOTES
   };
@@ -672,7 +677,7 @@ $('save').onclick = function () {
   postJson('/kshsaa-tournaments/save', body).then(function (res) {
     $('save').disabled = false;
     if (!res.ok) { $('saveMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'could not save') + '</span>'; return; }
-    $('saveMsg').innerHTML = '<span class="text-success">Saved ' + esc(res.d.label) + ' (' + res.d.score + '&ndash;' + res.d.opponentScore + ')</span>';
+    $('saveMsg').innerHTML = '<span class="text-success">Saved ' + esc(res.d.label) + ' (' + scoreText(res.d) + ')</span>';
     if (EDITING) {
       stopEditing();
     } else {
@@ -728,6 +733,15 @@ function editGame (id) {
     $('fRound').value = g.round || '';
     $('fTeam').value = us.name;
     $('fOpp').value = g.opponent || '';
+    var them = (g.teams || []).filter(function (t) { return t.opponent; })[0];
+    var mode = g.opponentMode || 'recorded';
+    var final = mode === 'unrecorded' && them && them.score != null ? String(them.score) : '';
+    $('fFinal').value = final;
+    $('fResult').value = mode === 'unrecorded' && !final ? (g.result || '') : '';
+    // the next new game still starts the way the last one entered did
+    var keep = LAST_MODE;
+    setMode(mode, true);
+    LAST_MODE = keep;
     $('formTitle').textContent = 'Editing ' + g.label;
     $('cancelEdit').classList.remove('d-none');
     $('save').textContent = 'Save changes';
@@ -773,6 +787,26 @@ function renderSeason () {
     }).join('') + '</tbody></table></div></div></div>';
 }
 
+// a game's score, as far as the sheet has it: 220-180, 220-? and who won, or
+// just ours against a chair (its label and row already say so)
+function scoreText (g) {
+  if (g.mode === 'chair') return String(g.score);
+  if (g.opponentScore != null) return g.score + '&ndash;' + g.opponentScore;
+  return g.score + '&ndash;?, ' + (RESULT_WORDS[g.result] || 'who won not written down');
+}
+
+// a tournament's record: wins and losses, then ties, games nobody wrote the
+// result of, and chairs, which are neither
+function recordText (list) {
+  var n = { win: 0, loss: 0, tie: 0, unknown: 0, chair: 0 };
+  list.forEach(function (g) { n[g.result || 'unknown']++; });
+  var text = n.win + '&ndash;' + n.loss;
+  if (n.tie) text += ', ' + n.tie + ' tied';
+  if (n.unknown) text += ', ' + n.unknown + ' not written down';
+  if (n.chair) text += ', ' + n.chair + ' chair' + (n.chair === 1 ? '' : 's');
+  return text;
+}
+
 function renderGames () {
   var names = {};
   DATA.games.forEach(function (g) { names[g.tournament] = true; });
@@ -786,16 +820,16 @@ function renderGames () {
     grp.games.push(g);
   });
   $('games').innerHTML = groups.map(function (grp) {
-    var won = grp.games.filter(function (g) { return g.score > g.opponentScore; }).length;
     return '<div class="card mb-2"><div class="card-body p-0"><div class="px-3 pt-2 fw-semibold">' + esc(grp.name) +
       ' <span class="text-secondary fw-normal small">' + new Date(grp.date).toLocaleDateString(undefined, { timeZone: 'UTC' }) +
-      ' &middot; ' + won + '&ndash;' + (grp.games.length - won) + '</span></div>' +
+      ' &middot; ' + recordText(grp.games) + '</span></div>' +
       '<div class="table-responsive"><table class="table table-sm mb-0"><tbody>' +
       grp.games.slice().sort(function (a, b) { return String(a.round).localeCompare(String(b.round), undefined, { numeric: true }); }).map(function (g) {
-        var cls = g.score > g.opponentScore ? 'res-win' : 'res-loss';
+        var cls = { win: 'res-win', loss: 'res-loss', tie: 'res-tie' }[g.result] || 'res-unknown';
         return '<tr><td style="width:5rem">' + (g.round ? 'Round ' + esc(g.round) : '') + '</td>' +
-          '<td>' + esc(g.team) + ' vs ' + esc(g.opponent) + (g.notes ? ' <span class="small text-secondary">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
-          '<td class="num ' + cls + '">' + g.score + '&ndash;' + g.opponentScore + '</td>' +
+          '<td>' + esc(g.team) + (g.mode === 'chair' ? ' vs a chair' : ' vs ' + esc(g.opponent)) +
+          (g.notes ? ' <span class="small text-secondary">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
+          '<td class="num ' + cls + '">' + scoreText(g) + '</td>' +
           '<td class="small text-secondary">' + g.players.filter(function (p) { return p.points; }).map(function (p) {
             return esc(p.name.split(' ')[0]) + ' ' + p.points;
           }).join(', ') + '</td>' +

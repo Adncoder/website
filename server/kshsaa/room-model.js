@@ -41,9 +41,22 @@
 // pulled toward the typical tournament of its label (every tossup of every
 // tournament with that label, together) by EVENT_PRIOR questions' worth, so
 // one odd round does not make it look easy or hard.
+//
+// Some tournament sheets leave out the other team's points (opponentMode
+// 'unrecorded'). A tossup our players answered is known. One they did not
+// answer went to the other school or to nobody, and the sheet cannot say
+// which: it is only "not us", which has chance (s_o + D) / (the room's sum),
+// s_o being the other school's strength. Each time round, the fit splits such
+// a tossup between the two in proportion, s_o / (s_o + D) to the other school
+// and D / (s_o + D) to nobody, and counts those shares where a full sheet would
+// have counted the answer (expectation-maximization). Our players' exposure is
+// the same either way, so their strengths use these games in full. The other
+// school's strength and the tournament's D learn only what the "not us" rate
+// says about the two together; their priors and the tournament's full sheets
+// decide the rest. A game against a chair has no other school in the room.
 
-import { CATEGORIES, CATEGORY_BY_QUESTION } from '../../routes/kshsaa-round.js';
-import { kindOf, monthKeyOf, playersInGame } from './game-stats.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION } from './round-shape.js';
+import { kindOf, monthKeyOf, opponentModeOf, playersInGame } from './game-stats.js';
 
 /** Questions per category in a 16-question round. */
 export const WEIGHTS = Object.fromEntries(CATEGORIES.map(c => [c, CATEGORY_BY_QUESTION.filter(x => x === c).length]));
@@ -52,7 +65,9 @@ export const WEIGHTS = Object.fromEntries(CATEGORIES.map(c => [c, CATEGORY_BY_QU
 // both two rounds: fitted by predicting each saved game from all the others
 export const PLAYER_PRIOR = 32;
 export const CATEGORY_PRIOR = 32;
-// a school we play at a tournament starts out as strong as our lineup
+// a school we play at a tournament starts out, by half a round's worth, as
+// strong as the lineup we sent against it (the sum of their strengths, for
+// the questions each was in for), and never weaker than one average player
 const OPPONENT_PRIOR = 8;
 // a tournament starts out as hard as the typical tournament of its label, by
 // one round's worth: a tournament of six rounds weighs its own six to that one
@@ -130,7 +145,14 @@ export function tournamentOf (g) {
  * @property {string} season - the school year, 2026-27
  * @property {number} games
  * @property {number} read - tossups that count toward its difficulty
- * @property {number} answered - of those, answered by somebody
+ * @property {number} answered - of those, answered by somebody; expected, not
+ *   counted, for the ones in `estimated`
+ * @property {number} estimated - tossups we did not answer in games whose
+ *   other team went unrecorded, so nobody knows if anyone did
+ * @property {number} unrecordedGames - games whose other team went unrecorded.
+ *   When that is every game, nothing separates hard questions from strong
+ *   schools: the fit leaves each school as strong as the lineup we sent and
+ *   D takes the rest, so D is that assumption, not a measurement.
  * @property {number} difficulty - its D, on the reference level's scale
  */
 
@@ -189,6 +211,9 @@ export function fitRoomModel (games, isVarsity, options = {}) {
       opponent = units.length;
       units.push({ name: null, opponent: true, size: 0 });
     }
+    // their side of the sheet is blank: a tossup we did not get is split below
+    const unrecorded = opponent !== -1 && opponentModeOf(g) === 'unrecorded';
+    if (unrecorded) groups[d].unrecorded = (groups[d].unrecorded || 0) + 1;
     const group = options.groupOf ? options.groupOf(g) : null;
     for (let i = 1; i <= read; i++) {
       const c = CATEGORIES.indexOf(cats[i - 1]);
@@ -224,7 +249,7 @@ export function fitRoomModel (games, isVarsity, options = {}) {
       for (const [u, a] of room) H[u * C + c] += a;
       if (winner !== -1) W[winner * C + c] += 1;
       for (const u of negs) negCount[u]++;
-      tossups.push({ c, d, room: [...room], winner, negs, group });
+      tossups.push({ c, d, room: [...room], winner, negs, group, split: unrecorded && winner === -1, opp: opponent });
     }
   }
   grow();
@@ -285,9 +310,27 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     perQuestion = sumH ? sumE / sumH : 1;
   };
 
+  // A tossup we did not get, in a game whose other team went unrecorded, went
+  // to them with chance s_o / (s_o + D) and to nobody with D / (s_o + D), at
+  // the current s_o and D: each other school's expected answers, and each
+  // group's expected unanswered tossups.
+  const splitUnknowns = () => {
+    const wins = new Array(U).fill(0);
+    const none = groups.map(() => 0);
+    for (const t of tossups) {
+      if (!t.split) continue;
+      const them = s[t.opp * C + t.c];
+      const toThem = them + D[t.d] > 0 ? them / (them + D[t.d]) : 0;
+      wins[t.opp] += toThem;
+      none[t.d] += 1 - toThem;
+    }
+    return { wins, none };
+  };
+
   for (let round = 0; round < MAX_ROUNDS; round++) {
     const inv = exposures();
     teamNumbers();
+    const split = splitUnknowns();
 
     const before = s.slice();
     for (const u of players) {
@@ -298,19 +341,28 @@ export function fitRoomModel (games, isVarsity, options = {}) {
         s[u * C + c] = Math.max(0, (W[u * C + c] + mC * perQuestion * factor[c] * overall[u]) / (E[u * C + c] + mC * perQuestion));
       }
     }
+    // the lineup we sent against each other school, per tossup: what it
+    // starts out as strong as
+    const sent = new Array(U).fill(0);
+    const count = new Array(U).fill(0);
+    for (const t of tossups) {
+      if (t.opp === -1) continue;
+      count[t.opp]++;
+      for (const [v, a] of t.room) if (!units[v].opponent) sent[t.opp] += a * overall[v];
+    }
     for (let u = 0; u < U; u++) {
       if (!units[u].opponent) continue;
-      let answers = 0; let exposure = 0;
+      let answers = split.wins[u]; let exposure = 0;
       for (let c = 0; c < C; c++) { answers += W[u * C + c]; exposure += E[u * C + c]; }
-      const center = team * Math.max(1, units[u].size);
+      const center = count[u] ? Math.max(team, sent[u] / count[u]) : team * Math.max(1, units[u].size);
       overall[u] = Math.max(0, (answers + OPPONENT_PRIOR * perQuestion * center) / (exposure + OPPONENT_PRIOR * perQuestion));
       for (let c = 0; c < C; c++) s[u * C + c] = overall[u];
     }
-    // how hard each level plays: its unanswered tossups over their exposure,
-    // plus half a question as hard as the reference level (D = 1 here) so no
-    // level comes out 0
-    const none = groups.map(() => 0);
-    for (const t of tossups) if (t.winner === -1) none[t.d]++;
+    // how hard each level plays: its unanswered tossups (the split ones by
+    // their expected share) over their exposure, plus half a question as hard
+    // as the reference level (D = 1 here) so no level comes out 0
+    const none = split.none.slice();
+    for (const t of tossups) if (t.winner === -1 && !t.split) none[t.d]++;
     groups.forEach((grp, i) => { if (!grp.event) D[i] = (none[i] + 0.5) / (inv[i] + 0.5); });
     // and each tournament: the same, plus EVENT_PRIOR questions as hard as
     // the typical tournament of its label
@@ -380,8 +432,16 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     }
   }
 
+  // answered by somebody: counted where the sheets say, expected where they
+  // cannot (a split tossup was answered with chance s_o / (s_o + D))
   const answered = groups.map(() => 0);
-  for (const t of tossups) if (t.winner !== -1) answered[t.d]++;
+  const estimated = groups.map(() => 0);
+  const last = splitUnknowns();
+  for (const t of tossups) {
+    if (t.winner !== -1) answered[t.d]++;
+    else if (t.split) estimated[t.d]++;
+  }
+  groups.forEach((grp, i) => { answered[i] += estimated[i] - last.none[i]; });
   return {
     reference,
     // whether D = 1 is the reference level's practice games, or (with none in
@@ -391,7 +451,17 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     // when it has none
     difficulty: Object.fromEntries(labels.map(label => [label, levelD(label)])),
     tournaments: groups.flatMap((grp, i) => (grp.event
-      ? [{ name: grp.name, level: grp.label, season: grp.season, games: grp.games, read: read[i], answered: answered[i], difficulty: D[i] }]
+      ? [{
+          name: grp.name,
+          level: grp.label,
+          season: grp.season,
+          games: grp.games,
+          read: read[i],
+          answered: answered[i],
+          estimated: estimated[i],
+          unrecordedGames: grp.unrecorded || 0,
+          difficulty: D[i]
+        }]
       : [])),
     team,
     categoryFactor: Object.fromEntries(CATEGORIES.map((c, i) => [c, factor[i]])),

@@ -151,12 +151,12 @@ redeploy.
 | File | Page |
 | --- | --- |
 | `routes/kshsaa-play.js` | The reader: KSHSAA or NAQT rounds in MODAQ, plus a timer bar, the World Language full-screen display, Replace question, the scoreboard window feed, lineup reuse, next round with the same teams, and save-once stats export |
-| `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out or an answer within the round, and the reader's replacement questions (`/kshsaa-round/replacement`); exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, `LEVELS`, and the shared `levelControls()` markup |
+| `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out or an answer within the round, and the reader's replacement questions (`/kshsaa-round/replacement`); exports the shared `levelControls()` markup, and re-exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, and `LEVELS` from `server/kshsaa/round-shape.js` |
 | `client/kshsaa/same-answer.js` | Whether two answer lines name the same thing, so no answer comes up twice in a round. Round building runs it in Node and NAQT rounds in the browser, so it imports nothing |
 | `routes/kshsaa-stats.js` | Password-gated stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
 | `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
-| `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table |
+| `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table. The checks on a typed-in sheet are `server/kshsaa/tournament-game.js` |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice, with physics as its own mode. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
 | `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
@@ -168,14 +168,16 @@ redeploy.
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, the Anki leaderboard and zip writer, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js` and `anki-board.js` are files of their own |
+| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, the Anki leaderboard and zip writer, tournament sheets, the room model, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js`, `anki-board.js`, and `tournament-game.js` are files of their own, and why the stats code takes the round's shape from `round-shape.js`, never from `routes/kshsaa-round.js` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
 | `client/kshsaa/giveaway.js` | Turns a quizbowl tossup into a Beginner question (its giveaway line), a JV one (the giveaway and the clue before it), or a Varsity one (up to three clues before it). The import scripts run it in Node and the arcade in the browser, so it lives under `client/` and imports nothing |
 | `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser, and their replacement tossups. `npm test` runs it in Node, so it imports nothing but `same-answer.js` |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
-| `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters |
+| `server/kshsaa/round-shape.js` | The 16-question round's categories in order (`ROUND_SHAPE`, `CATEGORY_BY_QUESTION`, `CATEGORIES`) and `LEVELS`: plain data, so the stats code and tests can use them without a database |
+| `server/kshsaa/tournament-game.js` | Checks a tournament sheet typed into the entry grid and builds the stored game: the other team's points by question, not on the sheet, or a chair, and rounds of up to 40 questions |
+| `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters, and a tournament game's result (`resultOf`) and how its other side was kept (`opponentModeOf`) |
 | `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level, and each tournament, plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
 | `server/kshsaa/squad-plan.js` | Reads and writes the Roster tab's squad plan: squads, pools, and which pools fill each squad's rotating spots |
 | `server/kshsaa/nav.js` | The bar across every KSHSAA page (logo, sections, QBReader link) and the favicon; `client/kshsaa/logo.svg` is the mark |
@@ -691,6 +693,34 @@ versions on the real games (2026-11-17) changed none of 5,978 numbers.
 practice games; refit it by predicting each tournament game from the others
 once ten or so tournaments are in.
 
+A school we play starts out, by `OPPONENT_PRIOR` (8) questions' worth, as
+strong as the lineup we sent against it: the sum of their strengths on each
+tossup, never less than one average player. Before 2026-11-19 it started as
+our team's average player times the lineup's size, which assumed a varsity
+school against a JV lineup. In simulated seasons that rated the players in
+tournaments 17 to 28% too strong, against about 1% with the lineup.
+
+Some tournament sheets leave out the other team's points (`opponentMode:
+'unrecorded'`). Our answers there count as usual. A tossup we did not answer
+went to the other school or to nobody, and the sheet cannot say which, so each
+round of the fit splits it between them in proportion, s_o / (s_o + D) to the
+school and D / (s_o + D) to nobody, and counts those shares where a full sheet
+would have counted the answer (expectation-maximization). Our players'
+exposure is the same either way, so their strengths use these games in full.
+The school and the tournament's D only learn their sum from such a game. When
+every game of a tournament is unrecorded, nothing separates hard questions
+from a strong school: the school stays as strong as our lineup and D takes the
+rest, so Insights marks that difficulty with a ≈ as a guess. A game against a
+chair (`opponentMode: 'chair'`) has no other school in the room at all.
+
+Simulated seasons over the real practice games (2026-11-19) give these
+results:
+- **Blank sheets:** typing a missing side in as blank, which is what a blank
+  meant before, made tournaments look 2 to 3 times too hard.
+- **The split:** it kept our players' strengths within about 3% of full sheets.
+- **Left out:** dropping those games instead moved them more, and could not
+  measure those tournaments at all.
+
 On the Overview, squad chips toggle, so several can be on at once, and a
 checkbox on each player adds anyone to the group or takes them off a picked
 squad (`GROUP`: squads, players added, players removed). The card above the
@@ -754,7 +784,25 @@ and the grid takes a key per question. Tournament games live in `kshsaa_games`
 with `kind: 'tournament'`, `tournament`, `round`, `opponent`, and `lineup`
 (`[{ name, from, to }]`, so a sub's questions heard are right). The opposing
 team is marked `opponent: true` and has no players, and **its buzzes have
-`player: null`**. Code that walks buzzes for player stats must skip those. The
+`player: null`**. Code that walks buzzes for player stats must skip those.
+
+Coaches' sheets are not always complete, so a game stores how the other team's
+side was kept (`opponentMode`, read with `opponentModeOf`; games without one
+are `'recorded'`):
+- **`recorded`:** their +10s and −5s are on the sheet, question by question.
+- **`unrecorded`:** only our side is typed in. Their team's `score` is their
+  final score when the sheet has it, else null. `result` comes from that score,
+  else from the "Who won" box, else it is null.
+- **`chair`:** we played a chair. There is no other team (`opponent` is null
+  and `teams` holds ours alone), and the game counts as neither a win nor a
+  loss.
+
+`result` ('win', 'loss', 'tie', or null) is stored with every new game. Read it
+with `resultOf`, which also covers older games from their scores. Rounds can
+run past 16 questions, up to `MAX_QUESTIONS` (40): the grid's buttons add and
+remove questions, and an added question's subject starts the regular order
+over. The next game typed in keeps the last mode that was not a chair, and
+editing a game does not change it. The
 insights scale fit uses practice games only, since half of a tournament room is
 another school. The `kind` filter (`readFilters`, `inKind`) is on the stats and
 Insights pages. Tournament games are edited on the Tournaments tab, never in

@@ -8,7 +8,7 @@
 // player held back is left out for them entirely: it does not count toward
 // their games, points, or habits.
 
-import { CATEGORIES } from '../../routes/kshsaa-round.js';
+import { CATEGORIES } from './round-shape.js';
 import { celerityOf, monthKeyOf, playersInGame } from './game-stats.js';
 import { reboundsIn } from './rebounds.js';
 import { PLAYER_PRIOR, WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from './room-model.js';
