@@ -2,7 +2,8 @@
 // the stored shape (routes/kshsaa-tournaments.js saves it). Not every sheet is
 // complete, so a game says how the other team's side was kept
 // (OPPONENT_MODES): question by question like ours, not at all, or not there
-// because we played a chair. Rounds can also run past 16 questions.
+// because we played a chair. Rounds can also run past 16 questions, and a
+// game can be a playoff round (STAGES) when the team makes it that far.
 
 import { cleanNotes } from './game-stats.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './round-shape.js';
@@ -21,6 +22,16 @@ export const MAX_QUESTIONS = 40;
  */
 export const OPPONENT_MODES = ['recorded', 'unrecorded', 'chair'];
 export const RESULTS = ['win', 'loss', 'tie'];
+/**
+ * Playoff rounds, in bracket order. A game with none is a regular round, and
+ * a chair is always one, since a playoff game has an opponent.
+ */
+export const STAGES = {
+  quarterfinal: 'Quarterfinal',
+  semifinal: 'Semifinal',
+  third: 'Third-place game',
+  final: 'Final'
+};
 
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
@@ -36,8 +47,8 @@ export const categoryFor = n => CATEGORY_BY_QUESTION[(n - 1) % CATEGORY_BY_QUEST
 /**
  * A game from the entry grid, checked and turned into the stored shape. Throws
  * with a message for whoever is typing it in.
- * @param {object} body - { tournament, date, level, round, team, opponent,
- *   opponentMode, opponentScore, result, players: [{name, from, to}],
+ * @param {object} body - { tournament, date, level, round, stage, team,
+ *   opponent, opponentMode, opponentScore, result, players: [{name, from, to}],
  *   questions: [{category, us: {player, value} | null, them: 10 | -5 | null}],
  *   notes: [{questionNumber, player, text}] }. `them` counts only when the
  *   mode is 'recorded'; opponentScore and result only when it is 'unrecorded'.
@@ -57,6 +68,8 @@ export function tournamentGame (body, fix) {
     if (!opponent) throw new Error('who was the opponent? If nobody, set their points to "none: we played a chair"');
     if (opponent.toLowerCase() === team.toLowerCase()) throw new Error('the opponent needs a different name from our team');
   }
+  const stage = Object.hasOwn(STAGES, body.stage ?? '') ? body.stage : null;
+  if (stage && mode === 'chair') throw new Error('a playoff game has an opponent, so a chair is a regular round');
 
   const questions = Array.isArray(body.questions) ? body.questions : [];
   if (!questions.length || questions.length > MAX_QUESTIONS) throw new Error('a game has 1 to ' + MAX_QUESTIONS + ' questions');
@@ -132,10 +145,13 @@ export function tournamentGame (body, fix) {
     kind: 'tournament',
     tournament,
     round,
+    stage,
     opponent,
     opponentMode: mode,
     result,
-    label: tournament + (round ? ', round ' + round : '') + (mode === 'chair' ? ' (chair)' : ' vs ' + opponent),
+    // a playoff game goes by its stage: "Hays Invitational, semifinal vs Hays"
+    label: tournament + (stage ? ', ' + STAGES[stage].toLowerCase() : round ? ', round ' + round : '') +
+      (mode === 'chair' ? ' (chair)' : ' vs ' + opponent),
     playedAt,
     level: LEVELS[body.level] ? body.level : null,
     tossupsRead: read,

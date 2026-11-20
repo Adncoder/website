@@ -18,7 +18,7 @@ import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
 import { getSquads, nameCanonicalizer, requireAuth } from './kshsaa-stats.js';
 import { kindOf, monthKeyOf, monthLabel, opponentModeOf, resultOf, seasonStartKey } from '../server/kshsaa/game-stats.js';
-import { MAX_QUESTIONS, SLOTS, tournamentGame } from '../server/kshsaa/tournament-game.js';
+import { MAX_QUESTIONS, SLOTS, STAGES, tournamentGame } from '../server/kshsaa/tournament-game.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -44,11 +44,14 @@ router.get('/data', requireAuth, async (req, res) => {
       levels: Object.keys(LEVELS).map(key => ({ key, label: LEVELS[key].label })),
       categories: CATEGORIES,
       order: CATEGORY_BY_QUESTION,
+      // playoff rounds, in bracket order
+      stages: Object.entries(STAGES).map(([key, label]) => ({ key, label })),
       roster: rosterList.filter(r => !r.coach).map(r => ({ name: r.name, squad: r.squad || null })),
       games: list.map(g => ({
         id: String(g._id),
         tournament: g.tournament,
         round: g.round || '',
+        stage: g.stage || null,
         opponent: theirs(g).name,
         team: ours(g).name,
         level: g.level || null,
@@ -93,7 +96,8 @@ router.post('/save', requireAuth, async (req, res) => {
     // the same sheet typed in twice
     const same = (await games.find({ kind: 'tournament', tournament: doc.tournament }).toArray()).find(g =>
       monthKeyOf(g.playedAt) === monthKeyOf(doc.playedAt) && new Date(g.playedAt).getUTCDate() === doc.playedAt.getUTCDate() &&
-      (g.round || '') === doc.round && (theirs(g).name || '').toLowerCase() === (doc.opponent || '').toLowerCase() &&
+      (g.round || '') === doc.round && (g.stage || null) === doc.stage &&
+      (theirs(g).name || '').toLowerCase() === (doc.opponent || '').toLowerCase() &&
       ours(g).name.toLowerCase() === doc.teams[0].name.toLowerCase());
     if (same) return res.status(409).json({ error: 'that game is already entered - find it in the list below to change it' });
     const r = await games.insertOne({ ...doc, enteredAt: new Date() });
@@ -202,7 +206,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
     <h2 id="formTitle">Enter a game</h2>
     <div class="card"><div class="card-body">
       <div class="row g-2">
-        <div class="col-md-4"><label class="form-label" for="fTourney">Tournament</label>
+        <div class="col-md-3"><label class="form-label" for="fTourney">Tournament</label>
           <input class="form-control form-control-sm" id="fTourney" list="tourneyList" placeholder="Hays Invitational">
           <datalist id="tourneyList"></datalist></div>
         <div class="col-md-2"><label class="form-label" for="fDate">Date</label>
@@ -211,7 +215,9 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <select class="form-select form-select-sm" id="fLevel"></select></div>
         <div class="col-md-1"><label class="form-label" for="fRound">Round</label>
           <input class="form-control form-control-sm" id="fRound" placeholder="1"></div>
-        <div class="col-md-3"><label class="form-label" for="fTeam">Our team</label>
+        <div class="col-md-2"><label class="form-label" for="fStage">Stage</label>
+          <select class="form-select form-select-sm" id="fStage"></select></div>
+        <div class="col-md-2"><label class="form-label" for="fTeam">Our team</label>
           <input class="form-control form-control-sm" id="fTeam" list="squadList" placeholder="Varsity Blue">
           <datalist id="squadList"></datalist></div>
         <div class="col-md-4"><label class="form-label" for="fOpp">Opponent</label>
@@ -345,6 +351,8 @@ function setUp () {
   $('psSquad').innerHTML = '<option value="">Blank, to write in</option>' +
     DATA.squads.map(function (s) { return '<option>' + esc(s) + '</option>'; }).join('');
   $('fLevel').innerHTML = DATA.levels.map(function (l) { return '<option value="' + l.key + '">' + esc(l.label) + '</option>'; }).join('');
+  $('fStage').innerHTML = '<option value="">Regular round</option>' +
+    DATA.stages.map(function (s) { return '<option value="' + s.key + '">' + esc(s.label) + '</option>'; }).join('');
   $('squadList').innerHTML = DATA.squads.map(function (s) { return '<option value="' + esc(s) + '">'; }).join('');
   $('seasonWhen').innerHTML = '<option value="season">This school year (since ' + esc(DATA.seasonLabel) + ')</option><option value="all">All time</option>';
   $('seasonLevel').innerHTML = '<option value="all">All levels</option>' +
@@ -662,6 +670,7 @@ $('save').onclick = function () {
     date: $('fDate').value,
     level: $('fLevel').value,
     round: $('fRound').value,
+    stage: $('fStage').value,
     team: $('fTeam').value,
     opponent: MODE === 'chair' ? '' : $('fOpp').value,
     opponentMode: MODE,
@@ -684,6 +693,9 @@ $('save').onclick = function () {
       // the next game is usually the same tournament and lineup
       var round = Number($('fRound').value);
       $('fRound').value = round ? round + 1 : '';
+      // win a quarterfinal or semifinal and the next game is the round after
+      var next = { quarterfinal: 'semifinal', semifinal: 'final' }[body.stage];
+      $('fStage').value = next && res.d.result === 'win' ? next : '';
       $('fOpp').value = '';
       resetForm(true);
       $('fOpp').focus();
@@ -731,6 +743,7 @@ function editGame (id) {
     $('fDate').value = new Date(g.playedAt).toISOString().slice(0, 10);
     $('fLevel').value = g.level || DATA.levels[0].key;
     $('fRound').value = g.round || '';
+    $('fStage').value = g.stage || '';
     $('fTeam').value = us.name;
     $('fOpp').value = g.opponent || '';
     var them = (g.teams || []).filter(function (t) { return t.opponent; })[0];
@@ -807,6 +820,25 @@ function recordText (list) {
   return text;
 }
 
+// playoff rounds: where each lists (regular rounds first) and what it is called
+function stageRank (key) {
+  for (var i = 0; i < DATA.stages.length; i++) if (DATA.stages[i].key === key) return i + 1;
+  return 0;
+}
+function stageLabel (key) { return DATA.stages[stageRank(key) - 1].label; }
+
+// how far the team went: the furthest playoff round it played, and whether it
+// won there
+function finishText (list) {
+  var at = {};
+  list.forEach(function (g) { if (g.stage) at[g.stage] = g.result; });
+  if ('final' in at) return at.final === 'win' ? 'champion' : at.final === 'loss' ? 'runner-up' : 'made the final';
+  if ('third' in at) return at.third === 'win' ? 'third place' : at.third === 'loss' ? 'fourth place' : 'played for third';
+  if ('semifinal' in at) return at.semifinal === 'win' ? 'made the final' : 'semifinalist';
+  if ('quarterfinal' in at) return at.quarterfinal === 'win' ? 'made the semifinals' : 'quarterfinalist';
+  return '';
+}
+
 function renderGames () {
   var names = {};
   DATA.games.forEach(function (g) { names[g.tournament] = true; });
@@ -822,11 +854,13 @@ function renderGames () {
   $('games').innerHTML = groups.map(function (grp) {
     return '<div class="card mb-2"><div class="card-body p-0"><div class="px-3 pt-2 fw-semibold">' + esc(grp.name) +
       ' <span class="text-secondary fw-normal small">' + new Date(grp.date).toLocaleDateString(undefined, { timeZone: 'UTC' }) +
-      ' &middot; ' + recordText(grp.games) + '</span></div>' +
+      ' &middot; ' + recordText(grp.games) + (finishText(grp.games) ? ' &middot; ' + finishText(grp.games) : '') + '</span></div>' +
       '<div class="table-responsive"><table class="table table-sm mb-0"><tbody>' +
-      grp.games.slice().sort(function (a, b) { return String(a.round).localeCompare(String(b.round), undefined, { numeric: true }); }).map(function (g) {
+      grp.games.slice().sort(function (a, b) {
+        return stageRank(a.stage) - stageRank(b.stage) || String(a.round).localeCompare(String(b.round), undefined, { numeric: true });
+      }).map(function (g) {
         var cls = { win: 'res-win', loss: 'res-loss', tie: 'res-tie' }[g.result] || 'res-unknown';
-        return '<tr><td style="width:5rem">' + (g.round ? 'Round ' + esc(g.round) : '') + '</td>' +
+        return '<tr><td style="width:7.5rem">' + (g.stage ? esc(stageLabel(g.stage)) : g.round ? 'Round ' + esc(g.round) : '') + '</td>' +
           '<td>' + esc(g.team) + (g.mode === 'chair' ? ' vs a chair' : ' vs ' + esc(g.opponent)) +
           (g.notes ? ' <span class="small text-secondary">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
           '<td class="num ' + cls + '">' + scoreText(g) + '</td>' +

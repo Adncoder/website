@@ -176,7 +176,7 @@ redeploy.
 | `client/kshsaa/naqt.js` | NAQT rounds for the reader: 24 tossups and 24 three-part bonuses in NAQT's high school distribution, straight from qbreader.org in the browser, and their replacement tossups. `npm test` runs it in Node, so it imports nothing but `same-answer.js` |
 | `server/kshsaa/name-autocomplete.js` | Player-name autocomplete fragment shared by the reader and the game editor |
 | `server/kshsaa/round-shape.js` | The 16-question round's categories in order (`ROUND_SHAPE`, `CATEGORY_BY_QUESTION`, `CATEGORIES`) and `LEVELS`: plain data, so the stats code and tests can use them without a database |
-| `server/kshsaa/tournament-game.js` | Checks a tournament sheet typed into the entry grid and builds the stored game: the other team's points by question, not on the sheet, or a chair, and rounds of up to 40 questions |
+| `server/kshsaa/tournament-game.js` | Checks a tournament sheet typed into the entry grid and builds the stored game: the other team's points by question, not on the sheet, or a chair, rounds of up to 40 questions, and playoff stages (`STAGES`) |
 | `server/kshsaa/game-stats.js` | Reading stored games: who played and for how long, celerity, month/level filters, and a tournament game's result (`resultOf`) and how its other side was kept (`opponentModeOf`) |
 | `server/kshsaa/room-model.js` | Player strengths adjusted for who else was in the room and how hard each level, and each tournament, plays, and which games varsity held back in; Insights and the Stats page's Adjusted column use it |
 | `server/kshsaa/squad-plan.js` | Reads and writes the Roster tab's squad plan: squads, pools, and which pools fill each squad's rotating spots |
@@ -802,7 +802,20 @@ with `resultOf`, which also covers older games from their scores. Rounds can
 run past 16 questions, up to `MAX_QUESTIONS` (40): the grid's buttons add and
 remove questions, and an added question's subject starts the regular order
 over. The next game typed in keeps the last mode that was not a chair, and
-editing a game does not change it. The
+editing a game does not change it.
+
+A playoff game stores its `stage`, one of the `STAGES` keys: quarterfinal,
+semifinal, third, or final. A regular round stores null, and a chair is always
+one.
+- **Labels:** a playoff game is labeled by its stage ("Hays Invitational,
+  semifinal vs Hays") and lists after the regular rounds, in bracket order.
+- **How far:** each tournament's line on the Tournaments tab adds how far the
+  team went, from its furthest playoff game and its result: champion,
+  runner-up, third or fourth place, semifinalist, or quarterfinalist.
+- **Next game:** winning a quarterfinal or semifinal sets the next game's
+  stage to the round after.
+
+The
 insights scale fit uses practice games only, since half of a tournament room is
 another school. The `kind` filter (`readFilters`, `inKind`) is on the stats and
 Insights pages. Tournament games are edited on the Tournaments tab, never in

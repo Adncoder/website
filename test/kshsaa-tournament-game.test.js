@@ -1,6 +1,6 @@
 // Tournament sheets as coaches actually keep them: the other team's points by
-// question, not at all, or no other team (a chair), and rounds longer than 16.
-// Run with: npm test
+// question, not at all, or no other team (a chair), rounds longer than 16, and
+// playoff rounds. Run with: npm test
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -102,4 +102,24 @@ test('games saved before sheets could say count as fully recorded', () => {
   assert.equal(resultOf(old), 'tie');
   old.teams[1].score = 90;
   assert.equal(resultOf(old), 'win');
+});
+
+test('a playoff game goes by its stage', () => {
+  const g = tournamentGame(sheet({ round: '7', stage: 'semifinal' }), same);
+  assert.equal(g.stage, 'semifinal');
+  assert.equal(g.round, '7');
+  assert.equal(g.label, 'Hays Invitational, semifinal vs Hays');
+  const third = tournamentGame(sheet({ round: '', stage: 'third' }), same);
+  assert.equal(third.label, 'Hays Invitational, third-place game vs Hays');
+});
+
+test('a regular round has no stage, and an unknown one counts as regular', () => {
+  assert.equal(tournamentGame(sheet(), same).stage, null);
+  assert.equal(tournamentGame(sheet({ stage: '' }), same).stage, null);
+  assert.equal(tournamentGame(sheet({ stage: 'grand final' }), same).stage, null);
+  assert.equal(tournamentGame(sheet({ stage: 'toString' }), same).stage, null);
+});
+
+test('a chair cannot be a playoff game', () => {
+  assert.throws(() => tournamentGame(sheet({ opponentMode: 'chair', opponent: '', stage: 'final' }), same), /playoff game has an opponent/);
 });
