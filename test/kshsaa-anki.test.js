@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { inflateRawSync } from 'zlib';
 
 import {
-  SYNC_DAYS_BACK, addDays, buildBoard, cleanSync, codeHash, isDayKey, newCode, normalizeCode, periodRange, standingOf
+  SYNC_DAYS_BACK, addDays, buildBoard, cleanSync, codeHash, isDayKey, newCode, normalizeCode, periodRange, standingOf, syncServers
 } from '../server/kshsaa/anki-board.js';
 import { crc32, zipFiles } from '../server/kshsaa/zip.js';
 
@@ -137,4 +137,12 @@ test('the zip writer makes a zip that reads back', () => {
   const zip = zipFiles(Object.entries(files).map(([name, data]) => ({ name, data: Buffer.from(data) })), new Date(2026, 10, 18, 21, 30, 10));
   assert.deepEqual(readZip(zip), files);
   assert.deepEqual(readZip(zipFiles([])), {});
+});
+
+test('the add-on sends to the always-awake site first, then the one it came from', () => {
+  const awake = 'https://site--backup.code.run';
+  assert.deepEqual(syncServers(awake, 'https://scholars-bowl.onrender.com'), [awake, 'https://scholars-bowl.onrender.com']);
+  // downloaded from the always-awake site itself: listed once
+  assert.deepEqual(syncServers(awake, 'https://SITE--backup.code.run/'), [awake]);
+  assert.deepEqual(syncServers('', 'http://localhost:3029'), ['http://localhost:3029']);
 });

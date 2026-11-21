@@ -556,27 +556,54 @@ Tools > Add-ons > Get Add-ons and paste the number in `ANKIWEB_ID`
 (`routes/kshsaa-anki.js`). The add-on is listed as "Automatic Card Counts" at
 https://ankiweb.net/shared/info/1953309465, so a new version reaches players as
 an Anki update. `/kshsaa-anki/addon` builds the same add-on as a file: an
-`.ankiaddon` zip, built per download, with the address it was downloaded from
-written into its `config.json`. The page offers the file as a fallback, and it
-is also the file uploaded to AnkiWeb.
+`.ankiaddon` zip, built per download, with the addresses it sends to written
+into its `config.json` (`servers`). The page offers the file as a fallback,
+and it is also the file uploaded to AnkiWeb.
+
+Where it sends: `servers` lists `ALWAYS_AWAKE` first, then the address the file
+was downloaded from (`syncServers`). `ALWAYS_AWAKE` is the Northflank copy of
+the site, which shares the database. Render's free plan sleeps after 15
+minutes without visitors and takes about a minute to wake, so Render comes
+second.
+
+How a send goes (`client.py`):
+- **Waits:** it waits 15 seconds on the first site and 75 on the rest.
+- **Refusals:** a 400, 401, or 403 stops the send, since every site shares one
+  board.
+- **Anything else:** an unreachable site, a slow one, or any other error passes
+  the counts to the next site.
+
+When no site takes them, `__init__.py` tries again after 2, 10, then 30
+minutes. While Anki stays open, it also checks every 30 minutes and sends only
+if the counts changed, which they do once a day as the 60-day window moves.
+Sends run on a daemon thread, so Anki never waits for one when it closes. The
+add-on never syncs Anki itself: phone reviews count once the computer's Anki
+syncs, and the page tells players who leave Anki open to press Sync now and
+then.
 
 To release a change to the add-on:
 1. Bump `VERSION` in `client.py`, then merge and deploy.
-2. Download `/kshsaa-anki/addon` from the main site's address, not a backup
-   host's.
+2. Download `/kshsaa-anki/addon` from the main site's address, so the main
+   site is in its `servers` behind the always-awake one.
 3. Upload it to the AnkiWeb listing as a new version. That takes the AnkiWeb
    account it was first uploaded from.
 
-Keep AnkiWeb's minimum version at 2.1.50, like the page. Entering a code saves
-the whole config, address included, in the player's `meta.json`, and Anki keeps
-saved values over a new default. So moving the site to a new address first
-needs a version that reads `server` from `config.json` only.
+Keep AnkiWeb's minimum version at 2.1.50, like the page.
+
+Anki keeps a player's saved settings (`meta.json`) over a new default.
+Version 1.0 saved its address along with the code, so since 1.1 the add-on
+reads its addresses from its own `config.json` every time and saves only the
+code. An update can change the addresses for everyone.
+
+Updates come from AnkiWeb when Anki starts, so a player who never closes Anki
+gets one on the next restart, or through Tools > Add-ons > Check for Updates.
 
 The add-on counts each Anki day from the review log: a review is any
 answer, counted every time, which is what Anki shows as "studied N cards
 today", and rescheduling by hand is not one. It sends the last 60 days when
-Anki opens, after studying, and after each sync, so a missed send fills itself
-in and phone reviews count once the computer's Anki syncs them. The server
+Anki opens, after studying, after each sync, and on its half-hourly check, so
+a missed send fills itself in and phone reviews count once the computer's Anki
+syncs them. The server
 takes the days with reviews, deletes any other stored day in the window the
 add-on looked at (`from`), and ranks by reviews, ties sharing a rank. Weeks run
 Monday to Sunday and days are the player's own Anki days, labeled with the date
@@ -591,10 +618,25 @@ leaderboard" passes the code after the `#`, which never reaches the server's
 logs, and the page signs in with it and takes it out of the address. Wrong codes
 are capped per address and sends per player.
 
-Every Anki name the add-on uses (its hooks, `QueryOp`, `day_cutoff`, the Tools
-menu) was checked to exist in Anki 26.5's own files; older versions were not
-checked, and the page asks for 2.1.50 or newer. Test the counting with
-`python -m unittest test_stats` in `server/kshsaa/anki-addon/`.
+Every Anki name the add-on uses was checked to exist in Anki 26.5's own files:
+- its hooks (`profile_did_open`, `profile_will_close`, `sync_did_finish`,
+  `reviewer_will_end`)
+- `QueryOp`, `day_cutoff`, and `taskman.run_on_main`
+- `addonConfigDefaults` and `addonFromModule`
+- the Tools menu
+
+Older versions were not checked, and the page asks for 2.1.50 or newer.
+
+Test with `python -m unittest test_stats test_client test_addon` in
+`server/kshsaa/anki-addon/`:
+- **`test_stats`:** the counting, against a real SQLite review log.
+- **`test_client`:** which site takes the counts, against local web servers
+  playing awake, asleep, broken, refusing, and gone.
+- **`test_addon`:** runs `__init__.py` against a stand-in for `aqt`. It covers
+  timers, retries, skipping unchanged counts, and saving the code.
+
+The download leaves `test_` files out. Delete any `__pycache__` the tests
+leave, since AnkiWeb refuses a zip that has one.
 The add-on cannot be run outside Anki, so try a change in a throwaway profile
 (`anki -b <empty folder>`), never in a player's own.
 
