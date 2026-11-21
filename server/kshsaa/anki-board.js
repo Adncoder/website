@@ -159,3 +159,21 @@ export const normalizeCode = code => String(code ?? '').toUpperCase().replace(/[
 
 /** What is stored instead of the code. */
 export const codeHash = code => createHash('sha256').update(normalizeCode(code)).digest('hex');
+
+/**
+ * Where the add-on sends counts, in order (anki-addon/client.py): the site
+ * that never sleeps, then the address the add-on was downloaded from, each
+ * once. Every site shares one database, so any of them updates the board.
+ * @param {string} awake - the always-awake site
+ * @param {string} here - this site, as the download request reached it
+ * @returns {string[]}
+ */
+export function syncServers (awake, here) {
+  const seen = new Set();
+  return [awake, here].map(s => String(s ?? '').trim().replace(/\/+$/, '')).filter(s => {
+    const key = s.toLowerCase();
+    if (!s || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

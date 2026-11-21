@@ -20,7 +20,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { requireAuth, roleOf } from './kshsaa-stats.js';
 import {
-  SYNC_DAYS_BACK, addDays, buildBoard, cleanSync, codeHash, newCode, normalizeCode, periodRange, standingOf, todayKey
+  SYNC_DAYS_BACK, addDays, buildBoard, cleanSync, codeHash, newCode, normalizeCode, periodRange, standingOf, syncServers, todayKey
 } from '../server/kshsaa/anki-board.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { zipFiles } from '../server/kshsaa/zip.js';
@@ -33,11 +33,15 @@ const roster = qbreader.collection('kshsaa_roster');
 
 const ADDON_DIR = new URL('../server/kshsaa/anki-addon/', import.meta.url);
 // Anki compares this to decide whether a downloaded copy is newer
-const ADDON_MOD = 1795392000;
+const ADDON_MOD = 1795478400; // version 1.1
 // The add-on on AnkiWeb (ankiweb.net/shared/info/1953309465), uploaded from
 // /kshsaa-anki/addon. Players paste this number into Get Add-ons, so a new
 // version reaches them as an Anki update.
 const ANKIWEB_ID = '1953309465';
+// The copy of this site that never sleeps (Northflank), on the same database.
+// Render's free plan sleeps after 15 minutes without visitors and takes about
+// a minute to wake, so the add-on sends here first and to Render second.
+const ALWAYS_AWAKE = 'https://site--scholars-bowl-backup--8x4rbwbgp5sd.code.run';
 
 const text = (v, max) => String(v ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
 
@@ -136,8 +140,9 @@ router.get('/addon', (req, res) => {
   const files = readdirSync(ADDON_DIR)
     .filter(name => name.endsWith('.py') && !name.startsWith('test_'))
     .map(name => ({ name, data: readFileSync(new URL(name, ADDON_DIR)) }));
-  const server = req.protocol + '://' + req.get('host');
-  files.push({ name: 'config.json', data: Buffer.from(JSON.stringify({ server, code: '' }, null, 2) + '\n') });
+  // where it sends: the site that never sleeps, then this one
+  const servers = syncServers(ALWAYS_AWAKE, req.protocol + '://' + req.get('host'));
+  files.push({ name: 'config.json', data: Buffer.from(JSON.stringify({ servers, code: '' }, null, 2) + '\n') });
   files.push({ name: 'manifest.json', data: Buffer.from(JSON.stringify({ package: 'scholars_bowl_leaderboard', name: 'Scholars Bowl leaderboard', mod: ADDON_MOD })) });
   res.set('Content-Type', 'application/octet-stream');
   res.set('Content-Disposition', 'attachment; filename="scholars-bowl-leaderboard.ankiaddon"');
@@ -312,7 +317,7 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
     <ol class="steps mt-3 mb-2">
       <li>In Anki on a computer, choose Tools &rarr; Add-ons &rarr; Get Add-ons&hellip;, paste <span class="addon-id" id="addonId">${ANKIWEB_ID}</span> <button type="button" class="btn btn-outline-secondary btn-sm py-0" id="copyAddonId">Copy</button>, and restart Anki.</li>
       <li>When Anki asks, paste the code your captain gave you. To change it later: Tools &rarr; Scholars Bowl leaderboard &rarr; Enter my code.</li>
-      <li>That's it. Your counts go out when Anki opens, when you finish studying, and after you sync. Studying on a phone counts once you sync on the computer.</li>
+      <li>That's it. Your counts go out when Anki opens, when you finish studying, after you sync, and every half hour while Anki stays open. Studying on a phone counts once the computer's Anki syncs, so if you leave Anki open, press Sync now and then.</li>
     </ol>
     <p class="muted mb-2">Anki can't reach AnkiWeb? <a href="/kshsaa-anki/addon" download>Download the add-on file</a> and use Tools &rarr; Add-ons &rarr; Install from file&hellip; instead.</p>
     <p class="muted mb-0">Only numbers leave Anki: cards answered, new cards, and minutes for each day. No card text, no deck names. It needs a recent Anki (2.1.50 or newer).</p>
