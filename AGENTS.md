@@ -611,7 +611,14 @@ they began.
 
 Codes are 12 characters from an alphabet without 0, O, 1, or I, stored only as
 SHA-256 hashes: a lost code is replaced (the old one stops working, in the
-add-on and on the board), never looked up. The board is not public: a player
+add-on and on the board), never looked up.
+
+One code works on any number of computers. Each send replaces the player's
+days in the window it covers, so the board shows whichever computer sent last.
+Computers that sync the same Anki collection agree once they have synced, and
+the page tells players to use one code on each computer.
+
+The board is not public: a player
 signs in with their code, or anyone with a stats or reader sign-in sees it, and
 only the stats password manages players and prizes. The add-on's "Open the
 leaderboard" passes the code after the `#`, which never reaches the server's

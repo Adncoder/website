@@ -316,7 +316,8 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
     <summary class="fw-semibold">Get on the board: install the add-on</summary>
     <ol class="steps mt-3 mb-2">
       <li>In Anki on a computer, choose Tools &rarr; Add-ons &rarr; Get Add-ons&hellip;, paste <span class="addon-id" id="addonId">${ANKIWEB_ID}</span> <button type="button" class="btn btn-outline-secondary btn-sm py-0" id="copyAddonId">Copy</button>, and restart Anki.</li>
-      <li>When Anki asks, paste the code your captain gave you. To change it later: Tools &rarr; Scholars Bowl leaderboard &rarr; Enter my code.</li>
+      <li>When Anki asks, paste the code your captain gave you. To change it later: Tools &rarr; Scholars Bowl leaderboard &rarr; Enter my code.
+        <b>Study on more than one computer? Use the same code on each.</b> That menu shows the code a computer already has, so you can copy it from there.</li>
       <li>That's it. Your counts go out when Anki opens, when you finish studying, after you sync, and every half hour while Anki stays open. Studying on a phone counts once the computer's Anki syncs, so if you leave Anki open, press Sync now and then.</li>
     </ol>
     <p class="muted mb-2">Anki can't reach AnkiWeb? <a href="/kshsaa-anki/addon" download>Download the add-on file</a> and use Tools &rarr; Add-ons &rarr; Install from file&hellip; instead.</p>
@@ -423,7 +424,8 @@ function showCode (name, code) {
   box.hidden = false;
   box.innerHTML = '<div class="mb-1">Code for <b>' + esc(name) + '</b>, shown only this once:</div>' +
     '<span class="code" id="newCode">' + esc(code) + '</span> <button type="button" class="btn btn-outline-secondary btn-sm ms-2" id="copyCode">Copy</button>' +
-    '<div class="muted mt-1">They paste it into the add-on and use it to sign in here. Lost it? Press New code to make another; the old one stops working.</div>';
+    '<div class="muted mt-1">They paste it into the add-on, the same code on every computer they study on, and use it to sign in here. ' +
+    'Lost it? Press New code to make another; the old one stops working on every computer.</div>';
   $('copyCode').addEventListener('click', () => {
     navigator.clipboard.writeText(code).then(() => { $('copyCode').textContent = 'Copied'; }, () => {});
   });
@@ -468,7 +470,8 @@ $('playerTable').addEventListener('click', async e => {
   $('manageMsg').textContent = '';
   try {
     if (button.dataset.code) {
-      if (!confirm('Make a new code for ' + button.dataset.name + '? The old one stops working, in the add-on too.')) return;
+      if (!confirm('Make a new code for ' + button.dataset.name + '? The old one stops working, in the add-on on every computer that uses it. ' +
+        'Only for a lost code: one code works on any number of computers.')) return;
       const d = await api('/kshsaa-anki/players/' + button.dataset.code + '/code', {});
       showCode(d.name, d.code);
     } else if (button.dataset.remove) {
