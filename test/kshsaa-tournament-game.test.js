@@ -213,6 +213,37 @@ test('a final-scores sheet needs both scores, or else who won', () => {
   assert.equal(finalsOnly({ ourScore: 90, opponentScore: 80, stage: 'final' }).label, 'Hays Invitational, final vs Hays');
 });
 
+// a sheet with nothing but each player's points for the whole tournament
+const totalsOnly = (players, extra = {}) =>
+  tournamentGame({ tournament: 'Early Varsity', date: '2026-09-26', level: 'varsity', team: 'Varsity Blue', sheet: 'totals', players, ...extra }, same);
+
+test("a sheet with only each player's total is one entry with their points", () => {
+  const g = totalsOnly([{ name: 'Avery', points: '120' }, { name: 'Blake', points: 85 }, { name: '' }]);
+  assert.equal(g.wholeTournament, true);
+  assert.equal(g.scoresOnly, true);
+  assert.deepEqual(g.playerTotals, [{ name: 'Avery', points: 120 }, { name: 'Blake', points: 85 }]);
+  assert.deepEqual(g.teams, [{ name: 'Varsity Blue', players: ['Avery', 'Blake'], score: 205 }]);
+  assert.equal(g.label, "Early Varsity, each player's total");
+  // it is not a game: no opponent was needed, and there is no result
+  assert.equal(g.opponent, null);
+  assert.equal(g.result, null);
+  assert.equal(resultOf(g), null);
+  // no questions, so no player stats count it, and no subjects to change
+  assert.equal(playersInGame(g).size, 0);
+  assert.equal(withSubjects(g, order('fine-arts')), null);
+  // whatever the rest of the form held
+  assert.equal(totalsOnly([{ name: 'Avery', points: 10 }], { round: '4', stage: 'final', opponent: 'Hays' }).stage, null);
+});
+
+test('each player on a totals sheet needs their points', () => {
+  assert.throws(() => totalsOnly([{ name: 'Avery' }]), /how many points did Avery score/);
+  assert.throws(() => totalsOnly([{ name: 'Avery', points: '12.5' }]), /Avery's points has to be a whole number/);
+  assert.throws(() => totalsOnly([]), /list each player and their points/);
+  assert.throws(() => totalsOnly([{ name: 'Avery', points: 10 }, { name: 'Avery', points: 20 }]), /listed twice/);
+  // more -5s than answers makes a negative total
+  assert.equal(totalsOnly([{ name: 'Avery', points: -5 }]).playerTotals[0].points, -5);
+});
+
 test('subjects change only as far as both rounds go', () => {
   const long = sheet({}, 20);
   for (const q of long.questions.slice(16)) q.category = 'Other';

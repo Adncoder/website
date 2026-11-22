@@ -171,6 +171,52 @@ function scoresOnlyGame (body, fix, { tournament, playedAt, team, mode, opponent
 }
 
 /**
+ * A sheet with nothing but each player's points for the whole tournament: no
+ * games, opponents, or questions. It is stored as one entry for the
+ * tournament (wholeTournament). It adds to each player's tournaments and
+ * points on the Tournaments tab's season table, and to no record. Like a
+ * sheet with only the final scores, the room model, Insights, and every
+ * player stat skip it: its players heard no questions.
+ */
+function totalsGame (body, fix, { tournament, playedAt, team }) {
+  const totals = [];
+  for (const p of (Array.isArray(body.players) ? body.players : []).slice(0, SLOTS + 4)) {
+    const name = fix(text(p?.name, 60));
+    if (!name) continue;
+    if (totals.some(t => t.name === name)) throw new Error(name + ' is listed twice');
+    const points = finalScore(p.points, name + "'s points");
+    if (points == null) throw new Error('how many points did ' + name + ' score?');
+    totals.push({ name, points });
+  }
+  if (!totals.length) throw new Error('list each player and their points for the tournament');
+  return {
+    kind: 'tournament',
+    scoresOnly: true,
+    wholeTournament: true,
+    tournament,
+    round: '',
+    stage: null,
+    opponent: null,
+    // no other team, and no result: it is not a game
+    opponentMode: 'unrecorded',
+    result: null,
+    label: tournament + ", each player's total",
+    playedAt,
+    level: LEVELS[body.level] ? body.level : null,
+    tossupsRead: 0,
+    categories: [],
+    wordCounts: null,
+    charCounts: null,
+    lineup: [],
+    teams: [{ name: team, players: totals.map(t => t.name), score: totals.reduce((s, t) => s + t.points, 0) }],
+    heardByPlayer: {},
+    playerTotals: totals,
+    buzzes: [],
+    notes: []
+  };
+}
+
+/**
  * A game from the entry grid, checked and turned into the stored shape. Throws
  * with a message for whoever is typing it in.
  * @param {object} body - { tournament, date, level, round, stage, team,
@@ -179,7 +225,9 @@ function scoresOnlyGame (body, fix, { tournament, playedAt, team, mode, opponent
  *   notes: [{questionNumber, player, text}] }. `them` counts only when the
  *   mode is 'recorded'; opponentScore and result only when it is 'unrecorded'.
  *   A sheet with only the final scores sends scoresOnly and ourScore instead
- *   of questions (scoresOnlyGame).
+ *   of questions (scoresOnlyGame), and one with only each player's total for
+ *   the tournament sends sheet: 'totals' and players: [{name, points}]
+ *   (totalsGame).
  * @param {function(string): string} fix - name canonicalizer
  */
 export function tournamentGame (body, fix) {
@@ -190,6 +238,7 @@ export function tournamentGame (body, fix) {
   const playedAt = new Date(date + 'T18:00:00Z');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(playedAt.getTime())) throw new Error('the tournament needs a date');
   const team = text(body.team, 60) || 'SJA';
+  if (body.sheet === 'totals') return totalsGame(body, fix, { tournament, playedAt, team });
   const mode = OPPONENT_MODES.includes(body.opponentMode) ? body.opponentMode : 'recorded';
   const opponent = mode === 'chair' ? null : text(body.opponent, 60);
   if (mode !== 'chair') {

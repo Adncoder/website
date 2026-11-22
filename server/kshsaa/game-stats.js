@@ -48,14 +48,23 @@ export const KINDS = { practice: 'Practice', tournament: 'Tournaments' };
 export const kindOf = g => (g.kind === 'tournament' ? 'tournament' : 'practice');
 
 /**
- * Whether a game is a tournament sheet kept as final scores only
- * (tournament-game.js). It has no questions, so it counts toward the team's
- * record and nothing else: the room model and Insights skip it, and its
+ * Whether a game is a tournament sheet with no questions (tournament-game.js):
+ * kept as final scores only, or as each player's total for the whole
+ * tournament (wholeTournament). The room model and Insights skip it, and its
  * players heard no questions, so playersInGame leaves them out.
  * @param {object} g - a stored game
  * @returns {boolean}
  */
 export const scoresOnly = g => Boolean(g.scoresOnly);
+
+/**
+ * Whether a tournament entry is each player's points for the whole tournament
+ * rather than a game. It counts on the Tournaments tab's season table only,
+ * and in no record or game list.
+ * @param {object} g - a stored game
+ * @returns {boolean}
+ */
+export const wholeTournament = g => Boolean(g.wholeTournament);
 
 /**
  * How a tournament game's other team was kept (tournament-game.js):

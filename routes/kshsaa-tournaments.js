@@ -66,8 +66,10 @@ router.get('/data', requireAuth, async (req, res) => {
         // next round typed in starts with them
         event: tournamentOf(g).key,
         categories: g.categories || null,
-        // a sheet with only the final scores: its players went, and nothing more
+        // a sheet with only the final scores: its players went, and nothing
+        // more; one with only each player's total for the whole tournament
         scoresOnly: Boolean(g.scoresOnly),
+        wholeTournament: Boolean(g.wholeTournament),
         round: g.round || '',
         stage: g.stage || null,
         opponent: theirs(g).name,
@@ -83,12 +85,14 @@ router.get('/data', requireAuth, async (req, res) => {
         notes: (g.notes || []).length,
         players: ours(g).players.map(name => {
           const mine = (g.buzzes || []).filter(b => b.player === name);
+          // a sheet with only each player's total gives their points outright
+          const total = (g.playerTotals || []).find(t => t.name === name);
           return {
             name,
             heard: g.heardByPlayer?.[ours(g).name + '|' + name] ?? g.tossupsRead,
             correct: mine.filter(b => b.value > 0).length,
             negs: mine.filter(b => b.value < 0).length,
-            points: mine.reduce((s, b) => s + b.value, 0)
+            points: total ? total.points : mine.reduce((s, b) => s + b.value, 0)
           };
         })
       }))
@@ -123,9 +127,16 @@ router.post('/save', requireAuth, async (req, res) => {
     const same = (await games.find({ kind: 'tournament', tournament: doc.tournament }).toArray()).find(g =>
       monthKeyOf(g.playedAt) === monthKeyOf(doc.playedAt) && new Date(g.playedAt).getUTCDate() === doc.playedAt.getUTCDate() &&
       (g.round || '') === doc.round && (g.stage || null) === doc.stage &&
+      Boolean(g.wholeTournament) === Boolean(doc.wholeTournament) &&
       (theirs(g).name || '').toLowerCase() === (doc.opponent || '').toLowerCase() &&
       ours(g).name.toLowerCase() === doc.teams[0].name.toLowerCase());
-    if (same) return res.status(409).json({ error: 'that game is already entered - find it in the list below to change it' });
+    if (same) {
+      return res.status(409).json({
+        error: doc.wholeTournament
+          ? "this tournament's player totals are already entered - find them in the list below to change them"
+          : 'that game is already entered - find it in the list below to change it'
+      });
+    }
     const r = await games.insertOne({ ...doc, enteredAt: new Date() });
     res.json({ ok: true, id: String(r.insertedId), ...await saved(doc, r.insertedId) });
   } catch (e) {
@@ -253,6 +264,14 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
     <h2 id="formTitle">Enter a game</h2>
     <div class="card"><div class="card-body">
+      <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+        <label class="form-label mb-0" for="fSheet">The sheet has</label>
+        <select class="form-select form-select-sm w-auto" id="fSheet">
+          <option value="questions">Every question</option>
+          <option value="scores">Only each game's final score</option>
+          <option value="totals">Only each player's total for the tournament</option>
+        </select>
+      </div>
       <div class="row g-2">
         <div class="col-md-3"><label class="form-label" for="fTourney">Tournament</label>
           <input class="form-control form-control-sm" id="fTourney" list="tourneyList" placeholder="Hays Invitational">
@@ -261,16 +280,16 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <input class="form-control form-control-sm" type="date" id="fDate"></div>
         <div class="col-md-2"><label class="form-label" for="fLevel">Level</label>
           <select class="form-select form-select-sm" id="fLevel"></select></div>
-        <div class="col-md-1"><label class="form-label" for="fRound">Round</label>
+        <div class="col-md-1" id="roundBox"><label class="form-label" for="fRound">Round</label>
           <input class="form-control form-control-sm" id="fRound" placeholder="1"></div>
-        <div class="col-md-2"><label class="form-label" for="fStage">Stage</label>
+        <div class="col-md-2" id="stageBox"><label class="form-label" for="fStage">Stage</label>
           <select class="form-select form-select-sm" id="fStage"></select></div>
         <div class="col-md-2"><label class="form-label" for="fTeam">Our team</label>
           <input class="form-control form-control-sm" id="fTeam" list="squadList" placeholder="Varsity Blue">
           <datalist id="squadList"></datalist></div>
-        <div class="col-md-4"><label class="form-label" for="fOpp">Opponent</label>
+        <div class="col-md-4" id="oppBox"><label class="form-label" for="fOpp">Opponent</label>
           <input class="form-control form-control-sm" id="fOpp" placeholder="Hays"></div>
-        <div class="col-md-3"><label class="form-label" for="fMode">Their points</label>
+        <div class="col-md-3" id="modeBox"><label class="form-label" for="fMode">Their points</label>
           <select class="form-select form-select-sm" id="fMode">
             <option value="recorded">On the sheet, by question</option>
             <option value="unrecorded">Not on the sheet</option>
@@ -284,10 +303,6 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
           <select class="form-select form-select-sm" id="fResult">
             <option value="">Not written down</option><option value="win">We won</option>
             <option value="loss">We lost</option><option value="tie">Tied</option></select></div>
-      </div>
-      <div class="form-check mt-2 mb-0">
-        <input class="form-check-input" type="checkbox" id="fScoresOnly">
-        <label class="form-check-label small" for="fScoresOnly">The sheet has only the final scores, no buzzes</label>
       </div>
       <p class="note d-none" id="modeNote"></p>
 
@@ -379,10 +394,13 @@ var BASE = [];
 var TOUCHED = false;
 var SUBJECT_WORDS = { Other: 'Other (misc)' };
 var SAME_AS_OTHERS = "The same subjects as this tournament's other rounds.";
-// a sheet with only the final scores, and whether the next new game is one
-// after a game is edited
-var SCORES_ONLY = false;
-var KEEP_SCORES_ONLY = false;
+// What the sheet has: 'questions' (the grid), 'scores' (only each game's final
+// score), or 'totals' (only each player's points for the whole tournament).
+// KEEP_SHEET: what the next new game goes back to after one is edited.
+var SHEET = 'questions';
+var KEEP_SHEET = 'questions';
+// the Round box was typed in, so the next round number leaves it alone
+var ROUND_TOUCHED = false;
 
 function postJson (url, body) {
   return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -437,6 +455,8 @@ function setUp () {
   $('seasonLevel').onchange = renderSeason;
   $('fDate').value = new Date().toISOString().slice(0, 10);
   resetForm(false);
+  // round 1 of whatever tournament comes next
+  followTournament();
   var hash = location.hash.indexOf('#game=') === 0 ? location.hash.slice(6) : '';
   if (hash) editGame(hash);
 }
@@ -446,8 +466,11 @@ function setUp () {
 function resetForm (keepSetup) {
   if (!keepSetup) {
     PLAYERS = [];
-    for (var i = 0; i < SLOTS; i++) PLAYERS.push({ name: '', from: '', to: '' });
+    for (var i = 0; i < SLOTS; i++) PLAYERS.push({ name: '', from: '', to: '', points: '' });
   }
+  // a player's total belongs to one tournament
+  PLAYERS.forEach(function (p) { p.points = ''; });
+  ROUND_TOUCHED = false;
   // the next round of a tournament starts with the last one's subjects, and
   // with its usual ones once the list reloads (followTournament)
   if (!keepSetup || !BASE.length) BASE = DATA.order.slice();
@@ -461,9 +484,9 @@ function resetForm (keepSetup) {
   $('fOurs').value = '';
   $('fResult').value = '';
   // a tournament kept as final scores only usually has every round that way
-  if (!keepSetup) SCORES_ONLY = false;
-  $('fScoresOnly').checked = SCORES_ONLY;
-  setMode(!keepSetup ? 'recorded' : SCORES_ONLY && LAST_MODE === 'recorded' ? 'unrecorded' : LAST_MODE, true);
+  if (!keepSetup) SHEET = 'questions';
+  $('fSheet').value = SHEET;
+  setMode(!keepSetup ? 'recorded' : SHEET !== 'questions' && LAST_MODE === 'recorded' ? 'unrecorded' : LAST_MODE, true);
   renderSlots();
   renderGrid();
   renderNotes();
@@ -485,32 +508,39 @@ $('fFinal').oninput = function () { renderScores(); };
 $('fOurs').oninput = function () { renderScores(); };
 
 // What the sheet has decides which boxes show: their final score and who won
-// when their points are not on it, and on a sheet with only the final scores,
-// ours as well, with no questions, notes, or subs' questions.
+// when their points are not on it; on a sheet with only the final scores, ours
+// as well, with no questions, notes, or subs' questions; and on one with only
+// each player's total, no game at all, just who played and their points.
 function renderSheet () {
-  $('fMode').querySelector('option[value="recorded"]').disabled = SCORES_ONLY;
-  $('ourBox').classList.toggle('d-none', !SCORES_ONLY);
-  $('finalBox').classList.toggle('d-none', MODE !== 'unrecorded');
-  $('resultBox').classList.toggle('d-none', MODE !== 'unrecorded');
-  $('sheetDetail').classList.toggle('d-none', SCORES_ONLY);
-  $('subNote').classList.toggle('d-none', SCORES_ONLY);
-  $('playersLabel').textContent = SCORES_ONLY ? 'Who played, if anyone knows' : 'Players, by their number on the sheet';
-  $('modeNote').classList.toggle('d-none', MODE === 'recorded' && !SCORES_ONLY);
-  $('modeNote').textContent = SCORES_ONLY
-    ? 'Only the final scores: the game counts in the record, and in the Tournaments count of whoever played, but not in points, per-question numbers, or Insights.'
-    : MODE === 'chair'
-      ? 'A chair: nobody to play, so the game counts in the stats but is neither a win nor a loss.'
-      : MODE === 'unrecorded'
-        ? 'Type in our side only. Add their final score if the sheet has it, or else who won, if anyone knows.'
-        : '';
+  var noQuestions = SHEET !== 'questions';
+  var totals = SHEET === 'totals';
+  $('fMode').querySelector('option[value="recorded"]').disabled = noQuestions;
+  ['roundBox', 'stageBox', 'oppBox', 'modeBox'].forEach(function (id) { $(id).classList.toggle('d-none', totals); });
+  $('ourBox').classList.toggle('d-none', SHEET !== 'scores');
+  $('finalBox').classList.toggle('d-none', totals || MODE !== 'unrecorded');
+  $('resultBox').classList.toggle('d-none', totals || MODE !== 'unrecorded');
+  $('sheetDetail').classList.toggle('d-none', noQuestions);
+  $('subNote').classList.toggle('d-none', noQuestions);
+  $('playersLabel').textContent = totals ? "Each player's points for the whole tournament"
+    : noQuestions ? 'Who played, if anyone knows' : 'Players, by their number on the sheet';
+  $('modeNote').classList.toggle('d-none', MODE === 'recorded' && !noQuestions);
+  $('modeNote').textContent = totals
+    ? "Only each player's total: it counts in their Tournaments, Points, and Per tournament on this page, and in no record, per-question numbers, or Insights."
+    : noQuestions
+      ? 'Only the final scores: the game counts in the record, and in the Tournaments count of whoever played, but not in points, per-question numbers, or Insights.'
+      : MODE === 'chair'
+        ? 'A chair: nobody to play, so the game counts in the stats but is neither a win nor a loss.'
+        : MODE === 'unrecorded'
+          ? 'Type in our side only. Add their final score if the sheet has it, or else who won, if anyone knows.'
+          : '';
 }
 
-$('fScoresOnly').onchange = function () {
-  SCORES_ONLY = this.checked;
+$('fSheet').onchange = function () {
+  SHEET = this.value;
   // their points cannot be by question on a sheet with no questions
-  if (SCORES_ONLY && MODE === 'recorded') setMode('unrecorded', true);
+  if (SHEET !== 'questions' && MODE === 'recorded') setMode('unrecorded', true);
   // back to a sheet with questions: a round of them, if this game had none
-  if (!SCORES_ONLY && !QUESTIONS.length) QUESTIONS = BASE.map(function (c) { return { category: c, us: null, them: null }; });
+  if (SHEET === 'questions' && !QUESTIONS.length) QUESTIONS = BASE.map(function (c) { return { category: c, us: null, them: null }; });
   renderSheet();
   renderSlots();
   renderGrid();
@@ -572,12 +602,28 @@ $('fOrder').onchange = function () {
   useBase(o.order, '');
 };
 
-// A tournament's next round starts with the subjects its other rounds used,
-// once its name, level, and date say which one it is, unless this round's
-// were already changed by hand. Not on change: typing only redraws the grid.
+// the round after the last numbered one saved for a tournament, or 1 for a
+// tournament not entered yet; a gap is a sheet nobody has, so it is not filled
+function nextRound (key) {
+  var last = 0;
+  DATA.games.forEach(function (g) {
+    var n = Number(g.round);
+    if (g.event === key && !g.wholeTournament && Number.isInteger(n) && n > last) last = n;
+  });
+  return last + 1;
+}
+
+// A tournament's next game goes on from its saved rounds, once its name,
+// level, and date say which one it is: the round number after the last one,
+// unless one was typed, and the subjects its other rounds used, unless this
+// round's were already changed by hand. Not on change: typing only redraws
+// the grid.
 function followTournament () {
-  if (EDITING || TOUCHED || !DATA) return;
-  var known = knownOrder(formKey());
+  if (EDITING || !DATA) return;
+  var key = formKey();
+  if (!ROUND_TOUCHED) $('fRound').value = String(nextRound(key));
+  if (TOUCHED) return;
+  var known = knownOrder(key);
   var order = known || DATA.order;
   if (sameOrder(order, BASE)) return;
   useBase(order, sameOrder(order, DATA.order) ? '' : SAME_AS_OTHERS);
@@ -585,6 +631,7 @@ function followTournament () {
 $('fTourney').addEventListener('input', followTournament);
 $('fLevel').addEventListener('change', followTournament);
 $('fDate').addEventListener('change', followTournament);
+$('fRound').addEventListener('input', function () { ROUND_TOUCHED = true; });
 
 // special rounds run past 16 questions, and a round can end early
 $('addQ').onclick = function () {
@@ -620,9 +667,12 @@ function renderSlots () {
   $('slots').innerHTML = PLAYERS.map(function (p, i) {
     return '<div class="col-md-6 col-lg-4"><div class="input-group input-group-sm">' +
       '<span class="input-group-text slot">' + (i + 1) + '</span>' +
-      '<input class="form-control sname" data-k="' + (i + 1) + '" value="' + esc(p.name) + '" placeholder="' + (i < 5 ? 'starter' : 'sub') + '">' +
-      // a sheet with only the final scores cannot say which questions a sub heard
-      (SCORES_ONLY ? '' : '<span class="input-group-text">Q</span>' +
+      '<input class="form-control sname" data-k="' + (i + 1) + '" value="' + esc(p.name) + '" placeholder="' + (SHEET === 'totals' ? 'player' : i < 5 ? 'starter' : 'sub') + '">' +
+      // each player's points for the tournament, on a sheet with only those
+      (SHEET === 'totals'
+        ? '<input class="form-control spts" style="max-width:5.5rem" data-k="' + (i + 1) + '" value="' + esc(p.points) + '" placeholder="points" inputmode="numeric">'
+        // a sheet with only the final scores cannot say which questions a sub heard
+        : SHEET === 'scores' ? '' : '<span class="input-group-text">Q</span>' +
       '<input class="form-control sfrom" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.from) + '" placeholder="1" inputmode="numeric">' +
       '<span class="input-group-text">to</span>' +
       '<input class="form-control sto" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.to) + '" placeholder="' + QUESTIONS.length + '" inputmode="numeric">') +
@@ -655,6 +705,7 @@ $('slots').addEventListener('input', function (e) {
   if (el.classList.contains('sname')) p.name = el.value.trim();
   if (el.classList.contains('sfrom')) p.from = el.value.trim();
   if (el.classList.contains('sto')) p.to = el.value.trim();
+  if (el.classList.contains('spts')) p.points = el.value.trim();
   renderGrid();
   renderNotes();
 });
@@ -715,8 +766,15 @@ function renderScores () {
   });
   var name = $('fTeam').value.trim() || 'Us';
   var opp = $('fOpp').value.trim() || 'them';
+  // a sheet with only each player's total: their points added up
+  if (SHEET === 'totals') {
+    var sum = 0;
+    PLAYERS.forEach(function (p) { if (p.name.trim() && p.points !== '' && !isNaN(Number(p.points))) sum += Number(p.points); });
+    $('total').textContent = name + ' ' + sum + ' points in all';
+    return;
+  }
   // a sheet with only the final scores gives ours in its box
-  var ours = SCORES_ONLY ? $('fOurs').value.trim() : String(us);
+  var ours = SHEET === 'scores' ? $('fOurs').value.trim() : String(us);
   var oursKnown = ours !== '' && !isNaN(Number(ours));
   var shown = oursKnown ? ours : '?';
   var final = $('fFinal').value.trim();
@@ -869,22 +927,27 @@ $('save').onclick = function () {
     opponentMode: MODE,
     opponentScore: MODE === 'unrecorded' ? $('fFinal').value : '',
     result: MODE === 'unrecorded' ? $('fResult').value : '',
-    // a sheet with only the final scores: ours, and no questions or notes
-    scoresOnly: SCORES_ONLY,
-    ourScore: SCORES_ONLY ? $('fOurs').value : '',
-    players: PLAYERS.filter(function (p) { return p.name.trim(); }),
-    questions: SCORES_ONLY ? [] : QUESTIONS.map(function (q) {
+    // what the sheet has: only the final scores sends ours, and only each
+    // player's total sends their points; neither has questions or notes
+    sheet: SHEET,
+    scoresOnly: SHEET === 'scores',
+    ourScore: SHEET === 'scores' ? $('fOurs').value : '',
+    players: PLAYERS.filter(function (p) { return p.name.trim(); }).map(function (p) {
+      return { name: p.name, from: p.from, to: p.to, points: p.points };
+    }),
+    questions: SHEET !== 'questions' ? [] : QUESTIONS.map(function (q) {
       return { category: q.category, us: q.us ? { player: PLAYERS[q.us.k - 1].name, value: q.us.value } : null, them: MODE === 'recorded' ? q.them : null };
     }),
-    notes: SCORES_ONLY ? [] : NOTES
+    notes: SHEET !== 'questions' ? [] : NOTES
   };
   // subjects changed on this round may be how the whole tournament went
-  var touched = TOUCHED && !SCORES_ONLY;
+  var touched = TOUCHED && SHEET === 'questions';
   $('save').disabled = true;
   postJson('/kshsaa-tournaments/save', body).then(function (res) {
     $('save').disabled = false;
     if (!res.ok) { $('saveMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'could not save') + '</span>'; return; }
-    $('saveMsg').innerHTML = '<span class="text-success">Saved ' + esc(res.d.label) + ' (' + scoreText(res.d) + ')</span>';
+    $('saveMsg').innerHTML = '<span class="text-success">Saved ' + esc(res.d.label) + ' (' +
+      (body.sheet === 'totals' ? res.d.score + ' points in all' : scoreText(res.d)) + ')</span>';
     var others = touched ? (res.d.differing || []) : [];
     var copy = others.length > 0 && confirm('These other rounds of ' + body.tournament.trim() + ' have different subjects: ' +
       others.map(function (g) { return g.label; }).join('; ') + '. Change them to match this one? Their points stay as they are.');
@@ -917,29 +980,34 @@ $('save').onclick = function () {
 function stopEditing () {
   EDITING = null;
   // the next new game is kept the way the last one entered was
-  SCORES_ONLY = KEEP_SCORES_ONLY;
+  SHEET = KEEP_SHEET;
   $('formTitle').textContent = 'Enter a game';
   $('cancelEdit').classList.add('d-none');
   $('save').textContent = 'Save game';
   if (location.hash) history.replaceState(null, '', location.pathname);
   resetForm(true);
+  // and goes on from the edited game's tournament: its next round
+  followTournament();
 }
 $('cancelEdit').onclick = function () { stopEditing(); $('saveMsg').textContent = ''; };
 
 function editGame (id) {
   fetch('/kshsaa-stats/game/' + id).then(function (r) { return r.json(); }).then(function (g) {
     if (g.error || g.kind !== 'tournament') { $('saveMsg').textContent = g.error || 'not a tournament game'; return; }
-    if (!EDITING) KEEP_SCORES_ONLY = SCORES_ONLY;
+    if (!EDITING) KEEP_SHEET = SHEET;
     EDITING = id;
     var us = (g.teams || []).filter(function (t) { return !t.opponent; })[0] || { name: '', players: [] };
-    // a sheet with only the final scores lists who played, and no questions
+    // a sheet with only the final scores, or only each player's total, lists
+    // who played, and no questions
     var lineup = g.lineup && g.lineup.length ? g.lineup : us.players.map(function (name) { return { name: name, from: 1, to: g.tossupsRead }; });
+    var pointsOf = {};
+    (g.playerTotals || []).forEach(function (t) { pointsOf[t.name] = String(t.points); });
     PLAYERS = [];
     for (var i = 0; i < Math.max(SLOTS, lineup.length); i++) {
       var p = lineup[i];
       PLAYERS.push(p
-        ? { name: p.name, from: p.from === 1 ? '' : String(p.from), to: p.to === g.tossupsRead ? '' : String(p.to) }
-        : { name: '', from: '', to: '' });
+        ? { name: p.name, from: p.from === 1 ? '' : String(p.from), to: p.to === g.tossupsRead ? '' : String(p.to), points: pointsOf[p.name] || '' }
+        : { name: '', from: '', to: '', points: '' });
     }
     var slotOf = function (name) {
       for (var j = 0; j < PLAYERS.length; j++) if (PLAYERS[j].name === name) return j + 1;
@@ -968,9 +1036,9 @@ function editGame (id) {
     var them = (g.teams || []).filter(function (t) { return t.opponent; })[0];
     var mode = g.opponentMode || 'recorded';
     var final = mode === 'unrecorded' && them && them.score != null ? String(them.score) : '';
-    SCORES_ONLY = Boolean(g.scoresOnly);
-    $('fScoresOnly').checked = SCORES_ONLY;
-    $('fOurs').value = SCORES_ONLY && us.score != null ? String(us.score) : '';
+    SHEET = g.wholeTournament ? 'totals' : g.scoresOnly ? 'scores' : 'questions';
+    $('fSheet').value = SHEET;
+    $('fOurs').value = SHEET === 'scores' && us.score != null ? String(us.score) : '';
     $('fFinal').value = final;
     // who won, when the sheet does not have both final scores
     $('fResult').value = mode === 'unrecorded' && !(final && us.score != null) ? (g.result || '') : '';
@@ -1004,13 +1072,18 @@ function renderSeason () {
   list.forEach(function (g) {
     var key = g.tournament + '|' + new Date(g.playedAt).toISOString().slice(0, 10);
     g.players.forEach(function (p) {
-      var t = by[p.name] || (by[p.name] = { name: p.name, tourneys: {}, scored: {}, games: 0, points: 0, correct: 0, negs: 0, heard: 0 });
+      var t = by[p.name] || (by[p.name] = { name: p.name, tourneys: {}, scored: {}, games: 0, points: 0, asked: 0, correct: 0, negs: 0, heard: 0 });
       t.tourneys[key] = true;
+      // a player's total for the whole tournament: points, and nothing to
+      // divide them by but the tournament
+      if (g.wholeTournament) { t.scored[key] = true; t.points += p.points; return; }
       // a sheet with only the final scores says who went, not who answered
       if (g.scoresOnly) return;
       t.scored[key] = true;
       t.games++;
       t.points += p.points; t.correct += p.correct; t.negs += p.negs; t.heard += p.heard;
+      // points on questions we know were heard, for points per question
+      t.asked += p.points;
     });
   });
   var rows = Object.keys(by).map(function (k) {
@@ -1019,7 +1092,8 @@ function renderSeason () {
     t.measured = Object.keys(t.scored).length;
     return t;
   }).sort(function (a, b) { return b.points - a.points || a.name.localeCompare(b.name); });
-  var partial = list.some(function (g) { return g.scoresOnly; });
+  var scoresOnly = list.some(function (g) { return g.scoresOnly && !g.wholeTournament; });
+  var totals = list.some(function (g) { return g.wholeTournament; });
   $('season').innerHTML = '<div class="card"><div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0">' +
     '<thead><tr><th>Player</th><th class="num">Tournaments</th><th class="num">Games</th><th class="num">Points</th>' +
     '<th class="num">Per tournament</th><th class="num">Correct</th><th class="num">&minus;5s</th><th class="num">Points/question</th></tr></thead><tbody>' +
@@ -1027,9 +1101,14 @@ function renderSeason () {
       return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.attended + '</td><td class="num">' + t.games + '</td>' +
         '<td class="num fw-semibold">' + t.points + '</td><td class="num">' + (t.measured ? Math.round(t.points / t.measured) : '-') + '</td>' +
         '<td class="num">' + t.correct + '</td><td class="num">' + t.negs + '</td>' +
-        '<td class="num">' + (t.heard ? (t.points / t.heard).toFixed(2) : '-') + '</td></tr>';
+        '<td class="num">' + (t.heard ? (t.asked / t.heard).toFixed(2) : '-') + '</td></tr>';
     }).join('') + '</tbody></table></div></div></div>' +
-    (partial ? '<p class="note">Tournaments counts every one a player went to. The other columns leave out rounds with only the final scores.</p>' : '');
+    (scoresOnly || totals
+      ? '<p class="note">Tournaments counts every one a player went to.' +
+        (scoresOnly ? ' Rounds with only the final scores count nowhere else.' : '') +
+        (totals ? " A tournament with only each player's total adds to Points and Per tournament, and not to Games, Correct, &minus;5s, or Points/question." : '') +
+        '</p>'
+      : '');
 }
 
 // a game's score, as far as the sheet has it: 220-180, 220-? and who won, or
@@ -1086,13 +1165,26 @@ function renderGames () {
     grp.games.push(g);
   });
   $('games').innerHTML = groups.map(function (grp) {
+    // each player's total for the whole tournament is not a game: it has no
+    // result to count in the record
+    var played = grp.games.filter(function (g) { return !g.wholeTournament; });
+    var summary = played.length
+      ? recordText(played) + (finishText(played) ? ' &middot; ' + finishText(played) : '')
+      : "each player's total only";
     return '<div class="card mb-2"><div class="card-body p-0"><div class="px-3 pt-2 fw-semibold">' + esc(grp.name) +
       ' <span class="text-secondary fw-normal small">' + new Date(grp.date).toLocaleDateString(undefined, { timeZone: 'UTC' }) +
-      ' &middot; ' + recordText(grp.games) + (finishText(grp.games) ? ' &middot; ' + finishText(grp.games) : '') + '</span></div>' +
+      ' &middot; ' + summary + '</span></div>' +
       '<div class="table-responsive"><table class="table table-sm mb-0"><tbody>' +
       grp.games.slice().sort(function (a, b) {
         return stageRank(a.stage) - stageRank(b.stage) || String(a.round).localeCompare(String(b.round), undefined, { numeric: true });
       }).map(function (g) {
+        if (g.wholeTournament) {
+          return '<tr><td style="width:7.5rem">Whole tournament</td><td>' + esc(g.team) + "'s players</td>" +
+            '<td class="num">' + g.score + ' in all</td>' +
+            '<td class="small text-secondary">' + g.players.map(function (p) { return esc(p.name.split(' ')[0]) + ' ' + p.points; }).join(', ') + '</td>' +
+            '<td class="text-end text-nowrap"><button type="button" class="btn btn-sm btn-link p-0 me-2 gedit" data-id="' + g.id + '">edit</button>' +
+            '<button type="button" class="btn btn-sm btn-link text-danger p-0 gdel" data-id="' + g.id + '">delete</button></td></tr>';
+        }
         var cls = { win: 'res-win', loss: 'res-loss', tie: 'res-tie' }[g.result] || 'res-unknown';
         return '<tr><td style="width:7.5rem">' + (g.stage ? esc(stageLabel(g.stage)) : g.round ? 'Round ' + esc(g.round) : '') + '</td>' +
           '<td>' + esc(g.team) + (g.mode === 'chair' ? ' vs a chair' : ' vs ' + esc(g.opponent)) +
