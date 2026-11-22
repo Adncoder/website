@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { opponentModeOf, resultOf } from '../server/kshsaa/game-stats.js';
+import { opponentModeOf, playersInGame, resultOf } from '../server/kshsaa/game-stats.js';
 import { CATEGORY_BY_QUESTION } from '../server/kshsaa/round-shape.js';
 import { MAX_QUESTIONS, SUBJECT_ORDERS, SUBJECTS, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 
@@ -174,6 +174,43 @@ test('another round changed to these subjects keeps its points', () => {
   // the game itself is left alone until it is saved
   assert.equal(g.categories[0], 'World Language');
   assert.equal(withSubjects(g, CATEGORY_BY_QUESTION), null);
+});
+
+// a sheet with nothing but the final scores
+const finalsOnly = extra => tournamentGame(sheet({ scoresOnly: true, questions: [], ...extra }), same);
+
+test('a sheet with only the final scores keeps the record and who went, and no stats', () => {
+  const g = finalsOnly({ ourScore: '150', opponentScore: 120, players: [{ name: 'Avery' }, { name: 'Blake', from: 5 }] });
+  assert.equal(g.scoresOnly, true);
+  assert.equal(g.result, 'win');
+  assert.equal(resultOf(g), 'win');
+  assert.deepEqual(g.teams.map(t => t.score), [150, 120]);
+  assert.deepEqual(g.teams[0].players, ['Avery', 'Blake']);
+  assert.equal(g.label, 'Hays Invitational, round 3 vs Hays');
+  assert.deepEqual([g.buzzes, g.lineup, g.categories, g.tossupsRead], [[], [], [], 0]);
+  // whoever went heard no questions, so no player's stats count the game
+  assert.equal(playersInGame(g).size, 0);
+  // and it has no questions to give subjects to
+  assert.equal(withSubjects(g, order('fine-arts')), null);
+});
+
+test('a final-scores sheet needs both scores, or else who won', () => {
+  assert.equal(finalsOnly({ ourScore: 90, result: 'loss' }).result, 'loss');
+  assert.equal(finalsOnly({ opponentScore: 200, result: 'loss' }).teams[0].score, null);
+  // both scores decide it, whatever else the form says
+  assert.equal(finalsOnly({ ourScore: 90, opponentScore: 80, result: 'loss' }).result, 'win');
+  assert.throws(() => finalsOnly({ ourScore: 90 }), /both of them, or else who won/);
+  assert.throws(() => finalsOnly({ ourScore: '9.5', opponentScore: 80 }), /our final score has to be a whole number/);
+  // nobody has to be listed
+  assert.equal(finalsOnly({ ourScore: 90, opponentScore: 80, players: [] }).teams[0].players.length, 0);
+  assert.throws(() => finalsOnly({ ourScore: 90, opponentScore: 80, players: [{ name: 'Avery' }, { name: 'Avery' }] }), /listed twice/);
+  // a chair needs no score at all, and is neither a win nor a loss
+  const chair = finalsOnly({ opponentMode: 'chair', opponent: '' });
+  assert.equal(chair.result, null);
+  assert.equal(resultOf(chair), 'chair');
+  assert.equal(chair.teams.length, 1);
+  // a playoff round still goes by its stage
+  assert.equal(finalsOnly({ ourScore: 90, opponentScore: 80, stage: 'final' }).label, 'Hays Invitational, final vs Hays');
 });
 
 test('subjects change only as far as both rounds go', () => {

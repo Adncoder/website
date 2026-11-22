@@ -16,7 +16,7 @@ import { qbreader } from '../database/databases.js';
 import { tossups } from '../database/qbreader/collections.js';
 import { CATEGORIES, LEVELS, sourceOf } from './kshsaa-round.js';
 import { getSquadPlan, requireAuth } from './kshsaa-stats.js';
-import { monthKeyOf, monthLabel, readFilters } from '../server/kshsaa/game-stats.js';
+import { monthKeyOf, monthLabel, readFilters, scoresOnly } from '../server/kshsaa/game-stats.js';
 import { computeInsights } from '../server/kshsaa/insights.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -32,7 +32,8 @@ router.get('/data', requireAuth, async (req, res) => {
       roster.find({}).toArray(),
       getSquadPlan()
     ]);
-    const all = everything.filter(filters.inKind);
+    // a tournament sheet with only the final scores has nothing to learn from
+    const all = everything.filter(g => filters.inKind(g) && !scoresOnly(g));
 
     // what each recorded question was, for the difficulty table
     const ids = new Set();
