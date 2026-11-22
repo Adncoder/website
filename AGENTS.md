@@ -806,7 +806,11 @@ on the roster changes only what that line gives. Its "whole roster" checkbox
 (`replace`) instead takes squad, permanent, captain, and initials from each line
 outright and deletes every non-coach not listed; the page's confirm lists who
 goes and flags near-miss spellings, since a rename keeps game history and a
-delete-and-add does not. A `coach` entry is on the
+delete-and-add does not. A rename (`renameInGames`) changes the name in every
+game's buzzes, team lists, questions-heard counts, and notes, and in a
+tournament game's `lineup`. A lineup left with the old name would list nobody
+the game's answers are credited to, and editing that game would break. A
+`coach` entry is on the
 roster for autocomplete and may play in practice games, but is left out of
 player counts, and the Insights route drops coaches from its players and
 roster, so the team builder and player focus never see them.
@@ -874,6 +878,20 @@ after the change moves up a row. Any row's subject can also be changed by hand.
   The page then offers to change them (`POST /kshsaa-tournaments/subjects`,
   `withSubjects`). They change question by question as far as both rounds go,
   and their buzzes keep their points and follow their questions.
+
+Some sheets have nothing but the final scores, and the form's "only the final
+scores" box takes them (`scoresOnly`, built by `scoresOnlyGame`). Such a game
+stores both scores, or one and who won, plus who played if anyone knows.
+- **Not stored:** questions, subs' questions, buzzes, and notes.
+- **Player stats:** its players heard no questions, so `playersInGame` leaves
+  them out of every player stat.
+- **Model and Insights:** the room model skips the game (`scoresOnly` in
+  `game-stats.js`), since reading it as 16 tossups nobody answered would make
+  its tournament look impossibly hard. Insights leaves it out too.
+- **Where it counts:** in the record and how far the team went. On the
+  Tournaments tab's season table it counts only in each player's Tournaments
+  number, and Per tournament divides by the tournaments with buzzes.
+- **Subjects:** changing a tournament's subjects passes it by.
 
 A playoff game stores its `stage`, one of the `STAGES` keys: quarterfinal,
 semifinal, third, or final. A regular round stores null, and a chair is always

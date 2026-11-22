@@ -56,7 +56,7 @@
 // decide the rest. A game against a chair has no other school in the room.
 
 import { CATEGORIES, CATEGORY_BY_QUESTION } from './round-shape.js';
-import { kindOf, monthKeyOf, opponentModeOf, playersInGame } from './game-stats.js';
+import { kindOf, monthKeyOf, opponentModeOf, playersInGame, scoresOnly } from './game-stats.js';
 
 /** Questions per category in a 16-question round. */
 export const WEIGHTS = Object.fromEntries(CATEGORIES.map(c => [c, CATEGORY_BY_QUESTION.filter(x => x === c).length]));
@@ -195,6 +195,10 @@ export function fitRoomModel (games, isVarsity, options = {}) {
   };
 
   for (const g of games) {
+    // a sheet with only the final scores says nothing about any tossup, and
+    // reading it as 16 that nobody answered would make its tournament look
+    // impossibly hard
+    if (scoresOnly(g)) continue;
     const read = g.tossupsRead || 16;
     const cats = g.categories && g.categories.length ? g.categories : CATEGORY_BY_QUESTION;
     const held = heldBackIn(g, isVarsity);

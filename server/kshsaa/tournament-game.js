@@ -5,6 +5,7 @@
 // because we played a chair. Rounds can also run past 16 questions, a game
 // can be a playoff round (STAGES) when the team makes it that far, and not
 // every tournament reads its subjects in the regular order (SUBJECT_ORDERS).
+// Some sheets have nothing but the final scores (scoresOnlyGame).
 
 import { cleanNotes } from './game-stats.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './round-shape.js';
@@ -93,6 +94,8 @@ export const categoryFor = n => CATEGORY_BY_QUESTION[(n - 1) % CATEGORY_BY_QUEST
  *   nothing would change
  */
 export function withSubjects (game, subjects) {
+  // a sheet with only the final scores has no questions to give subjects to
+  if (game.scoresOnly) return null;
   const read = game.tossupsRead || game.categories?.length || CATEGORY_BY_QUESTION.length;
   const own = n => game.categories?.[n - 1] || categoryFor(n);
   const categories = Array.from({ length: read }, (_, i) => (SUBJECTS.includes(subjects[i]) ? subjects[i] : own(i + 1)));
@@ -100,6 +103,71 @@ export function withSubjects (game, subjects) {
   const buzzes = (game.buzzes || []).map(b =>
     b.questionNumber >= 1 && b.questionNumber <= read ? { ...b, category: categories[b.questionNumber - 1] } : b);
   return { categories, buzzes };
+}
+
+// a final score as the sheet gives it, or null when it gives none
+function finalScore (value, what) {
+  if (value == null || String(value).trim() === '') return null;
+  const score = Number(value);
+  if (!Number.isInteger(score) || Math.abs(score) > 2000) throw new Error(what + ' has to be a whole number');
+  return score;
+}
+
+// "Hays Invitational, round 3 vs Hays"; a playoff game goes by its stage:
+// "Hays Invitational, semifinal vs Hays"
+const labelOf = (tournament, stage, round, mode, opponent) =>
+  tournament + (stage ? ', ' + STAGES[stage].toLowerCase() : round ? ', round ' + round : '') +
+  (mode === 'chair' ? ' (chair)' : ' vs ' + opponent);
+
+/**
+ * A sheet kept as nothing but the final scores, or just who won. It can say
+ * who played, for their tournament count, and nothing about who answered
+ * what. So it has no questions or buzzes, and its players heard none, which
+ * keeps it out of every player's stats (playersInGame leaves them out).
+ * Insights and the room model skip it (scoresOnly in game-stats.js), and it
+ * counts only toward the team's record and how far the team went.
+ */
+function scoresOnlyGame (body, fix, { tournament, playedAt, team, mode, opponent, stage }) {
+  const chair = mode === 'chair';
+  const names = [];
+  for (const p of (Array.isArray(body.players) ? body.players : []).slice(0, SLOTS + 4)) {
+    const name = fix(text(p?.name, 60));
+    if (!name) continue;
+    if (names.includes(name)) throw new Error(name + ' is listed twice');
+    names.push(name);
+  }
+  const ourScore = finalScore(body.ourScore, 'our final score');
+  const theirScore = chair ? null : finalScore(body.opponentScore, 'their final score');
+  let result = null;
+  if (!chair) {
+    if (ourScore != null && theirScore != null) result = compare(ourScore, theirScore);
+    else if (RESULTS.includes(body.result)) result = body.result;
+    else throw new Error('a sheet with only final scores needs both of them, or else who won');
+  }
+  const round = text(body.round, 20);
+  const ours = { name: team, players: names, score: ourScore };
+  return {
+    kind: 'tournament',
+    scoresOnly: true,
+    tournament,
+    round,
+    stage,
+    opponent,
+    opponentMode: chair ? 'chair' : 'unrecorded',
+    result,
+    label: labelOf(tournament, stage, round, mode, opponent),
+    playedAt,
+    level: LEVELS[body.level] ? body.level : null,
+    tossupsRead: 0,
+    categories: [],
+    wordCounts: null,
+    charCounts: null,
+    lineup: [],
+    teams: chair ? [ours] : [ours, { name: opponent, players: [], score: theirScore, opponent: true }],
+    heardByPlayer: {},
+    buzzes: [],
+    notes: []
+  };
 }
 
 /**
@@ -110,6 +178,8 @@ export function withSubjects (game, subjects) {
  *   questions: [{category, us: {player, value} | null, them: 10 | -5 | null}],
  *   notes: [{questionNumber, player, text}] }. `them` counts only when the
  *   mode is 'recorded'; opponentScore and result only when it is 'unrecorded'.
+ *   A sheet with only the final scores sends scoresOnly and ourScore instead
+ *   of questions (scoresOnlyGame).
  * @param {function(string): string} fix - name canonicalizer
  */
 export function tournamentGame (body, fix) {
@@ -128,6 +198,7 @@ export function tournamentGame (body, fix) {
   }
   const stage = Object.hasOwn(STAGES, body.stage ?? '') ? body.stage : null;
   if (stage && mode === 'chair') throw new Error('a playoff game has an opponent, so a chair is a regular round');
+  if (body.scoresOnly) return scoresOnlyGame(body, fix, { tournament, playedAt, team, mode, opponent, stage });
 
   const questions = Array.isArray(body.questions) ? body.questions : [];
   if (!questions.length || questions.length > MAX_QUESTIONS) throw new Error('a game has 1 to ' + MAX_QUESTIONS + ' questions');
@@ -188,13 +259,9 @@ export function tournamentGame (body, fix) {
     theirScore = buzzes.reduce((s, b) => s + (b.team === opponent ? b.value : 0), 0);
     result = compare(ourScore, theirScore);
   } else if (mode === 'unrecorded') {
-    if (body.opponentScore != null && String(body.opponentScore).trim() !== '') {
-      theirScore = Number(body.opponentScore);
-      if (!Number.isInteger(theirScore) || Math.abs(theirScore) > 2000) throw new Error('their final score has to be a whole number');
-      result = compare(ourScore, theirScore);
-    } else if (RESULTS.includes(body.result)) {
-      result = body.result;
-    }
+    theirScore = finalScore(body.opponentScore, 'their final score');
+    if (theirScore != null) result = compare(ourScore, theirScore);
+    else if (RESULTS.includes(body.result)) result = body.result;
   }
 
   const round = text(body.round, 20);
@@ -207,9 +274,7 @@ export function tournamentGame (body, fix) {
     opponent,
     opponentMode: mode,
     result,
-    // a playoff game goes by its stage: "Hays Invitational, semifinal vs Hays"
-    label: tournament + (stage ? ', ' + STAGES[stage].toLowerCase() : round ? ', round ' + round : '') +
-      (mode === 'chair' ? ' (chair)' : ' vs ' + opponent),
+    label: labelOf(tournament, stage, round, mode, opponent),
     playedAt,
     level: LEVELS[body.level] ? body.level : null,
     tossupsRead: read,

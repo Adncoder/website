@@ -66,6 +66,8 @@ router.get('/data', requireAuth, async (req, res) => {
         // next round typed in starts with them
         event: tournamentOf(g).key,
         categories: g.categories || null,
+        // a sheet with only the final scores: its players went, and nothing more
+        scoresOnly: Boolean(g.scoresOnly),
         round: g.round || '',
         stage: g.stage || null,
         opponent: theirs(g).name,
@@ -274,6 +276,8 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
             <option value="unrecorded">Not on the sheet</option>
             <option value="chair">None: we played a chair</option>
           </select></div>
+        <div class="col-md-2 d-none" id="ourBox"><label class="form-label" for="fOurs">Our final score</label>
+          <input class="form-control form-control-sm" id="fOurs" inputmode="numeric" placeholder="if written"></div>
         <div class="col-md-2 d-none" id="finalBox"><label class="form-label" for="fFinal">Their final score</label>
           <input class="form-control form-control-sm" id="fFinal" inputmode="numeric" placeholder="if written"></div>
         <div class="col-md-3 d-none" id="resultBox"><label class="form-label" for="fResult">Who won</label>
@@ -281,12 +285,17 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
             <option value="">Not written down</option><option value="win">We won</option>
             <option value="loss">We lost</option><option value="tie">Tied</option></select></div>
       </div>
+      <div class="form-check mt-2 mb-0">
+        <input class="form-check-input" type="checkbox" id="fScoresOnly">
+        <label class="form-check-label small" for="fScoresOnly">The sheet has only the final scores, no buzzes</label>
+      </div>
       <p class="note d-none" id="modeNote"></p>
 
-      <div class="form-label mt-3">Players, by their number on the sheet</div>
+      <div class="form-label mt-3" id="playersLabel">Players, by their number on the sheet</div>
       <div id="slots" class="row g-1"></div>
-      <p class="note">A sub who came in partway: set the questions they were in for, and the player they replaced's.</p>
+      <p class="note" id="subNote">A sub who came in partway: set the questions they were in for, and the player they replaced's.</p>
 
+      <div id="sheetDetail">
       <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mt-3">
         <div class="d-flex flex-wrap align-items-center gap-2">
           <div class="form-label mb-0">Questions</div>
@@ -312,6 +321,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <div class="form-label mt-3">Notes</div>
       <div id="notes"></div>
       <button type="button" class="btn btn-sm btn-outline-secondary mt-1" id="addNote">+ Add a note</button>
+      </div>
 
       <div class="d-flex flex-wrap align-items-center gap-2 mt-3">
         <button type="button" class="btn btn-primary" id="save">Save game</button>
@@ -369,6 +379,10 @@ var BASE = [];
 var TOUCHED = false;
 var SUBJECT_WORDS = { Other: 'Other (misc)' };
 var SAME_AS_OTHERS = "The same subjects as this tournament's other rounds.";
+// a sheet with only the final scores, and whether the next new game is one
+// after a game is edited
+var SCORES_ONLY = false;
+var KEEP_SCORES_ONLY = false;
 
 function postJson (url, body) {
   return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -444,8 +458,12 @@ function resetForm (keepSetup) {
   CURRENT = 0;
   NEG_NEXT = false;
   $('fFinal').value = '';
+  $('fOurs').value = '';
   $('fResult').value = '';
-  setMode(keepSetup ? LAST_MODE : 'recorded', true);
+  // a tournament kept as final scores only usually has every round that way
+  if (!keepSetup) SCORES_ONLY = false;
+  $('fScoresOnly').checked = SCORES_ONLY;
+  setMode(!keepSetup ? 'recorded' : SCORES_ONLY && LAST_MODE === 'recorded' ? 'unrecorded' : LAST_MODE, true);
   renderSlots();
   renderGrid();
   renderNotes();
@@ -459,18 +477,44 @@ function setMode (mode, quiet) {
   $('fMode').value = mode;
   $('fOpp').disabled = mode === 'chair';
   $('fOpp').placeholder = mode === 'chair' ? 'no opponent' : 'Hays';
-  $('finalBox').classList.toggle('d-none', mode !== 'unrecorded');
-  $('resultBox').classList.toggle('d-none', mode !== 'unrecorded');
-  $('modeNote').classList.toggle('d-none', mode === 'recorded');
-  $('modeNote').textContent = mode === 'chair'
-    ? 'A chair: nobody to play, so the game counts in the stats but is neither a win nor a loss.'
-    : mode === 'unrecorded'
-      ? 'Type in our side only. Add their final score if the sheet has it, or else who won, if anyone knows.'
-      : '';
+  renderSheet();
   if (!quiet) renderGrid();
 }
 $('fMode').onchange = function () { setMode(this.value); };
 $('fFinal').oninput = function () { renderScores(); };
+$('fOurs').oninput = function () { renderScores(); };
+
+// What the sheet has decides which boxes show: their final score and who won
+// when their points are not on it, and on a sheet with only the final scores,
+// ours as well, with no questions, notes, or subs' questions.
+function renderSheet () {
+  $('fMode').querySelector('option[value="recorded"]').disabled = SCORES_ONLY;
+  $('ourBox').classList.toggle('d-none', !SCORES_ONLY);
+  $('finalBox').classList.toggle('d-none', MODE !== 'unrecorded');
+  $('resultBox').classList.toggle('d-none', MODE !== 'unrecorded');
+  $('sheetDetail').classList.toggle('d-none', SCORES_ONLY);
+  $('subNote').classList.toggle('d-none', SCORES_ONLY);
+  $('playersLabel').textContent = SCORES_ONLY ? 'Who played, if anyone knows' : 'Players, by their number on the sheet';
+  $('modeNote').classList.toggle('d-none', MODE === 'recorded' && !SCORES_ONLY);
+  $('modeNote').textContent = SCORES_ONLY
+    ? 'Only the final scores: the game counts in the record, and in the Tournaments count of whoever played, but not in points, per-question numbers, or Insights.'
+    : MODE === 'chair'
+      ? 'A chair: nobody to play, so the game counts in the stats but is neither a win nor a loss.'
+      : MODE === 'unrecorded'
+        ? 'Type in our side only. Add their final score if the sheet has it, or else who won, if anyone knows.'
+        : '';
+}
+
+$('fScoresOnly').onchange = function () {
+  SCORES_ONLY = this.checked;
+  // their points cannot be by question on a sheet with no questions
+  if (SCORES_ONLY && MODE === 'recorded') setMode('unrecorded', true);
+  // back to a sheet with questions: a round of them, if this game had none
+  if (!SCORES_ONLY && !QUESTIONS.length) QUESTIONS = BASE.map(function (c) { return { category: c, us: null, them: null }; });
+  renderSheet();
+  renderSlots();
+  renderGrid();
+};
 $('fResult').onchange = function () { renderScores(); };
 
 // a question past the last one: the round's own subjects, starting over
@@ -577,10 +621,11 @@ function renderSlots () {
     return '<div class="col-md-6 col-lg-4"><div class="input-group input-group-sm">' +
       '<span class="input-group-text slot">' + (i + 1) + '</span>' +
       '<input class="form-control sname" data-k="' + (i + 1) + '" value="' + esc(p.name) + '" placeholder="' + (i < 5 ? 'starter' : 'sub') + '">' +
-      '<span class="input-group-text">Q</span>' +
+      // a sheet with only the final scores cannot say which questions a sub heard
+      (SCORES_ONLY ? '' : '<span class="input-group-text">Q</span>' +
       '<input class="form-control sfrom" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.from) + '" placeholder="1" inputmode="numeric">' +
       '<span class="input-group-text">to</span>' +
-      '<input class="form-control sto" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.to) + '" placeholder="' + QUESTIONS.length + '" inputmode="numeric">' +
+      '<input class="form-control sto" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.to) + '" placeholder="' + QUESTIONS.length + '" inputmode="numeric">') +
       '</div></div>';
   }).join('');
   Array.prototype.forEach.call(document.querySelectorAll('.sname'), function (input) {
@@ -670,14 +715,19 @@ function renderScores () {
   });
   var name = $('fTeam').value.trim() || 'Us';
   var opp = $('fOpp').value.trim() || 'them';
+  // a sheet with only the final scores gives ours in its box
+  var ours = SCORES_ONLY ? $('fOurs').value.trim() : String(us);
+  var oursKnown = ours !== '' && !isNaN(Number(ours));
+  var shown = oursKnown ? ours : '?';
   var final = $('fFinal').value.trim();
-  var known = final !== '' && !isNaN(Number(final));
-  // who won only matters when the sheet has no final score for them
+  var theirsKnown = final !== '' && !isNaN(Number(final));
+  var known = oursKnown && theirsKnown;
+  // who won only matters when the sheet does not have both final scores
   $('fResult').disabled = MODE === 'unrecorded' && known;
-  if (MODE === 'chair') { $('total').textContent = name + ' ' + us + ', against a chair'; return; }
+  if (MODE === 'chair') { $('total').textContent = name + ' ' + shown + ', against a chair'; return; }
   if (both) { $('total').textContent = name + ' ' + us + ', ' + opp + ' ' + them; return; }
-  var result = known ? (us > Number(final) ? 'win' : us < Number(final) ? 'loss' : 'tie') : $('fResult').value;
-  $('total').textContent = name + ' ' + us + ', ' + opp + ' ' + (known ? final : '?') + ' (' + (RESULT_WORDS[result] || 'who won not written down') + ')';
+  var result = known ? (Number(ours) > Number(final) ? 'win' : Number(ours) < Number(final) ? 'loss' : 'tie') : $('fResult').value;
+  $('total').textContent = name + ' ' + shown + ', ' + opp + ' ' + (theirsKnown ? final : '?') + ' (' + (RESULT_WORDS[result] || 'who won not written down') + ')';
 }
 $('fTeam').oninput = renderScores;
 $('fOpp').oninput = renderScores;
@@ -819,14 +869,17 @@ $('save').onclick = function () {
     opponentMode: MODE,
     opponentScore: MODE === 'unrecorded' ? $('fFinal').value : '',
     result: MODE === 'unrecorded' ? $('fResult').value : '',
+    // a sheet with only the final scores: ours, and no questions or notes
+    scoresOnly: SCORES_ONLY,
+    ourScore: SCORES_ONLY ? $('fOurs').value : '',
     players: PLAYERS.filter(function (p) { return p.name.trim(); }),
-    questions: QUESTIONS.map(function (q) {
+    questions: SCORES_ONLY ? [] : QUESTIONS.map(function (q) {
       return { category: q.category, us: q.us ? { player: PLAYERS[q.us.k - 1].name, value: q.us.value } : null, them: MODE === 'recorded' ? q.them : null };
     }),
-    notes: NOTES
+    notes: SCORES_ONLY ? [] : NOTES
   };
   // subjects changed on this round may be how the whole tournament went
-  var touched = TOUCHED;
+  var touched = TOUCHED && !SCORES_ONLY;
   $('save').disabled = true;
   postJson('/kshsaa-tournaments/save', body).then(function (res) {
     $('save').disabled = false;
@@ -863,6 +916,8 @@ $('save').onclick = function () {
 
 function stopEditing () {
   EDITING = null;
+  // the next new game is kept the way the last one entered was
+  SCORES_ONLY = KEEP_SCORES_ONLY;
   $('formTitle').textContent = 'Enter a game';
   $('cancelEdit').classList.add('d-none');
   $('save').textContent = 'Save game';
@@ -874,9 +929,11 @@ $('cancelEdit').onclick = function () { stopEditing(); $('saveMsg').textContent 
 function editGame (id) {
   fetch('/kshsaa-stats/game/' + id).then(function (r) { return r.json(); }).then(function (g) {
     if (g.error || g.kind !== 'tournament') { $('saveMsg').textContent = g.error || 'not a tournament game'; return; }
+    if (!EDITING) KEEP_SCORES_ONLY = SCORES_ONLY;
     EDITING = id;
     var us = (g.teams || []).filter(function (t) { return !t.opponent; })[0] || { name: '', players: [] };
-    var lineup = g.lineup || us.players.map(function (name) { return { name: name, from: 1, to: g.tossupsRead }; });
+    // a sheet with only the final scores lists who played, and no questions
+    var lineup = g.lineup && g.lineup.length ? g.lineup : us.players.map(function (name) { return { name: name, from: 1, to: g.tossupsRead }; });
     PLAYERS = [];
     for (var i = 0; i < Math.max(SLOTS, lineup.length); i++) {
       var p = lineup[i];
@@ -911,8 +968,12 @@ function editGame (id) {
     var them = (g.teams || []).filter(function (t) { return t.opponent; })[0];
     var mode = g.opponentMode || 'recorded';
     var final = mode === 'unrecorded' && them && them.score != null ? String(them.score) : '';
+    SCORES_ONLY = Boolean(g.scoresOnly);
+    $('fScoresOnly').checked = SCORES_ONLY;
+    $('fOurs').value = SCORES_ONLY && us.score != null ? String(us.score) : '';
     $('fFinal').value = final;
-    $('fResult').value = mode === 'unrecorded' && !final ? (g.result || '') : '';
+    // who won, when the sheet does not have both final scores
+    $('fResult').value = mode === 'unrecorded' && !(final && us.score != null) ? (g.result || '') : '';
     // the next new game still starts the way the last one entered did
     var keep = LAST_MODE;
     setMode(mode, true);
@@ -943,31 +1004,42 @@ function renderSeason () {
   list.forEach(function (g) {
     var key = g.tournament + '|' + new Date(g.playedAt).toISOString().slice(0, 10);
     g.players.forEach(function (p) {
-      var t = by[p.name] || (by[p.name] = { name: p.name, tourneys: {}, games: 0, points: 0, correct: 0, negs: 0, heard: 0 });
+      var t = by[p.name] || (by[p.name] = { name: p.name, tourneys: {}, scored: {}, games: 0, points: 0, correct: 0, negs: 0, heard: 0 });
       t.tourneys[key] = true;
+      // a sheet with only the final scores says who went, not who answered
+      if (g.scoresOnly) return;
+      t.scored[key] = true;
       t.games++;
       t.points += p.points; t.correct += p.correct; t.negs += p.negs; t.heard += p.heard;
     });
   });
-  var rows = Object.keys(by).map(function (k) { var t = by[k]; t.attended = Object.keys(t.tourneys).length; return t; })
-    .sort(function (a, b) { return b.points - a.points || a.name.localeCompare(b.name); });
+  var rows = Object.keys(by).map(function (k) {
+    var t = by[k];
+    t.attended = Object.keys(t.tourneys).length;
+    t.measured = Object.keys(t.scored).length;
+    return t;
+  }).sort(function (a, b) { return b.points - a.points || a.name.localeCompare(b.name); });
+  var partial = list.some(function (g) { return g.scoresOnly; });
   $('season').innerHTML = '<div class="card"><div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0">' +
     '<thead><tr><th>Player</th><th class="num">Tournaments</th><th class="num">Games</th><th class="num">Points</th>' +
     '<th class="num">Per tournament</th><th class="num">Correct</th><th class="num">&minus;5s</th><th class="num">Points/question</th></tr></thead><tbody>' +
     rows.map(function (t) {
       return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.attended + '</td><td class="num">' + t.games + '</td>' +
-        '<td class="num fw-semibold">' + t.points + '</td><td class="num">' + Math.round(t.points / t.attended) + '</td>' +
+        '<td class="num fw-semibold">' + t.points + '</td><td class="num">' + (t.measured ? Math.round(t.points / t.measured) : '-') + '</td>' +
         '<td class="num">' + t.correct + '</td><td class="num">' + t.negs + '</td>' +
         '<td class="num">' + (t.heard ? (t.points / t.heard).toFixed(2) : '-') + '</td></tr>';
-    }).join('') + '</tbody></table></div></div></div>';
+    }).join('') + '</tbody></table></div></div></div>' +
+    (partial ? '<p class="note">Tournaments counts every one a player went to. The other columns leave out rounds with only the final scores.</p>' : '');
 }
 
 // a game's score, as far as the sheet has it: 220-180, 220-? and who won, or
-// just ours against a chair (its label and row already say so)
+// just ours against a chair (its label and row already say so). A sheet with
+// only the final scores may not have ours either.
 function scoreText (g) {
-  if (g.mode === 'chair') return String(g.score);
-  if (g.opponentScore != null) return g.score + '&ndash;' + g.opponentScore;
-  return g.score + '&ndash;?, ' + (RESULT_WORDS[g.result] || 'who won not written down');
+  var us = g.score == null ? '?' : g.score;
+  if (g.mode === 'chair') return String(us);
+  if (g.score != null && g.opponentScore != null) return g.score + '&ndash;' + g.opponentScore;
+  return us + '&ndash;' + (g.opponentScore == null ? '?' : g.opponentScore) + ', ' + (RESULT_WORDS[g.result] || 'who won not written down');
 }
 
 // a tournament's record: wins and losses, then ties, games nobody wrote the
@@ -1026,9 +1098,11 @@ function renderGames () {
           '<td>' + esc(g.team) + (g.mode === 'chair' ? ' vs a chair' : ' vs ' + esc(g.opponent)) +
           (g.notes ? ' <span class="small text-secondary">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
           '<td class="num ' + cls + '">' + scoreText(g) + '</td>' +
-          '<td class="small text-secondary">' + g.players.filter(function (p) { return p.points; }).map(function (p) {
-            return esc(p.name.split(' ')[0]) + ' ' + p.points;
-          }).join(', ') + '</td>' +
+          '<td class="small text-secondary">' + (g.scoresOnly
+            ? 'final scores only' + (g.players.length ? ': ' + g.players.map(function (p) { return esc(p.name.split(' ')[0]); }).join(', ') : '')
+            : g.players.filter(function (p) { return p.points; }).map(function (p) {
+              return esc(p.name.split(' ')[0]) + ' ' + p.points;
+            }).join(', ')) + '</td>' +
           '<td class="text-end text-nowrap"><button type="button" class="btn btn-sm btn-link p-0 me-2 gedit" data-id="' + g.id + '">edit</button>' +
           '<button type="button" class="btn btn-sm btn-link text-danger p-0 gdel" data-id="' + g.id + '">delete</button></td></tr>';
       }).join('') + '</tbody></table></div></div></div>';

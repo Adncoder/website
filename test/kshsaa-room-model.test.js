@@ -87,6 +87,28 @@ const unrecorded = g => ({ ...g, opponentMode: 'unrecorded', buzzes: g.buzzes.fi
 const blank = g => ({ ...g, buzzes: g.buzzes.filter(b => b.player) });
 const chair = g => ({ ...g, opponentMode: 'chair', opponent: null, teams: [g.teams[0]], buzzes: g.buzzes.filter(b => b.player) });
 
+test('a sheet with only the final scores changes nothing in the model', () => {
+  const next = rng(9);
+  const practice = practiceGames(next, 12);
+  const games = tournamentGames(next, { D: 0.6, them: 1, rounds: 3 });
+  // a fourth round of the same tournament whose sheet has only the scores
+  const finals = {
+    ...games[0],
+    round: '4',
+    scoresOnly: true,
+    tossupsRead: 0,
+    categories: [],
+    lineup: [],
+    heardByPlayer: {},
+    buzzes: [],
+    teams: [{ name: 'SJA', players: NAMES.slice(0, 4), score: 150 }, { name: 'Them', players: [], score: 100, opponent: true }]
+  };
+  const without = fitRoomModel(practice.concat(games), everyoneVarsity);
+  const withIt = fitRoomModel(practice.concat(games, finals), everyoneVarsity);
+  for (const name of NAMES) assert.equal(withIt.players.get(name).overall, without.players.get(name).overall);
+  assert.deepEqual(withIt.tournaments.map(t => [t.games, t.difficulty]), without.tournaments.map(t => [t.games, t.difficulty]));
+});
+
 test('a Misc question counts toward no strength and no difficulty', () => {
   const next = rng(5);
   const practice = practiceGames(next, 12);

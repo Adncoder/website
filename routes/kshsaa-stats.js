@@ -18,7 +18,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
-import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters, resultOf } from '../server/kshsaa/game-stats.js';
+import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters, resultOf, scoresOnly } from '../server/kshsaa/game-stats.js';
 import { reboundsIn } from '../server/kshsaa/rebounds.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
@@ -364,7 +364,8 @@ router.post('/roster/update', requireAuth, async (req, res) => {
 
 /**
  * Renames a player inside every game they appear in: their buzzes, their team
- * lists, and the questions-heard counts keyed by "team|player".
+ * lists, a tournament game's lineup, and the questions-heard counts keyed by
+ * "team|player".
  * @param {string} from
  * @param {string} to
  * @returns {Promise<number>} how many games changed
@@ -378,6 +379,10 @@ async function renameInGames (from, to) {
       ...t,
       players: [...new Set((t.players || []).map(p => (p === from ? to : p)))]
     }));
+    // a tournament game's subs and the questions they were in for: left with
+    // the old name, editing the game would find answers by nobody it lists
+    const lineup = (g.lineup || []).map(p => (p.name === from ? { ...p, name: to } : p))
+      .filter((p, i, all) => all.findIndex(q => q.name === p.name) === i);
     const heardByPlayer = {};
     for (const [key, heard] of Object.entries(g.heardByPlayer || {})) {
       const bar = key.indexOf('|');
@@ -386,7 +391,7 @@ async function renameInGames (from, to) {
       const next = team + '|' + (player === from ? to : player);
       heardByPlayer[next] = Math.max(heardByPlayer[next] ?? 0, heard);
     }
-    await games.updateOne({ _id: g._id }, { $set: { buzzes, teams, heardByPlayer, notes } });
+    await games.updateOne({ _id: g._id }, { $set: { buzzes, teams, heardByPlayer, notes, ...(g.lineup ? { lineup } : {}) } });
   }
   return hit.length;
 }
@@ -975,8 +980,10 @@ router.get('/data', requireAuth, async (req, res) => {
       playedAt: g.playedAt,
       tossupsRead: g.tossupsRead,
       teams: (g.teams || []).map(t => ({ name: t.name, score: t.score ?? null, opponent: Boolean(t.opponent) })),
-      // a tournament sheet may not have the other team's score, or who won
-      result: kindOf(g) === 'tournament' ? resultOf(g) : null
+      // a tournament sheet may not have the other team's score, or who won,
+      // or anything but the final scores
+      result: kindOf(g) === 'tournament' ? resultOf(g) : null,
+      scoresOnly: scoresOnly(g)
     })),
     players: playerRows,
     categoryNames: CATEGORIES
@@ -1664,9 +1671,10 @@ function gameRow (g, hidden) {
     '<td>' + esc(g.label) + (g.kind === 'tournament' ? ' <span class="lvl">Tournament</span>' : '') +
     (g.heldBack ? ' <span class="small text-secondary" title="' + g.heldBack + ' varsity player' + (g.heldBack === 1 ? '' : 's') +
       ' held back; left out of their Insights numbers">varsity held back</span>' : '') +
-    (g.notes ? ' <span class="small text-secondary" title="Notes on this game">&#9998; ' + g.notes + '</span>' : '') + '</td>' +
+    (g.notes ? ' <span class="small text-secondary" title="Notes on this game">&#9998; ' + g.notes + '</span>' : '') +
+    (g.scoresOnly ? ' <span class="small text-secondary" title="The sheet has only the final scores, so the game counts in the record and in no player stats">final scores only</span>' : '') + '</td>' +
     '<td>' + levelBadge(g.level) + '</td><td>' + score + '</td>' +
-    '<td class="num">' + g.tossupsRead + '</td>' +
+    '<td class="num">' + (g.scoresOnly ? '&ndash;' : g.tossupsRead) + '</td>' +
     '<td class="text-end text-secondary small text-nowrap">open &rsaquo;</td></tr>';
 }
 
