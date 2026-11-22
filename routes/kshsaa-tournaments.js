@@ -19,7 +19,7 @@ import { CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
 import { getSquads, nameCanonicalizer, requireAuth } from './kshsaa-stats.js';
 import { kindOf, monthKeyOf, monthLabel, opponentModeOf, resultOf, seasonStartKey } from '../server/kshsaa/game-stats.js';
 import { tournamentOf } from '../server/kshsaa/room-model.js';
-import { MAX_QUESTIONS, SLOTS, STAGES, SUBJECT_ORDERS, SUBJECTS, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
+import { MAX_QUESTIONS, SLOTS, STAGES, SUBJECT_ORDERS, SUBJECTS, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -46,6 +46,8 @@ router.get('/data', requireAuth, async (req, res) => {
       roster.find({}).toArray(),
       getSquads()
     ]);
+    // who sat each round, from who played the tournament's other rounds
+    const bench = satOut(list);
     res.json({
       squads,
       seasonStart: seasonStartKey(),
@@ -70,6 +72,8 @@ router.get('/data', requireAuth, async (req, res) => {
         // more; one with only each player's total for the whole tournament
         scoresOnly: Boolean(g.scoresOnly),
         wholeTournament: Boolean(g.wholeTournament),
+        // who sat this round, or null when its lineup is not known
+        sat: bench.get(g) ?? null,
         round: g.round || '',
         stage: g.stage || null,
         opponent: theirs(g).name,
@@ -308,6 +312,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
       <div class="form-label mt-3" id="playersLabel">Players, by their number on the sheet</div>
       <div id="slots" class="row g-1"></div>
+      <p class="note" id="sittingNote"></p>
       <p class="note" id="subNote">A sub who came in partway: set the questions they were in for, and the player they replaced's.</p>
 
       <div id="sheetDetail">
@@ -622,6 +627,7 @@ function followTournament () {
   if (EDITING || !DATA) return;
   var key = formKey();
   if (!ROUND_TOUCHED) $('fRound').value = String(nextRound(key));
+  renderSitting();
   if (TOUCHED) return;
   var known = knownOrder(key);
   var order = known || DATA.order;
@@ -632,6 +638,24 @@ $('fTourney').addEventListener('input', followTournament);
 $('fLevel').addEventListener('change', followTournament);
 $('fDate').addEventListener('change', followTournament);
 $('fRound').addEventListener('input', function () { ROUND_TOUCHED = true; });
+
+// Who sits the round being typed in: the rest of the team at this tournament,
+// from its saved rounds, as satOut works it out on the server once it is saved.
+// Names match whatever their case, as the server's name fixing would make them.
+function renderSitting () {
+  var el = $('sittingNote');
+  if (!DATA || SHEET === 'totals') { el.textContent = ''; return; }
+  var key = formKey();
+  var team = ($('fTeam').value.trim() || 'SJA').toLowerCase();
+  var there = {};
+  DATA.games.forEach(function (g) {
+    if (g.event !== key || g.wholeTournament || g.id === EDITING || String(g.team || '').trim().toLowerCase() !== team) return;
+    g.players.forEach(function (p) { there[p.name.toLowerCase()] = p.name; });
+  });
+  PLAYERS.forEach(function (p) { delete there[p.name.trim().toLowerCase()]; });
+  var sitting = Object.keys(there).map(function (k) { return there[k]; }).sort(function (a, b) { return a.localeCompare(b); });
+  el.textContent = sitting.length ? 'Sitting this round: ' + sitting.join(', ') + '.' : '';
+}
 
 // special rounds run past 16 questions, and a round can end early
 $('addQ').onclick = function () {
@@ -746,6 +770,7 @@ function renderGrid () {
   Array.prototype.forEach.call(document.querySelectorAll('.sto'), function (el) { el.placeholder = n; });
   renderOrder();
   renderScores();
+  renderSitting();
 }
 
 function renderRow (n) {
@@ -787,7 +812,7 @@ function renderScores () {
   var result = known ? (Number(ours) > Number(final) ? 'win' : Number(ours) < Number(final) ? 'loss' : 'tie') : $('fResult').value;
   $('total').textContent = name + ' ' + shown + ', ' + opp + ' ' + (theirsKnown ? final : '?') + ' (' + (RESULT_WORDS[result] || 'who won not written down') + ')';
 }
-$('fTeam').oninput = renderScores;
+$('fTeam').oninput = function () { renderScores(); renderSitting(); };
 $('fOpp').oninput = renderScores;
 
 // one team gets a question right, and only the first to interrupt loses 5
@@ -1069,21 +1094,32 @@ function renderSeason () {
   var list = seasonGames();
   if (!list.length) { $('season').innerHTML = '<p class="note">No tournament games entered for these filters yet.</p>'; return; }
   var by = {};
+  var rowFor = function (name) {
+    return by[name] || (by[name] = { name: name, tourneys: {}, scored: {}, rounds: 0, there: 0, points: 0, asked: 0, correct: 0, negs: 0, heard: 0 });
+  };
   list.forEach(function (g) {
     var key = g.tournament + '|' + new Date(g.playedAt).toISOString().slice(0, 10);
     g.players.forEach(function (p) {
-      var t = by[p.name] || (by[p.name] = { name: p.name, tourneys: {}, scored: {}, games: 0, points: 0, asked: 0, correct: 0, negs: 0, heard: 0 });
+      var t = rowFor(p.name);
       t.tourneys[key] = true;
       // a player's total for the whole tournament: points, and nothing to
       // divide them by but the tournament
       if (g.wholeTournament) { t.scored[key] = true; t.points += p.points; return; }
-      // a sheet with only the final scores says who went, not who answered
+      // every round played, playoffs too, whatever the sheet kept of it
+      t.rounds++;
+      t.there++;
+      // a sheet with only the final scores says who played, not who answered
       if (g.scoresOnly) return;
       t.scored[key] = true;
-      t.games++;
       t.points += p.points; t.correct += p.correct; t.negs += p.negs; t.heard += p.heard;
       // points on questions we know were heard, for points per question
       t.asked += p.points;
+    });
+    // and the rounds they were there for and sat
+    (g.sat || []).forEach(function (name) {
+      var t = rowFor(name);
+      t.tourneys[key] = true;
+      t.there++;
     });
   });
   var rows = Object.keys(by).map(function (k) {
@@ -1095,20 +1131,21 @@ function renderSeason () {
   var scoresOnly = list.some(function (g) { return g.scoresOnly && !g.wholeTournament; });
   var totals = list.some(function (g) { return g.wholeTournament; });
   $('season').innerHTML = '<div class="card"><div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0">' +
-    '<thead><tr><th>Player</th><th class="num">Tournaments</th><th class="num">Games</th><th class="num">Points</th>' +
+    '<thead><tr><th>Player</th><th class="num">Tournaments</th>' +
+    '<th class="num" title="Rounds played, of the rounds at the tournaments they went to, playoffs included">Rounds</th><th class="num">Points</th>' +
     '<th class="num">Per tournament</th><th class="num">Correct</th><th class="num">&minus;5s</th><th class="num">Points/question</th></tr></thead><tbody>' +
     rows.map(function (t) {
-      return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.attended + '</td><td class="num">' + t.games + '</td>' +
+      return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.attended + '</td>' +
+        '<td class="num">' + (t.there ? t.rounds + ' of ' + t.there : '-') + '</td>' +
         '<td class="num fw-semibold">' + t.points + '</td><td class="num">' + (t.measured ? Math.round(t.points / t.measured) : '-') + '</td>' +
         '<td class="num">' + t.correct + '</td><td class="num">' + t.negs + '</td>' +
         '<td class="num">' + (t.heard ? (t.asked / t.heard).toFixed(2) : '-') + '</td></tr>';
     }).join('') + '</tbody></table></div></div></div>' +
-    (scoresOnly || totals
-      ? '<p class="note">Tournaments counts every one a player went to.' +
-        (scoresOnly ? ' Rounds with only the final scores count nowhere else.' : '') +
-        (totals ? " A tournament with only each player's total adds to Points and Per tournament, and not to Games, Correct, &minus;5s, or Points/question." : '') +
-        '</p>'
-      : '');
+    '<p class="note">Rounds: rounds played, of the rounds at the tournaments a player went to, playoffs included. ' +
+    'Who sat a round comes from who played the tournament&rsquo;s other rounds, so leave anyone who sat out of that round&rsquo;s lineup.' +
+    (scoresOnly ? ' Rounds with only the final scores count in Tournaments and Rounds, and nowhere else.' : '') +
+    (totals ? " A tournament with only each player's total adds to Tournaments, Points, and Per tournament, and not to Rounds, Correct, &minus;5s, or Points/question." : '') +
+    '</p>';
 }
 
 // a game's score, as far as the sheet has it: 220-180, 220-? and who won, or
@@ -1194,7 +1231,10 @@ function renderGames () {
             ? 'final scores only' + (g.players.length ? ': ' + g.players.map(function (p) { return esc(p.name.split(' ')[0]); }).join(', ') : '')
             : g.players.filter(function (p) { return p.points; }).map(function (p) {
               return esc(p.name.split(' ')[0]) + ' ' + p.points;
-            }).join(', ')) + '</td>' +
+            }).join(', ')) +
+          // the rest of the team that day, from the tournament's other rounds
+          (g.sat && g.sat.length ? '<span class="sat"> &middot; sat: ' + g.sat.map(function (n) { return esc(n.split(' ')[0]); }).join(', ') + '</span>' : '') +
+          '</td>' +
           '<td class="text-end text-nowrap"><button type="button" class="btn btn-sm btn-link p-0 me-2 gedit" data-id="' + g.id + '">edit</button>' +
           '<button type="button" class="btn btn-sm btn-link text-danger p-0 gdel" data-id="' + g.id + '">delete</button></td></tr>';
       }).join('') + '</tbody></table></div></div></div>';

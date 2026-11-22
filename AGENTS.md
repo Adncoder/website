@@ -866,6 +866,25 @@ The Round box fills itself (`nextRound`, keyed like `tournamentOf`):
 - **Typed by hand:** a number typed into the box (`ROUND_TOUCHED`) stays
   until the game is saved.
 
+Teams rotate their players, so a round's lineup is only who played it, and
+anyone left out sat. `satOut` in `tournament-game.js` works out who sat, so
+nobody types a bench.
+- **The rule:** everyone who played any round of a tournament for a team
+  counts as there for all of it. A round's bench is that roster less the
+  round's own lineup. Two of our squads at one tournament each have their
+  own.
+- **Unknown cases:** a scores-only round with no names has no answer, and a
+  whole-tournament total is not a round. A player who came and sat every
+  round can't be seen.
+- **Where it shows:**
+  - The page sends `sat` with each game, and each row on the Tournaments tab
+    lists who sat.
+  - While a round is typed in, the form names who is sitting it
+    (`renderSitting`).
+  - The season table's Rounds column, which replaced Games, shows rounds
+    played out of the rounds at the tournaments a player went to, playoffs
+    included.
+
 Not every tournament reads its subjects in the regular order. A question's
 subject is one of `SUBJECTS` in `tournament-game.js`: the KSHSAA subjects plus
 `Other`, which sheets call Misc. An Other question counts in points, buzzes,
@@ -903,7 +922,7 @@ who played if anyone knows.
   its tournament look impossibly hard. Insights leaves it out too.
 - **Where it counts:** in the record and how far the team went. On the
   Tournaments tab's season table it counts only in each player's Tournaments
-  number, and Per tournament divides by the tournaments with buzzes.
+  and Rounds, and Per tournament divides by the tournaments with buzzes.
 - **Subjects:** changing a tournament's subjects passes it by.
 
 Some sheets have only each player's points for the whole tournament: no
@@ -915,8 +934,9 @@ as above.
   leave it out, and the Stats page's game list does not show it
   (`wholeTournament` in `game-stats.js`).
 - **Season table:** it adds to each player's Tournaments and Points, and Per
-  tournament divides by it. Games, Correct, −5s, and Points/question leave it
-  out, since nothing says how many questions those points came on.
+  tournament divides by it. Rounds, Correct, −5s, and Points/question leave
+  it out, since nothing says how many rounds or questions those points came
+  on.
 - **One per tournament:** a second entry for the same tournament and team is
   refused, and a rename carries `playerTotals`.
 

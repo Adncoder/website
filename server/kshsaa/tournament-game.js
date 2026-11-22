@@ -8,6 +8,7 @@
 // Some sheets have nothing but the final scores (scoresOnlyGame).
 
 import { cleanNotes } from './game-stats.js';
+import { tournamentOf } from './room-model.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './round-shape.js';
 
 // player slots on the scoresheet: five starters and a sub
@@ -74,6 +75,33 @@ export const SUBJECT_ORDERS = [
 
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
+
+/**
+ * Who sat each round. Teams rotate their players, so everyone who played any
+ * round of a tournament for a team was there for all of them: a round's
+ * bench is that roster less its own lineup. Some entries have no answer: a
+ * sheet with only the final scores that does not say who played, and a
+ * whole-tournament total, which is not a round. A player who came and sat
+ * every round cannot be seen.
+ * @param {object[]} games - stored games, of any kind
+ * @returns {Map<object, string[]>} each tournament round whose lineup is
+ *   known, to the names who sat it, alphabetically
+ */
+export function satOut (games) {
+  const ours = g => (g.teams || []).find(t => !t.opponent);
+  const rounds = games.filter(g => g.kind === 'tournament' && !g.wholeTournament && ours(g)?.players?.length);
+  // two of our squads at one tournament each have their own bench
+  const keyOf = g => tournamentOf(g).key + '|' + String(ours(g).name || '').trim().toLowerCase();
+  const roster = new Map();
+  for (const g of rounds) {
+    if (!roster.has(keyOf(g))) roster.set(keyOf(g), new Set());
+    for (const name of ours(g).players) roster.get(keyOf(g)).add(name);
+  }
+  return new Map(rounds.map(g => {
+    const played = new Set(ours(g).players);
+    return [g, [...roster.get(keyOf(g))].filter(name => !played.has(name)).sort((a, b) => a.localeCompare(b))];
+  }));
+}
 
 /**
  * The subject of question n (1-based) when the sheet does not say: a regular
