@@ -15,10 +15,11 @@
 import { Router } from 'express';
 import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
-import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
+import { CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
 import { getSquads, nameCanonicalizer, requireAuth } from './kshsaa-stats.js';
 import { kindOf, monthKeyOf, monthLabel, opponentModeOf, resultOf, seasonStartKey } from '../server/kshsaa/game-stats.js';
-import { MAX_QUESTIONS, SLOTS, STAGES, tournamentGame } from '../server/kshsaa/tournament-game.js';
+import { tournamentOf } from '../server/kshsaa/room-model.js';
+import { MAX_QUESTIONS, SLOTS, STAGES, SUBJECT_ORDERS, SUBJECTS, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -29,6 +30,14 @@ const roster = qbreader.collection('kshsaa_roster');
 const ours = g => (g.teams || []).find(t => !t.opponent) || { name: '', players: [], score: 0 };
 // a chair game has no other team, and an unrecorded sheet may not have their score
 const theirs = g => (g.teams || []).find(t => t.opponent) || { name: g.opponent || '', score: null };
+
+// the other rounds of a game's tournament, which share its subjects: the same
+// name at the same level in the same school year, as the room model groups them
+async function otherRounds (game, id) {
+  const key = tournamentOf(game).key;
+  return (await games.find({ kind: 'tournament' }).toArray())
+    .filter(g => String(g._id) !== String(id) && tournamentOf(g).key === key);
+}
 
 router.get('/data', requireAuth, async (req, res) => {
   try {
@@ -42,14 +51,21 @@ router.get('/data', requireAuth, async (req, res) => {
       seasonStart: seasonStartKey(),
       seasonLabel: monthLabel(seasonStartKey()),
       levels: Object.keys(LEVELS).map(key => ({ key, label: LEVELS[key].label })),
-      categories: CATEGORIES,
+      // a question's subject, Other being a sheet's Misc, and the orders
+      // some tournaments read their rounds in
+      subjects: SUBJECTS,
       order: CATEGORY_BY_QUESTION,
+      orders: SUBJECT_ORDERS,
       // playoff rounds, in bracket order
       stages: Object.entries(STAGES).map(([key, label]) => ({ key, label })),
       roster: rosterList.filter(r => !r.coach).map(r => ({ name: r.name, squad: r.squad || null })),
       games: list.map(g => ({
         id: String(g._id),
         tournament: g.tournament,
+        // which tournament it was (room-model.js), and its subjects, so the
+        // next round typed in starts with them
+        event: tournamentOf(g).key,
+        categories: g.categories || null,
         round: g.round || '',
         stage: g.stage || null,
         opponent: theirs(g).name,
@@ -80,8 +96,16 @@ router.get('/data', requireAuth, async (req, res) => {
   }
 });
 
-// what the page says once a game is saved
-const saved = doc => ({ label: doc.label, score: ours(doc).score, opponentScore: theirs(doc).score ?? null, mode: doc.opponentMode, result: resultOf(doc) });
+// what the page says once a game is saved, with the tournament's other rounds
+// whose subjects are not the same, which the page offers to change to match
+const saved = async (doc, id) => ({
+  label: doc.label,
+  score: ours(doc).score,
+  opponentScore: theirs(doc).score ?? null,
+  mode: doc.opponentMode,
+  result: resultOf(doc),
+  differing: (await otherRounds(doc, id)).filter(g => withSubjects(g, doc.categories)).map(g => ({ id: String(g._id), label: g.label }))
+});
 
 router.post('/save', requireAuth, async (req, res) => {
   try {
@@ -91,7 +115,7 @@ router.post('/save', requireAuth, async (req, res) => {
       const old = await games.findOne({ _id: id });
       if (!old || kindOf(old) !== 'tournament') return res.status(404).json({ error: 'that tournament game is gone' });
       await games.updateOne({ _id: id }, { $set: { ...doc, editedAt: new Date() } });
-      return res.json({ ok: true, id: String(id), ...saved(doc) });
+      return res.json({ ok: true, id: String(id), ...await saved(doc, id) });
     }
     // the same sheet typed in twice
     const same = (await games.find({ kind: 'tournament', tournament: doc.tournament }).toArray()).find(g =>
@@ -101,7 +125,29 @@ router.post('/save', requireAuth, async (req, res) => {
       ours(g).name.toLowerCase() === doc.teams[0].name.toLowerCase());
     if (same) return res.status(409).json({ error: 'that game is already entered - find it in the list below to change it' });
     const r = await games.insertOne({ ...doc, enteredAt: new Date() });
-    res.json({ ok: true, id: String(r.insertedId), ...saved(doc) });
+    res.json({ ok: true, id: String(r.insertedId), ...await saved(doc, r.insertedId) });
+  } catch (e) {
+    res.status(400).json({ error: String(e.message || e) });
+  }
+});
+
+// The tournament's other rounds changed to one round's subjects, after they
+// were changed on that round: a tournament reads every round the same way.
+// Their buzzes keep their points and follow their questions' new subjects.
+router.post('/subjects', requireAuth, async (req, res) => {
+  try {
+    if (!ObjectId.isValid(String(req.body?.id || ''))) return res.status(400).json({ error: 'which game?' });
+    const id = new ObjectId(String(req.body.id));
+    const game = await games.findOne({ _id: id });
+    if (!game || kindOf(game) !== 'tournament') return res.status(404).json({ error: 'that tournament game is gone' });
+    let changed = 0;
+    for (const g of await otherRounds(game, id)) {
+      const next = withSubjects(g, game.categories || []);
+      if (!next) continue;
+      await games.updateOne({ _id: g._id }, { $set: { ...next, editedAt: new Date() } });
+      changed++;
+    }
+    res.json({ ok: true, changed });
   } catch (e) {
     res.status(400).json({ error: String(e.message || e) });
   }
@@ -241,8 +287,13 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
       <div id="slots" class="row g-1"></div>
       <p class="note">A sub who came in partway: set the questions they were in for, and the player they replaced's.</p>
 
-      <div class="d-flex justify-content-between align-items-end mt-3">
-        <div class="form-label mb-1">Questions</div>
+      <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mt-3">
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <div class="form-label mb-0">Questions</div>
+          <select class="form-select form-select-sm w-auto" id="fOrder" aria-label="The round's subjects"
+            title="The order this tournament reads its subjects in. Any one question's subject can also be changed in its row."></select>
+          <span class="note mt-0" id="orderNote"></span>
+        </div>
         <div class="small text-secondary keys">Click a row, then type: <kbd>1</kbd>&ndash;<kbd>6</kbd> our player got it,
           <kbd>-</kbd> then a number for our &minus;5, <kbd>o</kbd> they got it, <kbd>x</kbd> their &minus;5,
           <kbd>Enter</kbd> nobody, <kbd>Delete</kbd> clears.</div>
@@ -309,6 +360,15 @@ var NOTES = [];
 var EDITING = null;
 var CURRENT = 0;
 var NEG_NEXT = false;
+// The subjects of a round's 16 questions, which questions past 16 start over:
+// the regular order, one of DATA.orders, or what the tournament's other rounds
+// used. TOUCHED: changed by hand since the form was last set up, which the
+// tournament's own subjects then leave alone, and which Save then offers to
+// copy to the tournament's other rounds.
+var BASE = [];
+var TOUCHED = false;
+var SUBJECT_WORDS = { Other: 'Other (misc)' };
+var SAME_AS_OTHERS = "The same subjects as this tournament's other rounds.";
 
 function postJson (url, body) {
   return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -353,6 +413,8 @@ function setUp () {
   $('fLevel').innerHTML = DATA.levels.map(function (l) { return '<option value="' + l.key + '">' + esc(l.label) + '</option>'; }).join('');
   $('fStage').innerHTML = '<option value="">Regular round</option>' +
     DATA.stages.map(function (s) { return '<option value="' + s.key + '">' + esc(s.label) + '</option>'; }).join('');
+  $('fOrder').innerHTML = DATA.orders.map(function (o) { return '<option value="' + o.key + '">' + esc(o.label) + '</option>'; }).join('') +
+    '<option value="custom" hidden>Changed by hand</option>';
   $('squadList').innerHTML = DATA.squads.map(function (s) { return '<option value="' + esc(s) + '">'; }).join('');
   $('seasonWhen').innerHTML = '<option value="season">This school year (since ' + esc(DATA.seasonLabel) + ')</option><option value="all">All time</option>';
   $('seasonLevel').innerHTML = '<option value="all">All levels</option>' +
@@ -372,7 +434,12 @@ function resetForm (keepSetup) {
     PLAYERS = [];
     for (var i = 0; i < SLOTS; i++) PLAYERS.push({ name: '', from: '', to: '' });
   }
-  QUESTIONS = DATA.order.map(function (c) { return { category: c, us: null, them: null }; });
+  // the next round of a tournament starts with the last one's subjects, and
+  // with its usual ones once the list reloads (followTournament)
+  if (!keepSetup || !BASE.length) BASE = DATA.order.slice();
+  QUESTIONS = BASE.map(function (c) { return { category: c, us: null, them: null }; });
+  TOUCHED = false;
+  $('orderNote').textContent = sameOrder(BASE, DATA.order) ? '' : SAME_AS_OTHERS;
   NOTES = [];
   CURRENT = 0;
   NEG_NEXT = false;
@@ -406,8 +473,74 @@ $('fMode').onchange = function () { setMode(this.value); };
 $('fFinal').oninput = function () { renderScores(); };
 $('fResult').onchange = function () { renderScores(); };
 
-// a question past the last one: a regular round's subjects, starting over
-function categoryFor (n) { return DATA.order[(n - 1) % DATA.order.length]; }
+// a question past the last one: the round's own subjects, starting over
+function categoryFor (n) { return BASE[(n - 1) % BASE.length]; }
+
+// ---------- subjects ----------
+
+function sameOrder (a, b) { return a.join('|') === b.join('|'); }
+
+// the tournament the form is on, named the way the server's tournamentOf
+// names it: the same name at the same level in the same school year
+function formKey () {
+  var name = $('fTourney').value.split(' ').filter(Boolean).join(' ').toLowerCase();
+  var d = $('fDate').value;
+  var y = Number(d.slice(0, 4));
+  var m = Number(d.slice(5, 7));
+  var season = (m >= 8 ? y : y - 1) + '-' + String((m >= 8 ? y + 1 : y) % 100).padStart(2, '0');
+  return [name, $('fLevel').value || 'untagged', season].join('|');
+}
+
+// the subjects most of a tournament's saved rounds used, or null for a
+// tournament not entered yet; a round that ended early cannot say
+function knownOrder (key) {
+  var count = {};
+  var best = null;
+  DATA.games.forEach(function (g) {
+    if (g.event !== key || !g.categories || g.categories.length < DATA.order.length) return;
+    var k = g.categories.slice(0, DATA.order.length).join('|');
+    count[k] = (count[k] || 0) + 1;
+    if (!best || count[k] >= count[best]) best = k;
+  });
+  return best ? best.split('|') : null;
+}
+
+// which of the orders the grid's subjects follow, or "changed by hand"
+function renderOrder () {
+  var match = DATA.orders.filter(function (o) {
+    return QUESTIONS.every(function (q, i) { return q.category === o.order[i % o.order.length]; });
+  })[0];
+  $('fOrder').value = match ? match.key : 'custom';
+}
+
+// every question's subject from one order, keeping what happened on them
+function useBase (order, note) {
+  BASE = order.slice();
+  QUESTIONS.forEach(function (q, i) { q.category = BASE[i % BASE.length]; });
+  $('orderNote').textContent = note || '';
+  renderGrid();
+}
+
+$('fOrder').onchange = function () {
+  var o = DATA.orders.filter(function (x) { return x.key === $('fOrder').value; })[0];
+  if (!o) return;
+  TOUCHED = true;
+  useBase(o.order, '');
+};
+
+// A tournament's next round starts with the subjects its other rounds used,
+// once its name, level, and date say which one it is, unless this round's
+// were already changed by hand. Not on change: typing only redraws the grid.
+function followTournament () {
+  if (EDITING || TOUCHED || !DATA) return;
+  var known = knownOrder(formKey());
+  var order = known || DATA.order;
+  if (sameOrder(order, BASE)) return;
+  useBase(order, sameOrder(order, DATA.order) ? '' : SAME_AS_OTHERS);
+}
+$('fTourney').addEventListener('input', followTournament);
+$('fLevel').addEventListener('change', followTournament);
+$('fDate').addEventListener('change', followTournament);
 
 // special rounds run past 16 questions, and a round can end early
 $('addQ').onclick = function () {
@@ -492,7 +625,9 @@ function chip (n, k, value) {
 function rowHtml (n) {
   var q = QUESTIONS[n - 1];
   var slots = filledSlots();
-  var cats = DATA.categories.map(function (c) { return '<option' + (c === q.category ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+  var cats = DATA.subjects.map(function (c) {
+    return '<option value="' + esc(c) + '"' + (c === q.category ? ' selected' : '') + '>' + esc(SUBJECT_WORDS[c] || c) + '</option>';
+  }).join('');
   return '<td class="fw-semibold">' + n + '</td>' +
     '<td><select class="form-select form-select-sm qcat" data-n="' + n + '">' + cats + '</select></td>' +
     '<td>' + (slots.length ? slots.map(function (k) { return chip(n, k, 10); }).join('') : '<span class="note">add players</span>') + '</td>' +
@@ -513,6 +648,7 @@ function renderGrid () {
   $('addQ').disabled = n >= MAX_QUESTIONS;
   $('dropQ').disabled = n <= 1;
   Array.prototype.forEach.call(document.querySelectorAll('.sto'), function (el) { el.placeholder = n; });
+  renderOrder();
   renderScores();
 }
 
@@ -581,7 +717,14 @@ $('grid').addEventListener('click', function (e) {
   focusRow(n - 1);
 });
 $('grid').addEventListener('change', function (e) {
-  if (e.target.classList.contains('qcat')) QUESTIONS[Number(e.target.getAttribute('data-n')) - 1].category = e.target.value;
+  if (!e.target.classList.contains('qcat')) return;
+  var n = Number(e.target.getAttribute('data-n'));
+  QUESTIONS[n - 1].category = e.target.value;
+  // part of the round's own order, which a question added past its end follows
+  if (n <= BASE.length) BASE[n - 1] = e.target.value;
+  TOUCHED = true;
+  $('orderNote').textContent = '';
+  renderOrder();
 });
 
 // typing a sheet in: a key per question, and the row moves on once someone got it
@@ -682,11 +825,16 @@ $('save').onclick = function () {
     }),
     notes: NOTES
   };
+  // subjects changed on this round may be how the whole tournament went
+  var touched = TOUCHED;
   $('save').disabled = true;
   postJson('/kshsaa-tournaments/save', body).then(function (res) {
     $('save').disabled = false;
     if (!res.ok) { $('saveMsg').innerHTML = '<span class="text-danger">' + esc(res.d.error || 'could not save') + '</span>'; return; }
     $('saveMsg').innerHTML = '<span class="text-success">Saved ' + esc(res.d.label) + ' (' + scoreText(res.d) + ')</span>';
+    var others = touched ? (res.d.differing || []) : [];
+    var copy = others.length > 0 && confirm('These other rounds of ' + body.tournament.trim() + ' have different subjects: ' +
+      others.map(function (g) { return g.label; }).join('; ') + '. Change them to match this one? Their points stay as they are.');
     if (EDITING) {
       stopEditing();
     } else {
@@ -700,7 +848,16 @@ $('save').onclick = function () {
       resetForm(true);
       $('fOpp').focus();
     }
-    load();
+    // once the list is back, the next round takes the subjects most of the
+    // tournament's rounds have, so a one-off round's do not carry on
+    if (!copy) { load(followTournament); return; }
+    postJson('/kshsaa-tournaments/subjects', { id: res.d.id }).then(function (r) {
+      var n = r.d.changed;
+      $('saveMsg').innerHTML += r.ok
+        ? ' <span class="text-success">and changed the subjects on ' + n + ' other round' + (n === 1 ? '' : 's') + '</span>'
+        : ' <span class="text-danger">but could not change the other rounds: ' + esc(r.d.error || 'try again') + '</span>';
+      load(followTournament);
+    });
   });
 };
 
@@ -731,7 +888,12 @@ function editGame (id) {
       for (var j = 0; j < PLAYERS.length; j++) if (PLAYERS[j].name === name) return j + 1;
       return null;
     };
-    QUESTIONS = (g.categories || DATA.order).map(function (c) { return { category: c, us: null, them: null }; });
+    var cats = g.categories || DATA.order;
+    QUESTIONS = cats.map(function (c) { return { category: c, us: null, them: null }; });
+    // a question added back follows this round's own subjects
+    BASE = cats.slice(0, DATA.order.length).concat(DATA.order.slice(cats.length));
+    TOUCHED = false;
+    $('orderNote').textContent = '';
     (g.buzzes || []).forEach(function (b) {
       var q = QUESTIONS[b.questionNumber - 1];
       if (!q) return;

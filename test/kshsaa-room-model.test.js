@@ -87,6 +87,20 @@ const unrecorded = g => ({ ...g, opponentMode: 'unrecorded', buzzes: g.buzzes.fi
 const blank = g => ({ ...g, buzzes: g.buzzes.filter(b => b.player) });
 const chair = g => ({ ...g, opponentMode: 'chair', opponent: null, teams: [g.teams[0]], buzzes: g.buzzes.filter(b => b.player) });
 
+test('a Misc question counts toward no strength and no difficulty', () => {
+  const next = rng(5);
+  const practice = practiceGames(next, 12);
+  const game = tournamentGames(next, { D: 0.6, them: 1, rounds: 1 })[0];
+  // question 15 was Misc, and either Ana got it or nobody did
+  const misc = buzzes => ({ ...game, categories: game.categories.map((c, i) => (i === 14 ? 'Other' : c)), buzzes });
+  const rest = game.buzzes.filter(b => b.questionNumber !== 15);
+  const answered = fitRoomModel(practice.concat(misc(rest.concat({ player: 'Ana', team: 'SJA', questionNumber: 15, category: 'Other', value: 10 }))), everyoneVarsity);
+  const missed = fitRoomModel(practice.concat(misc(rest)), everyoneVarsity);
+  for (const name of NAMES) assert.equal(answered.players.get(name).overall, missed.players.get(name).overall);
+  assert.equal(answered.tournaments[0].difficulty, missed.tournaments[0].difficulty);
+  assert.equal(answered.tournaments[0].read, 15);
+});
+
 test('an unrecorded sheet changes nothing when we answered every question', () => {
   const next = rng(7);
   const practice = practiceGames(next, 12);
