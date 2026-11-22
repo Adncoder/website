@@ -2,8 +2,9 @@
 // the stored shape (routes/kshsaa-tournaments.js saves it). Not every sheet is
 // complete, so a game says how the other team's side was kept
 // (OPPONENT_MODES): question by question like ours, not at all, or not there
-// because we played a chair. Rounds can also run past 16 questions, and a
-// game can be a playoff round (STAGES) when the team makes it that far.
+// because we played a chair. Rounds can also run past 16 questions, a game
+// can be a playoff round (STAGES) when the team makes it that far, and not
+// every tournament reads its subjects in the regular order (SUBJECT_ORDERS).
 
 import { cleanNotes } from './game-stats.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS } from './round-shape.js';
@@ -33,6 +34,43 @@ export const STAGES = {
   final: 'Final'
 };
 
+/**
+ * The subjects a tournament question can have: the KSHSAA ones, and 'Other'
+ * for one outside them, which sheets call Misc. An Other question counts in
+ * points, buzzes, and the score, but toward no subject, and Insights leaves it
+ * out, since the room model reads only the KSHSAA subjects. Practice games'
+ * Other questions already count that way.
+ */
+export const SUBJECTS = [...CATEGORIES, 'Other'];
+
+// a round's subjects in reading order, from [subject, how many] in a row
+const inOrder = (...runs) => runs.flatMap(([subject, count]) => Array(count).fill(subject));
+
+/**
+ * Rounds some tournaments read instead of the regular one. They leave out
+ * World Language and make up its question another way, so every subject after
+ * the change moves up a row. The entry grid offers these, and any question's
+ * subject can still be changed by hand.
+ */
+export const SUBJECT_ORDERS = [
+  { key: 'regular', label: 'Regular order', order: CATEGORY_BY_QUESTION },
+  {
+    key: 'language-arts',
+    label: 'No World Language: a 4th Language Arts',
+    order: inOrder(['Language Arts', 4], ['Science/Health', 3], ['Social Studies', 3], ['Mathematics', 3], ['Fine Arts', 2], ['Year in Review', 1])
+  },
+  {
+    key: 'fine-arts',
+    label: 'No World Language: a 3rd Fine Arts',
+    order: inOrder(['Language Arts', 3], ['Science/Health', 3], ['Social Studies', 3], ['Mathematics', 3], ['Fine Arts', 3], ['Year in Review', 1])
+  },
+  {
+    key: 'misc',
+    label: 'No World Language: Misc before Year in Review',
+    order: inOrder(['Language Arts', 3], ['Science/Health', 3], ['Social Studies', 3], ['Mathematics', 3], ['Fine Arts', 2], ['Other', 1], ['Year in Review', 1])
+  }
+];
+
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
 
@@ -43,6 +81,26 @@ const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
  * @returns {string}
  */
 export const categoryFor = n => CATEGORY_BY_QUESTION[(n - 1) % CATEGORY_BY_QUESTION.length];
+
+/**
+ * Another round of the same tournament changed to these subjects, question by
+ * question as far as both go, with its buzzes following their questions. The
+ * entry grid offers this after one round's subjects are changed, since a
+ * tournament reads every round the same way.
+ * @param {object} game - a stored tournament game
+ * @param {string[]} subjects - by question, 1 first
+ * @returns {{categories: string[], buzzes: object[]} | null} null when
+ *   nothing would change
+ */
+export function withSubjects (game, subjects) {
+  const read = game.tossupsRead || game.categories?.length || CATEGORY_BY_QUESTION.length;
+  const own = n => game.categories?.[n - 1] || categoryFor(n);
+  const categories = Array.from({ length: read }, (_, i) => (SUBJECTS.includes(subjects[i]) ? subjects[i] : own(i + 1)));
+  if (categories.every((c, i) => c === own(i + 1))) return null;
+  const buzzes = (game.buzzes || []).map(b =>
+    b.questionNumber >= 1 && b.questionNumber <= read ? { ...b, category: categories[b.questionNumber - 1] } : b);
+  return { categories, buzzes };
+}
 
 /**
  * A game from the entry grid, checked and turned into the stored shape. Throws
@@ -96,7 +154,7 @@ export function tournamentGame (body, fix) {
   const buzzes = [];
   const categories = questions.map((q, i) => {
     const n = i + 1;
-    const category = CATEGORIES.includes(q?.category) ? q.category : categoryFor(n);
+    const category = SUBJECTS.includes(q?.category) ? q.category : categoryFor(n);
     const us = q?.us?.player ? { player: fix(text(q.us.player, 60)), value: Number(q.us.value) } : null;
     const them = mode !== 'recorded' || q?.them == null || q.them === '' ? null : Number(q.them);
     if (us) {

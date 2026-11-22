@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { opponentModeOf, resultOf } from '../server/kshsaa/game-stats.js';
 import { CATEGORY_BY_QUESTION } from '../server/kshsaa/round-shape.js';
-import { MAX_QUESTIONS, tournamentGame } from '../server/kshsaa/tournament-game.js';
+import { MAX_QUESTIONS, SUBJECT_ORDERS, SUBJECTS, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 
 const same = name => name;
 // Avery gets questions 1-3 and Blake loses 5 on 4 (25 for us); they get 5 and
@@ -122,4 +122,71 @@ test('a regular round has no stage, and an unknown one counts as regular', () =>
 
 test('a chair cannot be a playoff game', () => {
   assert.throws(() => tournamentGame(sheet({ opponentMode: 'chair', opponent: '', stage: 'final' }), same), /playoff game has an opponent/);
+});
+
+const order = key => SUBJECT_ORDERS.find(o => o.key === key).order;
+// question n's subject in an order, 1 first
+const at = (key, n) => order(key)[n - 1];
+
+test('the orders some tournaments read are full rounds without World Language', () => {
+  assert.deepEqual(order('regular'), CATEGORY_BY_QUESTION);
+  for (const o of SUBJECT_ORDERS) {
+    assert.equal(o.order.length, 16, o.key);
+    assert.ok(o.order.every(s => SUBJECTS.includes(s)), o.key);
+    if (o.key !== 'regular') assert.ok(!o.order.includes('World Language'), o.key);
+  }
+  // another Language Arts: Language Arts takes questions 1 to 4
+  assert.deepEqual([1, 2, 3, 4, 5].map(n => at('language-arts', n)), ['Language Arts', 'Language Arts', 'Language Arts', 'Language Arts', 'Science/Health']);
+  // another Fine Arts: everything moves up a row, three Fine Arts, Year in Review last
+  assert.deepEqual([1, 4, 12, 13, 15, 16].map(n => at('fine-arts', n)),
+    ['Language Arts', 'Science/Health', 'Mathematics', 'Fine Arts', 'Fine Arts', 'Year in Review']);
+  // Misc after Fine Arts, before Year in Review
+  assert.deepEqual([13, 14, 15, 16].map(n => at('misc', n)), ['Fine Arts', 'Fine Arts', 'Other', 'Year in Review']);
+});
+
+test('a sheet keeps the subjects it gives, Misc included', () => {
+  const s = sheet();
+  s.questions[0].category = 'Language Arts';
+  s.questions[14].category = 'Other';
+  s.questions[14].us = { player: 'Avery', value: 10 };
+  s.questions[15].category = 'Underwater Basketweaving';
+  const g = tournamentGame(s, same);
+  assert.equal(g.categories[0], 'Language Arts');
+  assert.equal(g.categories[14], 'Other');
+  // a subject the site does not know is the question's regular one
+  assert.equal(g.categories[15], 'Year in Review');
+  // a Misc answer counts in the score like any other
+  assert.equal(g.teams[0].score, 35);
+  assert.equal(g.buzzes.find(b => b.questionNumber === 15).category, 'Other');
+});
+
+test('another round changed to these subjects keeps its points', () => {
+  const g = tournamentGame(sheet(), same);
+  const changed = withSubjects(g, order('fine-arts'));
+  assert.deepEqual(changed.categories, order('fine-arts'));
+  // Avery's question 1 was World Language and is now Language Arts; Blake's
+  // -5 on 4 is now Science/Health; their buzzes on 5 and 6 follow too
+  assert.deepEqual(changed.buzzes.map(b => [b.questionNumber, b.category, b.value]), [
+    [1, 'Language Arts', 10], [2, 'Language Arts', 10], [3, 'Language Arts', 10], [4, 'Science/Health', -5],
+    [5, 'Science/Health', 10], [6, 'Science/Health', -5]
+  ]);
+  assert.deepEqual(changed.buzzes.map(b => b.player), g.buzzes.map(b => b.player));
+  // the game itself is left alone until it is saved
+  assert.equal(g.categories[0], 'World Language');
+  assert.equal(withSubjects(g, CATEGORY_BY_QUESTION), null);
+});
+
+test('subjects change only as far as both rounds go', () => {
+  const long = sheet({}, 20);
+  for (const q of long.questions.slice(16)) q.category = 'Other';
+  const g = tournamentGame(long, same);
+  const changed = withSubjects(g, order('misc'));
+  assert.deepEqual(changed.categories.slice(0, 16), order('misc'));
+  // a special round's extra questions keep their own subjects
+  assert.deepEqual(changed.categories.slice(16), ['Other', 'Other', 'Other', 'Other']);
+  // and a short round takes only the subjects it has questions for
+  const short = tournamentGame(sheet({}, 12), same);
+  assert.deepEqual(withSubjects(short, order('language-arts')).categories, order('language-arts').slice(0, 12));
+  // a subject the site does not know leaves the question as it was
+  assert.equal(withSubjects(g, ['Underwater Basketweaving']), null);
 });

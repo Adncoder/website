@@ -849,9 +849,31 @@ are `'recorded'`):
 `result` ('win', 'loss', 'tie', or null) is stored with every new game. Read it
 with `resultOf`, which also covers older games from their scores. Rounds can
 run past 16 questions, up to `MAX_QUESTIONS` (40): the grid's buttons add and
-remove questions, and an added question's subject starts the regular order
+remove questions, and an added question's subject starts the round's own order
 over. The next game typed in keeps the last mode that was not a chair, and
 editing a game does not change it.
+
+Not every tournament reads its subjects in the regular order. A question's
+subject is one of `SUBJECTS` in `tournament-game.js`: the KSHSAA subjects plus
+`Other`, which sheets call Misc. An Other question counts in points, buzzes,
+and the score, but toward no subject. The room model skips any question outside
+`CATEGORIES`, so Insights leaves it out, the same as practice games' Other
+questions.
+
+The picker above the grid offers the regular order and the `SUBJECT_ORDERS`
+that leave out World Language: a 4th Language Arts, a 3rd Fine Arts at
+questions 13 to 15, or Misc at 15 before Year in Review. In each, every subject
+after the change moves up a row. Any row's subject can also be changed by hand.
+- **Carried over:** once the name, level, and date say which tournament it is
+  (keyed like `tournamentOf`), a new round starts with the subjects most of its
+  saved rounds used (`knownOrder`). This happens after every save too, so a
+  one-off round does not carry on. A round whose subjects were changed by hand
+  (`TOUCHED`) keeps them.
+- **Other rounds:** saving a round whose subjects were changed by hand returns
+  `differing`, the tournament's other rounds whose subjects are not the same.
+  The page then offers to change them (`POST /kshsaa-tournaments/subjects`,
+  `withSubjects`). They change question by question as far as both rounds go,
+  and their buzzes keep their points and follow their questions.
 
 A playoff game stores its `stage`, one of the `STAGES` keys: quarterfinal,
 semifinal, third, or final. A regular round stores null, and a chair is always
