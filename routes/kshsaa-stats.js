@@ -371,7 +371,7 @@ router.post('/roster/update', requireAuth, async (req, res) => {
  * @returns {Promise<number>} how many games changed
  */
 async function renameInGames (from, to) {
-  const hit = await games.find({ $or: [{ 'buzzes.player': from }, { 'teams.players': from }] }).toArray();
+  const hit = await games.find({ $or: [{ 'buzzes.player': from }, { 'teams.players': from }, { bench: from }] }).toArray();
   for (const g of hit) {
     const buzzes = (g.buzzes || []).map(b => (b.player === from ? { ...b, player: to } : b));
     const notes = (g.notes || []).map(n => (n.player === from ? { ...n, player: to } : n));
@@ -385,6 +385,8 @@ async function renameInGames (from, to) {
       .filter((p, i, all) => all.findIndex(q => q.name === p.name) === i);
     // each player's points, on a sheet that has only those for the tournament
     const playerTotals = (g.playerTotals || []).map(t => (t.name === from ? { ...t, name: to } : t));
+    // who sat a tournament round, as ticked on the entry form
+    const bench = [...new Set((g.bench || []).map(n => (n === from ? to : n)))];
     const heardByPlayer = {};
     for (const [key, heard] of Object.entries(g.heardByPlayer || {})) {
       const bar = key.indexOf('|');
@@ -394,7 +396,15 @@ async function renameInGames (from, to) {
       heardByPlayer[next] = Math.max(heardByPlayer[next] ?? 0, heard);
     }
     await games.updateOne({ _id: g._id }, {
-      $set: { buzzes, teams, heardByPlayer, notes, ...(g.lineup ? { lineup } : {}), ...(g.playerTotals ? { playerTotals } : {}) }
+      $set: {
+        buzzes,
+        teams,
+        heardByPlayer,
+        notes,
+        ...(g.lineup ? { lineup } : {}),
+        ...(g.playerTotals ? { playerTotals } : {}),
+        ...(g.bench ? { bench } : {})
+      }
     });
   }
   return hit.length;

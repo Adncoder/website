@@ -300,3 +300,20 @@ test('who sat a round is the rest of the team that played the tournament', () =>
   assert.equal(sat.has(total), false);
   assert.equal(sat.has(practice), false);
 });
+
+test('a player ticked as sitting is on the bench, and was there all day', () => {
+  const r1 = roundOf('1', ['Avery', 'Blake'], { bench: ['Casey', 'Casey', ''] });
+  const r2 = roundOf('2', ['Avery', 'Blake'], { bench: ['Casey'] });
+  assert.deepEqual(r1.bench, ['Casey']);
+  assert.deepEqual(r1.teams[0].players, ['Avery', 'Blake']);
+  // sitting is in no stats: not on the team, and heard nothing
+  assert.equal(playersInGame(r1).has('Casey'), false);
+  assert.equal(r1.heardByPlayer['SJA|Casey'], undefined);
+  // Casey sat every round, and still shows as there for each
+  const sat = satOut([r1, r2]);
+  assert.deepEqual(sat.get(r1), ['Casey']);
+  assert.deepEqual(sat.get(r2), ['Casey']);
+  assert.throws(() => roundOf('3', ['Avery', 'Blake'], { bench: ['Blake'] }), /Blake is marked as both playing and sitting/);
+  // a sheet with only the final scores keeps who sat too
+  assert.deepEqual(finalsOnly({ ourScore: 90, opponentScore: 80, players: [{ name: 'Avery' }], bench: ['Drew'] }).bench, ['Drew']);
+});

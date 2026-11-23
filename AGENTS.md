@@ -884,6 +884,14 @@ nobody types a bench.
   - The season table's Rounds column, which replaced Games, shows rounds
     played out of the rounds at the tournaments a player went to, playoffs
     included.
+- **Ticked as sitting:** each player box has a "sat" checkbox, and "+ Add a
+  player box" goes up to `SLOTS + 4`.
+  - A ticked player keeps their box and number, and the ticks carry over to
+    the next round.
+  - A ticked player can't be credited, and is saved in the game's `bench`,
+    not its lineup (`benchOf`). `bench` is in no stats.
+  - `satOut` counts `bench` as there, so someone who sat every round still
+    shows. Renames cover `bench`.
 - **Editing lineups:** each answer in the grid belongs to a player box, the
   player's number on the sheet. Typing a different name into a box moves its
   answers to that name. Emptying a box that has answers would lose them, so
