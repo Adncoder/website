@@ -190,6 +190,8 @@ ${KSHSAA_HEAD}
  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
  .form-label{font-size:.85rem;font-weight:600;color:#4b5563;margin-bottom:.2rem}
  .slot{display:inline-flex;align-items:center;justify-content:center;width:1.7rem;font-weight:700;color:#4a5b7d}
+ /* there that day, but sat this round */
+ .sname.sitting{color:#9aa3b2;text-decoration:line-through}
  /* the entry grid: one row per question, a button per player */
  #grid tr.on td{background:#eef4ff}
  #grid tr:focus{outline:none}
@@ -312,8 +314,9 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
 
       <div class="form-label mt-3" id="playersLabel">Players, by their number on the sheet</div>
       <div id="slots" class="row g-1"></div>
-      <p class="note" id="sittingNote"></p>
-      <p class="note" id="subNote">A sub who came in partway: set the questions they were in for, and the player they replaced's.</p>
+      <button type="button" class="btn btn-sm btn-link px-0" id="addPlayer">+ Add a player box</button>
+      <p class="note mt-0" id="sittingNote"></p>
+      <p class="note" id="subNote"></p>
 
       <div id="sheetDetail">
       <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mt-3">
@@ -323,7 +326,7 @@ ${kshsaaNav('/kshsaa-stats', 1100)}
             title="The order this tournament reads its subjects in. Any one question's subject can also be changed in its row."></select>
           <span class="note mt-0" id="orderNote"></span>
         </div>
-        <div class="small text-secondary keys">Click a row, then type: <kbd>1</kbd>&ndash;<kbd>6</kbd> our player got it,
+        <div class="small text-secondary keys">Click a row, then type: a player&rsquo;s number (<kbd>1</kbd>&ndash;<kbd>9</kbd>) if ours got it,
           <kbd>-</kbd> then a number for our &minus;5, <kbd>o</kbd> they got it, <kbd>x</kbd> their &minus;5,
           <kbd>Enter</kbd> nobody, <kbd>Delete</kbd> clears.</div>
       </div>
@@ -471,7 +474,7 @@ function setUp () {
 function resetForm (keepSetup) {
   if (!keepSetup) {
     PLAYERS = [];
-    for (var i = 0; i < SLOTS; i++) PLAYERS.push({ name: '', from: '', to: '', points: '' });
+    for (var i = 0; i < SLOTS; i++) PLAYERS.push({ name: '', from: '', to: '', points: '', sat: false });
   }
   // a player's total belongs to one tournament
   PLAYERS.forEach(function (p) { p.points = ''; });
@@ -525,7 +528,9 @@ function renderSheet () {
   $('finalBox').classList.toggle('d-none', totals || MODE !== 'unrecorded');
   $('resultBox').classList.toggle('d-none', totals || MODE !== 'unrecorded');
   $('sheetDetail').classList.toggle('d-none', noQuestions);
-  $('subNote').classList.toggle('d-none', noQuestions);
+  $('subNote').classList.toggle('d-none', totals);
+  $('subNote').textContent = 'Tick sat for anyone who was there but sat this round.' +
+    (noQuestions ? '' : " A sub who came in partway: set the questions they were in for, and the player they replaced's.");
   $('playersLabel').textContent = totals ? "Each player's points for the whole tournament"
     : noQuestions ? 'Who played, if anyone knows' : 'Players, by their number on the sheet';
   $('modeNote').classList.toggle('d-none', MODE === 'recorded' && !noQuestions);
@@ -651,8 +656,11 @@ function renderSitting () {
   DATA.games.forEach(function (g) {
     if (g.event !== key || g.wholeTournament || g.id === EDITING || String(g.team || '').trim().toLowerCase() !== team) return;
     g.players.forEach(function (p) { there[p.name.toLowerCase()] = p.name; });
+    (g.sat || []).forEach(function (n) { there[n.toLowerCase()] = n; });
   });
-  PLAYERS.forEach(function (p) { delete there[p.name.trim().toLowerCase()]; });
+  // ticked as sitting here, and playing this round
+  PLAYERS.forEach(function (p) { var n = p.name.trim(); if (n && p.sat) there[n.toLowerCase()] = n; });
+  PLAYERS.forEach(function (p) { if (playing(p)) delete there[p.name.trim().toLowerCase()]; });
   var sitting = Object.keys(there).map(function (k) { return there[k]; }).sort(function (a, b) { return a.localeCompare(b); });
   el.textContent = sitting.length ? 'Sitting this round: ' + sitting.join(', ') + '.' : '';
 }
@@ -673,15 +681,18 @@ $('dropQ').onclick = function () {
   focusRow(Math.min(CURRENT, QUESTIONS.length - 1));
 };
 
+// a player in this round: named, and not ticked as sitting it
+function playing (p) { return Boolean(p && p.name.trim() && !p.sat); }
+
 function filledSlots () {
   var out = [];
-  PLAYERS.forEach(function (p, i) { if (p.name.trim()) out.push(i + 1); });
+  PLAYERS.forEach(function (p, i) { if (playing(p)) out.push(i + 1); });
   return out;
 }
 
 function inFor (k, n) {
   var p = PLAYERS[k - 1];
-  if (!p || !p.name.trim()) return false;
+  if (!playing(p)) return false;
   var from = p.from === '' ? 1 : Number(p.from);
   var to = p.to === '' ? QUESTIONS.length : Number(p.to);
   return n >= from && n <= to;
@@ -689,19 +700,28 @@ function inFor (k, n) {
 
 function renderSlots () {
   $('slots').innerHTML = PLAYERS.map(function (p, i) {
-    return '<div class="col-md-6 col-lg-4"><div class="input-group input-group-sm">' +
+    var sat = SHEET !== 'totals' && p.sat;
+    // two to a row until the screen is wide enough for a name beside sat and
+    // the questions boxes
+    return '<div class="col-md-6 col-xl-4"><div class="input-group input-group-sm">' +
       '<span class="input-group-text slot">' + (i + 1) + '</span>' +
-      '<input class="form-control sname" data-k="' + (i + 1) + '" value="' + esc(p.name) + '" placeholder="' + (SHEET === 'totals' ? 'player' : i < 5 ? 'starter' : 'sub') + '">' +
+      '<input class="form-control sname' + (sat ? ' sitting' : '') + '" data-k="' + (i + 1) + '" value="' + esc(p.name) + '" placeholder="' +
+        (SHEET === 'totals' ? 'player' : i < 5 ? 'starter' : 'sub') + '">' +
+      // there that day and sitting this round: the name stays in its box
+      (SHEET === 'totals' ? '' : '<label class="input-group-text gap-1 small" title="There, but sat this round">' +
+        '<input class="form-check-input mt-0 ssat" type="checkbox" data-k="' + (i + 1) + '"' + (sat ? ' checked' : '') + '>sat</label>') +
       // each player's points for the tournament, on a sheet with only those
       (SHEET === 'totals'
         ? '<input class="form-control spts" style="max-width:5.5rem" data-k="' + (i + 1) + '" value="' + esc(p.points) + '" placeholder="points" inputmode="numeric">'
-        // a sheet with only the final scores cannot say which questions a sub heard
-        : SHEET === 'scores' ? '' : '<span class="input-group-text">Q</span>' +
+        // a sheet with only the final scores cannot say which questions a sub
+        // heard, and someone who sat heard none
+        : SHEET === 'scores' || sat ? '' : '<span class="input-group-text">Q</span>' +
       '<input class="form-control sfrom" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.from) + '" placeholder="1" inputmode="numeric">' +
       '<span class="input-group-text">to</span>' +
       '<input class="form-control sto" style="max-width:3.2rem" data-k="' + (i + 1) + '" value="' + esc(p.to) + '" placeholder="' + QUESTIONS.length + '" inputmode="numeric">') +
       '</div></div>';
   }).join('');
+  $('addPlayer').disabled = PLAYERS.length >= SLOTS + 4;
   Array.prototype.forEach.call(document.querySelectorAll('.sname'), function (input) {
     attachNameAutocomplete(input, {
       names: function () { return KNOWN_NAMES; },
@@ -718,6 +738,27 @@ function renderSlots () {
     });
   });
 }
+
+// Ticking "sat" keeps the name in its box and takes the player out of this
+// round. A checkbox changes on the click itself, so redrawing here is safe.
+$('slots').addEventListener('change', function (e) {
+  if (!e.target.classList.contains('ssat')) return;
+  var p = PLAYERS[Number(e.target.getAttribute('data-k')) - 1];
+  if (!p) return;
+  p.sat = e.target.checked;
+  renderSlots();
+  renderGrid();
+  renderNotes();
+});
+
+// more boxes than the sheet's six, for a bigger team that day
+$('addPlayer').onclick = function () {
+  if (PLAYERS.length >= SLOTS + 4) return;
+  PLAYERS.push({ name: '', from: '', to: '', points: '', sat: false });
+  renderSlots();
+  var box = document.querySelector('.sname[data-k="' + PLAYERS.length + '"]');
+  if (box) box.focus();
+};
 
 // The grid follows the lineup as it is typed. Redrawing it on "change"
 // instead would happen as a name box loses focus -- that is, in the middle of
@@ -742,12 +783,18 @@ function chip (n, k, value) {
     '" data-v="' + value + '" title="' + esc(name) + '"' + (inFor(k, n) ? '' : ' disabled') + '>' + k + '</button>';
 }
 
-// An answer credited to a player box that is now empty, or to someone the
-// lineup does not have. Each answer belongs to a box, the player's number on
-// the sheet, so emptying the box would lose its points on save.
+// An answer credited to a player box that is now empty or ticked as sitting,
+// or to someone the lineup does not have. Each answer belongs to a box, the
+// player's number on the sheet, so saving would lose its points.
 function orphaned (q) {
-  var p = q.us && q.us.k ? PLAYERS[q.us.k - 1] : null;
-  return Boolean(q.us) && !(p && p.name.trim());
+  return Boolean(q.us) && !playing(q.us.k ? PLAYERS[q.us.k - 1] : null);
+}
+
+// who such an answer is credited to, and what is wrong with them
+function orphanText (q) {
+  var p = q.us.k ? PLAYERS[q.us.k - 1] : null;
+  if (!q.us.k) return 'someone not in the lineup';
+  return 'player ' + q.us.k + (p && p.name.trim() ? ', who is ticked as sitting' : ', whose box is empty');
 }
 
 function rowHtml (n) {
@@ -757,8 +804,8 @@ function rowHtml (n) {
     return '<option value="' + esc(c) + '"' + (c === q.category ? ' selected' : '') + '>' + esc(SUBJECT_WORDS[c] || c) + '</option>';
   }).join('');
   var lost = orphaned(q)
-    ? ' <span class="small text-danger" title="Put the name back in its box, or press Delete on this row">' +
-      (q.us.value > 0 ? '+10' : '&minus;5') + ' by ' + (q.us.k ? 'player ' + q.us.k : 'someone not listed') + ', whose box is empty</span>'
+    ? ' <span class="small text-danger" title="Put them back in this round, or press Delete on this row">' +
+      (q.us.value > 0 ? '+10' : '&minus;5') + ' by ' + esc(orphanText(q)) + '</span>'
     : '';
   return '<td class="fw-semibold">' + n + '</td>' +
     '<td><select class="form-select form-select-sm qcat" data-n="' + n + '">' + cats + '</select></td>' +
@@ -879,7 +926,7 @@ $('grid').addEventListener('keydown', function (e) {
   var q = QUESTIONS[CURRENT];
   // a key with no name would match '123456789' at the start, as player 1
   var digit = e.key.length === 1 ? '123456789'.indexOf(e.key) + 1 : 0;
-  if (digit && digit <= SLOTS) {
+  if (digit && digit <= PLAYERS.length) {
     if (!inFor(digit, n)) { $('saveMsg').textContent = 'no player ' + digit + ' in for question ' + n; return; }
     var value = NEG_NEXT ? -5 : 10;
     setUs(n, digit, value);
@@ -916,7 +963,7 @@ $('grid').addEventListener('keydown', function (e) {
 
 function renderNotes () {
   var who = function (selected) {
-    return '<option value="">no one in particular</option>' + PLAYERS.filter(function (p) { return p.name.trim(); }).map(function (p) {
+    return '<option value="">no one in particular</option>' + PLAYERS.filter(playing).map(function (p) {
       return '<option' + (p.name === selected ? ' selected' : '') + '>' + esc(p.name) + '</option>';
     }).join('');
   };
@@ -958,9 +1005,8 @@ $('save').onclick = function () {
     for (var i = 0; i < QUESTIONS.length; i++) {
       if (!orphaned(QUESTIONS[i])) continue;
       focusRow(i);
-      $('saveMsg').innerHTML = '<span class="text-danger">Question ' + (i + 1) + ' is credited to ' +
-        (QUESTIONS[i].us.k ? 'player ' + QUESTIONS[i].us.k + ', whose box is now empty' : 'someone not in the lineup') +
-        '. Put the name back, or press Delete on that row to clear it. Nothing was saved.</span>';
+      $('saveMsg').innerHTML = '<span class="text-danger">Question ' + (i + 1) + ' is credited to ' + esc(orphanText(QUESTIONS[i])) +
+        '. Put them back in this round, or press Delete on that row to clear it. Nothing was saved.</span>';
       return;
     }
   }
@@ -981,9 +1027,12 @@ $('save').onclick = function () {
     sheet: SHEET,
     scoresOnly: SHEET === 'scores',
     ourScore: SHEET === 'scores' ? $('fOurs').value : '',
-    players: PLAYERS.filter(function (p) { return p.name.trim(); }).map(function (p) {
+    // who played this round, and who was there and sat it; a sheet with only
+    // each player's total has no rounds to sit
+    players: PLAYERS.filter(function (p) { return SHEET === 'totals' ? p.name.trim() : playing(p); }).map(function (p) {
       return { name: p.name, from: p.from, to: p.to, points: p.points };
     }),
+    bench: SHEET === 'totals' ? [] : PLAYERS.filter(function (p) { return p.name.trim() && p.sat; }).map(function (p) { return p.name; }),
     questions: SHEET !== 'questions' ? [] : QUESTIONS.map(function (q) {
       return { category: q.category, us: q.us ? { player: PLAYERS[q.us.k - 1].name, value: q.us.value } : null, them: MODE === 'recorded' ? q.them : null };
     }),
@@ -1052,12 +1101,12 @@ function editGame (id) {
     var pointsOf = {};
     (g.playerTotals || []).forEach(function (t) { pointsOf[t.name] = String(t.points); });
     PLAYERS = [];
-    for (var i = 0; i < Math.max(SLOTS, lineup.length); i++) {
-      var p = lineup[i];
-      PLAYERS.push(p
-        ? { name: p.name, from: p.from === 1 ? '' : String(p.from), to: p.to === g.tossupsRead ? '' : String(p.to), points: pointsOf[p.name] || '' }
-        : { name: '', from: '', to: '', points: '' });
-    }
+    lineup.forEach(function (p) {
+      PLAYERS.push({ name: p.name, from: p.from === 1 ? '' : String(p.from), to: p.to === g.tossupsRead ? '' : String(p.to), points: pointsOf[p.name] || '', sat: false });
+    });
+    // and whoever was ticked as sitting it, after the ones who played
+    (g.bench || []).forEach(function (name) { PLAYERS.push({ name: name, from: '', to: '', points: '', sat: true }); });
+    while (PLAYERS.length < SLOTS) PLAYERS.push({ name: '', from: '', to: '', points: '', sat: false });
     var slotOf = function (name) {
       for (var j = 0; j < PLAYERS.length; j++) if (PLAYERS[j].name === name) return j + 1;
       return null;

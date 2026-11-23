@@ -78,11 +78,11 @@ const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
 
 /**
  * Who sat each round. Teams rotate their players, so everyone who played any
- * round of a tournament for a team was there for all of them: a round's
- * bench is that roster less its own lineup. Some entries have no answer: a
- * sheet with only the final scores that does not say who played, and a
- * whole-tournament total, which is not a round. A player who came and sat
- * every round cannot be seen.
+ * round of a tournament for a team, or was ticked as sitting one (bench), was
+ * there for all of them: a round's bench is that roster less its own
+ * lineup. Some entries have no answer: a sheet with only the final scores
+ * that does not say who played, and a whole-tournament total, which is not a
+ * round. A player who sat every round counts only if ticked as sitting one.
  * @param {object[]} games - stored games, of any kind
  * @returns {Map<object, string[]>} each tournament round whose lineup is
  *   known, to the names who sat it, alphabetically
@@ -95,7 +95,7 @@ export function satOut (games) {
   const roster = new Map();
   for (const g of rounds) {
     if (!roster.has(keyOf(g))) roster.set(keyOf(g), new Set());
-    for (const name of ours(g).players) roster.get(keyOf(g)).add(name);
+    for (const name of ours(g).players.concat(g.bench || [])) roster.get(keyOf(g)).add(name);
   }
   return new Map(rounds.map(g => {
     const played = new Set(ours(g).players);
@@ -131,6 +131,25 @@ export function withSubjects (game, subjects) {
   const buzzes = (game.buzzes || []).map(b =>
     b.questionNumber >= 1 && b.questionNumber <= read ? { ...b, category: categories[b.questionNumber - 1] } : b);
   return { categories, buzzes };
+}
+
+/**
+ * Who sat the round, as ticked on the entry form: there that day, and not
+ * playing it. A name can't be both, and the list is cleaned like the lineup.
+ * @param {*} raw - names
+ * @param {function(string): string} fix - name canonicalizer
+ * @param {function(string): boolean} playing - whether a name is in the lineup
+ * @returns {string[]}
+ */
+function benchOf (raw, fix, playing) {
+  const bench = [];
+  for (const value of (Array.isArray(raw) ? raw : []).slice(0, SLOTS + 4)) {
+    const name = fix(text(value, 60));
+    if (!name || bench.includes(name)) continue;
+    if (playing(name)) throw new Error(name + ' is marked as both playing and sitting');
+    bench.push(name);
+  }
+  return bench;
 }
 
 // a final score as the sheet gives it, or null when it gives none
@@ -177,6 +196,7 @@ function scoresOnlyGame (body, fix, { tournament, playedAt, team, mode, opponent
   return {
     kind: 'tournament',
     scoresOnly: true,
+    bench: benchOf(body.bench, fix, name => names.includes(name)),
     tournament,
     round,
     stage,
@@ -364,6 +384,8 @@ export function tournamentGame (body, fix) {
     wordCounts: null,
     charCounts: null,
     lineup,
+    // who was there and sat this round (benchOf): in no stats, only in who sat
+    bench: benchOf(body.bench, fix, name => Boolean(span[name])),
     teams: mode === 'chair' ? [ours] : [ours, { name: opponent, players: [], score: theirScore, opponent: true }],
     heardByPlayer: Object.fromEntries(lineup.map(p => [team + '|' + p.name, p.to - p.from + 1])),
     buzzes,
