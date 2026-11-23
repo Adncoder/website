@@ -87,6 +87,32 @@ const unrecorded = g => ({ ...g, opponentMode: 'unrecorded', buzzes: g.buzzes.fi
 const blank = g => ({ ...g, buzzes: g.buzzes.filter(b => b.player) });
 const chair = g => ({ ...g, opponentMode: 'chair', opponent: null, teams: [g.teams[0]], buzzes: g.buzzes.filter(b => b.player) });
 
+test('each school we played gets one strength from all its games, and nothing else moves', () => {
+  const next = rng(21);
+  const practice = practiceGames(next, 30);
+  const strong = tournamentGames(next, { D: 0.6, them: 2, rounds: 6, name: 'Big Invitational' })
+    .map(g => ({ ...g, opponent: 'Strong Prep' }));
+  const weak = tournamentGames(next, { D: 0.6, them: 0.3, rounds: 6, name: 'Big Invitational' })
+    .map((g, i) => ({ ...g, round: String(i + 7), opponent: 'Weak High' }));
+  // a school whose side of the sheet was never kept
+  const mystery = tournamentGames(next, { D: 0.6, them: 1, rounds: 3, name: 'Big Invitational' })
+    .map((g, i) => unrecorded({ ...g, round: String(i + 13), opponent: 'Mystery Academy' }));
+  const games = practice.concat(strong, weak, mystery);
+  const plain = fitRoomModel(games, everyoneVarsity);
+  const fit = fitRoomModel(games, everyoneVarsity, { schoolOf: g => (g.kind === 'tournament' ? g.opponent : null) });
+  // the schools are worked out after the fit, from it
+  for (const name of NAMES) assert.equal(fit.players.get(name).overall, plain.players.get(name).overall);
+  assert.deepEqual(fit.tournaments, plain.tournaments);
+  assert.deepEqual(plain.schools, []);
+  const school = key => fit.schools.find(s => s.key === key);
+  assert.deepEqual([school('Strong Prep').games, school('Strong Prep').read], [6, 96]);
+  assert.deepEqual([school('Mystery Academy').games, school('Mystery Academy').read], [3, 48]);
+  // drawn at 2 and 0.3, against a lineup of 1.3
+  assert.ok(school('Strong Prep').strength > 1.4, 'strong: ' + school('Strong Prep').strength);
+  assert.ok(school('Weak High').strength < 0.8, 'weak: ' + school('Weak High').strength);
+  assert.ok(school('Strong Prep').sent > 1 && school('Strong Prep').sent < 2);
+});
+
 test('a sheet with only the final scores changes nothing in the model', () => {
   const next = rng(9);
   const practice = practiceGames(next, 12);

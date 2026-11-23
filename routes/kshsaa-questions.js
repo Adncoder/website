@@ -17,10 +17,12 @@ import { qbreader } from '../database/databases.js';
 import { packets, sets, tossups } from '../database/qbreader/collections.js';
 import { perTossupData } from '../database/account-info/collections.js';
 import { LEVELS, difficultyOf, poolSummary } from './kshsaa-round.js';
-import { requireAuth } from './kshsaa-stats.js';
+import { pageCache, requireAuth } from './kshsaa-stats.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
 const router = Router();
+// Insights shows question text, so an edited question is a change
+router.use(pageCache.noteChanges);
 const pending = qbreader.collection('kshsaa_pending_questions');
 
 // Approved questions live under this prefix, and the round pages read them

@@ -23,12 +23,21 @@ import { reboundsIn } from '../server/kshsaa/rebounds.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
 import { formatSquadPlan, parseSquadPlan } from '../server/kshsaa/squad-plan.js';
+import { makePageCache } from '../server/kshsaa/page-cache.js';
 
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
 const roster = qbreader.collection('kshsaa_roster');
 // small documents keyed by name: { _id: 'squads', list: [...] }
 const settings = qbreader.collection('kshsaa_settings');
+
+/**
+ * What the Overview, Insights, and Tournaments tabs worked out, kept until a
+ * game, the roster, or the squads change (page-cache.js). Every router that
+ * changes them notes it with pageCache.noteChanges.
+ */
+export const pageCache = makePageCache(settings);
+router.use(pageCache.noteChanges);
 
 // Games read on this site send their own category list. Older games, and files
 // exported from MODAQ elsewhere, fall back to the slot number - which is only
@@ -163,18 +172,21 @@ export async function nameCanonicalizer () {
 }
 
 // names for autocomplete elsewhere on the site: roster + anyone who has played
+// kept until a game or the roster changes (pageCache)
 router.get('/names', requireReader, async (req, res) => {
-  const played = await playedNames();
-  const listed = (await roster.find({}).toArray()).map(r => r.name);
-  const seen = {};
-  const names = [];
-  for (const n of listed.concat(played)) {
-    const key = String(n || '').trim().toLowerCase();
-    if (!key || seen[key]) continue;
-    seen[key] = true;
-    names.push(String(n).trim());
-  }
-  res.json({ names: names.sort() });
+  res.json(await pageCache.get('names', async () => {
+    const played = await playedNames();
+    const listed = (await roster.find({}).toArray()).map(r => r.name);
+    const seen = {};
+    const names = [];
+    for (const n of listed.concat(played)) {
+      const key = String(n || '').trim().toLowerCase();
+      if (!key || seen[key]) continue;
+      seen[key] = true;
+      names.push(String(n).trim());
+    }
+    return { names: names.sort() };
+  }));
 });
 
 // ---------- roster ----------
@@ -860,9 +872,18 @@ function summary (t) {
   };
 }
 
+// kept until a game, the roster, or the squads change (pageCache)
 router.get('/data', requireAuth, async (req, res) => {
-  const { month, level, kind, season, inMonth, inLevel, inKind } = readFilters(req.query);
+  try {
+    const filters = readFilters(req.query);
+    res.json(await pageCache.get(['stats', filters.month, filters.level, filters.kind].join('|'), () => statsData(filters)));
+  } catch (e) {
+    console.error('kshsaa-stats data error', e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
 
+async function statsData ({ month, level, kind, season, inMonth, inLevel, inKind }) {
   const everything = await games.find({}).sort({ playedAt: 1 }).toArray();
   const all = everything.filter(inKind);
 
@@ -977,7 +998,7 @@ router.get('/data', requireAuth, async (req, res) => {
     }))
     .sort((a, b) => (b.ppth ?? -99) - (a.ppth ?? -99));
 
-  res.json({
+  return {
     filters: { month, level, kind },
     seasonStart: monthLabel(season),
     months: [...monthsSeen].sort().reverse().map(key => ({ key, label: monthLabel(key) })),
@@ -1006,8 +1027,8 @@ router.get('/data', requireAuth, async (req, res) => {
     })),
     players: playerRows,
     categoryNames: CATEGORIES
-  });
-});
+  };
+}
 
 // ---------- page ----------
 
@@ -1272,12 +1293,17 @@ function show (a) {
   $('logout').classList.toggle('d-none', !a);
   if (a) { load(); loadRoster(); loadNames(); }
 }
+// The first data request goes out with the sign-in check, not after it: a
+// round trip sooner. load() takes it once the check passes.
+var EARLY = { url: dataUrl(), reply: fetch(dataUrl()) };
 fetch('/kshsaa-stats/me').then(function (r) { return r.json(); }).then(function (d) { show(d.authed); });
 
 $('loginBtn').onclick = function () {
   postJson('/kshsaa-stats/login', { password: $('pw').value }).then(function (res) {
     if (!res.ok) { $('loginErr').textContent = res.d.error || 'failed'; return; }
     if (res.d.role !== 'stats') { $('loginErr').textContent = 'That is the reader password. Stats need the stats password.'; return; }
+    // the early request went out signed out
+    EARLY = null;
     show(true);
   });
 };
@@ -1311,9 +1337,16 @@ $('fMonth').onchange = function () { FILTER.month = $('fMonth').value; DAYS_SHOW
 $('fLevel').onchange = function () { FILTER.level = $('fLevel').value; DAYS_SHOWN = DAYS_STEP; load(); };
 $('fKind').onchange = function () { FILTER.kind = $('fKind').value; DAYS_SHOWN = DAYS_STEP; load(); };
 
+function dataUrl () {
+  return '/kshsaa-stats/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level) +
+    '&kind=' + encodeURIComponent(FILTER.kind);
+}
+
 function load () {
-  fetch('/kshsaa-stats/data?month=' + encodeURIComponent(FILTER.month) + '&level=' + encodeURIComponent(FILTER.level) +
-    '&kind=' + encodeURIComponent(FILTER.kind))
+  var url = dataUrl();
+  var reply = EARLY && EARLY.url === url ? EARLY.reply : fetch(url);
+  EARLY = null;
+  reply
     .then(function (r) { return r.json(); })
     .then(function (d) { DATA = d; fillFilters(d); render(d); });
 }

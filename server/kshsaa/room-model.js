@@ -160,9 +160,13 @@ export function tournamentOf (g) {
  * Fits the model to a set of games.
  * @param {object[]} games - stored games
  * @param {function(string): boolean} isVarsity - whether a player is on a varsity squad or pool
- * @param {{player?: number, category?: number, event?: number, groupOf?: function(object): string}} [options]
- * @returns {{reference: ?string, referencePractice: boolean, difficulty: Object<string, number>, tournaments: RoomTournament[], team: number,
- *   categoryFactor: Object<string, number>, teamWorth: number, players: Map<string, RoomPlayer>}}
+ * @param {{player?: number, category?: number, event?: number, groupOf?: function(object): string,
+ *   schoolOf?: function(object): ?string}} [options] - schoolOf names the school a tournament
+ *   game was against (null to leave it out), to give each school one strength from all its games
+ * @returns {{reference: ?string, referencePractice: boolean, difficulty: Object<string, number>, tournaments: RoomTournament[],
+ *   typicalTournament: Object<string, number>, team: number, categoryFactor: Object<string, number>, teamWorth: number,
+ *   players: Map<string, RoomPlayer>,
+ *   schools: {key: string, games: number, read: number, strength: number, sent: number}[]}}
  */
 export function fitRoomModel (games, isVarsity, options = {}) {
   const mP = options.player ?? PLAYER_PRIOR;
@@ -213,7 +217,7 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     let opponent = -1;
     if ((g.teams || []).some(t => t.opponent)) {
       opponent = units.length;
-      units.push({ name: null, opponent: true, size: 0 });
+      units.push({ name: null, opponent: true, size: 0, school: options.schoolOf ? options.schoolOf(g) : null });
     }
     // their side of the sheet is blank: a tossup we did not get is split below
     const unrecorded = opponent !== -1 && opponentModeOf(g) === 'unrecorded';
@@ -446,6 +450,46 @@ export function fitRoomModel (games, isVarsity, options = {}) {
     else if (t.split) estimated[t.d]++;
   }
   groups.forEach((grp, i) => { answered[i] += estimated[i] - last.none[i]; });
+
+  // Each school we played, from all of its games at once (options.schoolOf).
+  // Above, a game's other school has a strength of its own, which starts out
+  // as strong as the lineup we sent. Here every tossup against the school goes
+  // into one strength, by the same update, with that start counted once for
+  // the school rather than once a game. Our players and each tournament's D
+  // stay as fitted, so nothing above changes.
+  const schools = [];
+  const bySchool = new Map();
+  for (const t of tossups) {
+    const key = t.opp === -1 ? null : units[t.opp].school;
+    if (key == null) continue;
+    if (!bySchool.has(key)) bySchool.set(key, []);
+    bySchool.get(key).push(t);
+  }
+  const prior = OPPONENT_PRIOR * perQuestion;
+  for (const [key, list] of bySchool) {
+    // everyone else in the room on each tossup, with its D, and the lineup we
+    // sent, which the school's strength starts from
+    const rest = list.map(t => t.room.reduce((x, [u, a]) => (u === t.opp ? x : x + a * s[u * C + t.c]), D[t.d]));
+    const sent = list.reduce((x, t) => x + t.room.reduce((y, [u, a]) => (units[u].opponent ? y : y + a * overall[u]), 0), 0) / list.length;
+    const center = Math.max(team, sent);
+    let strength = center;
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      let answers = 0;
+      let exposure = 0;
+      list.forEach((t, i) => {
+        exposure += 1 / (rest[i] + strength);
+        // a tossup we missed on a sheet without their side, by its chance
+        if (t.winner === t.opp) answers += 1;
+        else if (t.split) answers += strength / (strength + D[t.d]);
+      });
+      const next = Math.max(0, (answers + prior * center) / (exposure + prior));
+      const done = Math.abs(next - strength) <= 1e-9 * Math.max(next, strength, 1e-9);
+      strength = next;
+      if (done) break;
+    }
+    schools.push({ key, games: new Set(list.map(t => t.opp)).size, read: list.length, strength, sent });
+  }
+
   return {
     reference,
     // whether D = 1 is the reference level's practice games, or (with none in
@@ -467,9 +511,14 @@ export function fitRoomModel (games, isVarsity, options = {}) {
           difficulty: D[i]
         }]
       : [])),
+    // each label's typical tournament: its tournaments taken together
+    typicalTournament: { ...pooled },
     team,
     categoryFactor: Object.fromEntries(CATEGORIES.map((c, i) => [c, factor[i]])),
     teamWorth,
-    players: result
+    players: result,
+    // with options.schoolOf: each school we played, its strength from all its
+    // games (same scale as a player's overall), and the lineups we sent
+    schools
   };
 }

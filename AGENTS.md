@@ -154,7 +154,8 @@ redeploy.
 | `routes/kshsaa-round.js` | Builds a 16-question round from MongoDB at a level, never repeating a question before its pool runs out or an answer within the round, and the reader's replacement questions (`/kshsaa-round/replacement`); exports the shared `levelControls()` markup, and re-exports `CATEGORY_BY_QUESTION`, `CATEGORIES`, and `LEVELS` from `server/kshsaa/round-shape.js` |
 | `client/kshsaa/same-answer.js` | Whether two answer lines name the same thing, so no answer comes up twice in a round. Round building runs it in Node and NAQT rounds in the browser, so it imports nothing |
 | `routes/kshsaa-stats.js` | Password-gated stats: sign-in for every KSHSAA page, upload, rosters and squads, lineups, month and level filters, players table, the game editor, the read-only export |
-| `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty (numbers from `server/kshsaa/insights.js`) |
+| `routes/kshsaa-insights.js` | Insights: team builder, player focus report, question difficulty, how hard each tournament played, schools we've played, where we lose questions at tournaments (numbers from `server/kshsaa/insights.js`) |
+| `server/kshsaa/page-cache.js` | Keeps what the Overview, Insights, and Tournaments tabs worked out until a POST changes the data (`pageCache` in `kshsaa-stats.js`) |
 | `routes/kshsaa-questions.js` | Question bank: review, approve, reject, add |
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table. The checks on a typed-in sheet are `server/kshsaa/tournament-game.js` |
 | `routes/kshsaa-spanish.js` | Spanish practice |
@@ -168,7 +169,7 @@ redeploy.
 | `client/kshsaa/arcade/` | The arcade game itself, as browser ES modules: `engine.js` (rules every mode shares), `modes/` (one file per game mode), `modifiers.js` (power-ups), `console.js` (moderator), `board-view.js` (the game on the scoreboard window), `store.js`, `clock.js`, `questions.js`, `qbreader.js` (questions straight from qbreader.org) |
 | `routes/kshsaa-scoreboard.js` | The scoreboard window (`/kshsaa-scoreboard`), a second screen for the projector. Serves the page only |
 | `client/kshsaa/second-screen.js`, `client/kshsaa/scoreboard/` | How a reader or arcade tab tells its scoreboard window what to show, and the window itself: `page.js` (follows the tab), `match.js` (a normal round), `tiles.js` (shared drawing) |
-| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, the Anki leaderboard and zip writer, tournament sheets, the room model, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js`, `anki-board.js`, and `tournament-game.js` are files of their own, and why the stats code takes the round's shape from `round-shape.js`, never from `routes/kshsaa-round.js` |
+| `test/kshsaa-*.test.js` | `npm test`: the arcade engine, NAQT rounds, the same-answer check, the archive repair, rebounds, the Anki leaderboard and zip writer, tournament sheets, the room model, Insights' tournament tables, the page cache, and every math drill under `node --test`. A test can only import files that never import `database/databases.js`, whose top-level await hangs without a database, which is why `rebounds.js`, `anki-board.js`, and `tournament-game.js` are files of their own, and why the stats code takes the round's shape from `round-shape.js`, never from `routes/kshsaa-round.js` |
 | `server/kshsaa/math-tier.js` | Sorts a math question into basic / intermediate / advanced from its wording and time limit, and tells computation from theory |
 | `server/kshsaa/language-tier.js` | Sorts a World Language question into the same three tiers from its Spanish sentence |
 | `server/kshsaa/split-answers.js` | Repairs one archive record the packet parser broke: takes the answer back out of the question text, splits questions run together, and drops page headers, footers, and page numbers. The repair tool and `import-kshsaa.js` share it |
@@ -749,6 +750,32 @@ our team's average player times the lineup's size, which assumed a varsity
 school against a JV lineup. In simulated seasons that rated the players in
 tournaments 17 to 28% too strong, against about 1% with the lineup.
 
+The fit gives each game's other school a strength of its own. Insights'
+"Schools we've played" needs one per school, so with `options.schoolOf` the
+model works one out after the fit (`schools`). It pools every tossup against
+the school, with the same update and the same start, counted once for the
+school instead of once a game. Our players and each tournament's D stay as
+fitted, so no other number moves. A school (`schoolOf` in `insights.js`) is
+its name with spacing, capitals, and punctuation ignored (Spring Hill and
+Springhill are one), at one level in one school year. Insights shows it as
+how many of 16 it would answer alone at the typical tournament of its level
+(`typicalTournament`), next to the same for the lineups we sent, and marks ≈
+when no sheet against it kept their side.
+
+"Where we lose questions at tournaments" (`whereWeLose`) counts, by level and
+subject, who got each question: us, them, or nobody. It uses only sheets that
+kept both sides, so no chairs and no unrecorded ones.
+
+The Overview, Insights, and Tournaments tabs, and the player-name list, keep
+what their data request worked out (`pageCache`, `server/kshsaa/page-cache.js`).
+A kept result lasts until any POST to the stats, tournaments, or question bank
+routes finishes, or an hour passes. Each POST bumps a counter on this server
+and one in `kshsaa_settings` (`dataVersion`), so the backup site sees changes
+made on the main one. Each page also starts its first data request alongside
+the sign-in check (`EARLY`), not after it. Insights reads only the set name of
+each recorded question, and the full text of just the questions nobody
+answered.
+
 Some tournament sheets leave out the other team's points (`opponentMode:
 'unrecorded'`). Our answers there count as usual. A tossup we did not answer
 went to the other school or to nobody, and the sheet cannot say which, so each
@@ -791,10 +818,13 @@ both have the checkbox; the raw Stats tables still count every game.
 
 Roster entries can carry a coach `rating` (1–10 in halves, shown as "Past
 rating x/10"; null is N/A, for anyone not yet seen play) and `permanent` (stays
-on their squad). The team builder blends a rating with
-stats, stats counting for rounds ÷ (rounds + N) with N = 6 by default
-(adjustable on the page), mapping ratings onto the stats' scale by rank among
-measured players; a rated player with no games is placed on the rating alone.
+on their squad). The team builder places each player by their room-model
+strengths, the ones behind their Adjusted, and its cards and name chips show
+that Adjusted. A past rating only places a player with no games yet, mapped
+onto the stats' scale by rank among measured players (`ratingScale`), and
+shows as ★ in their place. Until 2026-11-22 it blended the rating with
+stats, stats counting for rounds ÷ (rounds + 6); by then every rated player
+had games, and the blend moved nobody by half a question.
 Permanent players are only ever placed on their own squad. The first squad
 takes the strongest individuals and the rest maximize category coverage,
 unless that checkbox is cleared.
