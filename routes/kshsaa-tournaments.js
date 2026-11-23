@@ -19,7 +19,7 @@ import { CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
 import { getSquads, nameCanonicalizer, requireAuth } from './kshsaa-stats.js';
 import { kindOf, monthKeyOf, monthLabel, opponentModeOf, resultOf, seasonStartKey } from '../server/kshsaa/game-stats.js';
 import { tournamentOf } from '../server/kshsaa/room-model.js';
-import { MAX_QUESTIONS, SLOTS, STAGES, SUBJECT_ORDERS, SUBJECTS, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
+import { MAX_QUESTIONS, SLOTS, STAGES, SUBJECT_ORDERS, SUBJECTS, boxOrder, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 
@@ -46,8 +46,10 @@ router.get('/data', requireAuth, async (req, res) => {
       roster.find({}).toArray(),
       getSquads()
     ]);
-    // who sat each round, from who played the tournament's other rounds
+    // who sat each round, from who played the tournament's other rounds, and
+    // who goes in each player box, so players keep their numbers all tournament
     const bench = satOut(list);
+    const boxes = boxOrder(list);
     res.json({
       squads,
       seasonStart: seasonStartKey(),
@@ -74,6 +76,8 @@ router.get('/data', requireAuth, async (req, res) => {
         wholeTournament: Boolean(g.wholeTournament),
         // who sat this round, or null when its lineup is not known
         sat: bench.get(g) ?? null,
+        // the names in its player boxes by number, '' for an empty one
+        boxes: boxes.get(g) ?? null,
         round: g.round || '',
         stage: g.stage || null,
         opponent: theirs(g).name,
@@ -186,6 +190,9 @@ ${KSHSAA_HEAD}
  .note{font-size:.83rem;color:#6b7280;margin:.5rem 0 0}
  table{font-size:.9rem;margin-bottom:0}
  thead th{font-weight:600;color:#4b5563;white-space:nowrap}
+ thead th.sortable{cursor:pointer;user-select:none}
+ thead th.sortable:hover,thead th.sorted{color:#1f2937}
+ .sortarrow{font-size:.7em;margin-left:.25em}
  th,td{padding:.35rem .5rem !important;vertical-align:middle}
  .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
  .form-label{font-size:.85rem;font-weight:600;color:#4b5563;margin-bottom:.2rem}
@@ -409,6 +416,19 @@ var SHEET = 'questions';
 var KEEP_SHEET = 'questions';
 // the Round box was typed in, so the next round number leaves it alone
 var ROUND_TOUCHED = false;
+// The season table's columns and the one it is sorted by: Points, biggest
+// first, until a header is clicked. Clicking it again turns the order around.
+var SEASON_SORT = { key: 'points', dir: -1 };
+var SEASON_COLS = [
+  { key: 'name', label: 'Player', text: true },
+  { key: 'attended', label: 'Tournaments' },
+  { key: 'played', label: 'Rounds', tip: 'Rounds played, of the rounds at the tournaments they went to, playoffs included' },
+  { key: 'points', label: 'Points' },
+  { key: 'perTournament', label: 'Per tournament' },
+  { key: 'correct', label: 'Correct' },
+  { key: 'negs', label: '&minus;5s' },
+  { key: 'ppq', label: 'Points/question' }
+];
 
 function postJson (url, body) {
   return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -471,10 +491,13 @@ function setUp () {
 
 // ---------- the form ----------
 
+// a player box with nobody in it
+function blankBox () { return { name: '', from: '', to: '', points: '', sat: false }; }
+
 function resetForm (keepSetup) {
   if (!keepSetup) {
     PLAYERS = [];
-    for (var i = 0; i < SLOTS; i++) PLAYERS.push({ name: '', from: '', to: '', points: '', sat: false });
+    for (var i = 0; i < SLOTS; i++) PLAYERS.push(blankBox());
   }
   // a player's total belongs to one tournament
   PLAYERS.forEach(function (p) { p.points = ''; });
@@ -644,6 +667,43 @@ $('fLevel').addEventListener('change', followTournament);
 $('fDate').addEventListener('change', followTournament);
 $('fRound').addEventListener('input', function () { ROUND_TOUCHED = true; });
 
+// our team on the form, named as the server names it when the box is empty
+function formTeam () { return ($('fTeam').value.trim() || 'SJA').toLowerCase(); }
+function sameTeam (g) { return String(g.team || '').trim().toLowerCase() === formTeam(); }
+
+// where a round comes in its tournament: regular rounds by number, then the
+// playoffs in bracket order
+function roundRank (g) { return stageRank(g.stage) * 1000 + (parseInt(g.round, 10) || 0); }
+
+// After a reload every box starts empty. Once the form says which tournament
+// and team it is, the boxes fill in from its last saved round: the same
+// players in the same boxes, with the same sat ticks. Never over a name
+// already typed.
+function fillBoxes () {
+  if (EDITING || !DATA || SHEET === 'totals' || PLAYERS.some(function (p) { return p.name.trim(); })) return;
+  var key = formKey();
+  var last = null;
+  DATA.games.forEach(function (g) {
+    if (g.event !== key || !g.boxes || !sameTeam(g)) return;
+    if (!last || roundRank(g) >= roundRank(last)) last = g;
+  });
+  if (!last) return;
+  PLAYERS = last.boxes.map(function (name) {
+    var box = blankBox();
+    box.name = name;
+    box.sat = Boolean(name) && !last.players.some(function (p) { return p.name === name; });
+    return box;
+  });
+  while (PLAYERS.length < SLOTS) PLAYERS.push(blankBox());
+  renderSlots();
+  renderGrid();
+  renderNotes();
+  renderSitting();
+}
+// on change, not as it is typed: a name partway through could be another
+// tournament's
+['fTourney', 'fTeam', 'fLevel', 'fDate'].forEach(function (id) { $(id).addEventListener('change', fillBoxes); });
+
 // Who sits the round being typed in: the rest of the team at this tournament,
 // from its saved rounds, as satOut works it out on the server once it is saved.
 // Names match whatever their case, as the server's name fixing would make them.
@@ -651,10 +711,9 @@ function renderSitting () {
   var el = $('sittingNote');
   if (!DATA || SHEET === 'totals') { el.textContent = ''; return; }
   var key = formKey();
-  var team = ($('fTeam').value.trim() || 'SJA').toLowerCase();
   var there = {};
   DATA.games.forEach(function (g) {
-    if (g.event !== key || g.wholeTournament || g.id === EDITING || String(g.team || '').trim().toLowerCase() !== team) return;
+    if (g.event !== key || g.wholeTournament || g.id === EDITING || !sameTeam(g)) return;
     g.players.forEach(function (p) { there[p.name.toLowerCase()] = p.name; });
     (g.sat || []).forEach(function (n) { there[n.toLowerCase()] = n; });
   });
@@ -754,7 +813,7 @@ $('slots').addEventListener('change', function (e) {
 // more boxes than the sheet's six, for a bigger team that day
 $('addPlayer').onclick = function () {
   if (PLAYERS.length >= SLOTS + 4) return;
-  PLAYERS.push({ name: '', from: '', to: '', points: '', sat: false });
+  PLAYERS.push(blankBox());
   renderSlots();
   var box = document.querySelector('.sname[data-k="' + PLAYERS.length + '"]');
   if (box) box.focus();
@@ -1033,6 +1092,8 @@ $('save').onclick = function () {
       return { name: p.name, from: p.from, to: p.to, points: p.points };
     }),
     bench: SHEET === 'totals' ? [] : PLAYERS.filter(function (p) { return p.name.trim() && p.sat; }).map(function (p) { return p.name; }),
+    // each player's number, sitters too, so editing the round keeps them
+    boxes: SHEET === 'totals' ? [] : PLAYERS.map(function (p) { return p.name.trim(); }),
     questions: SHEET !== 'questions' ? [] : QUESTIONS.map(function (q) {
       return { category: q.category, us: q.us ? { player: PLAYERS[q.us.k - 1].name, value: q.us.value } : null, them: MODE === 'recorded' ? q.them : null };
     }),
@@ -1100,13 +1161,35 @@ function editGame (id) {
     var lineup = g.lineup && g.lineup.length ? g.lineup : us.players.map(function (name) { return { name: name, from: 1, to: g.tossupsRead }; });
     var pointsOf = {};
     (g.playerTotals || []).forEach(function (t) { pointsOf[t.name] = String(t.points); });
-    PLAYERS = [];
-    lineup.forEach(function (p) {
-      PLAYERS.push({ name: p.name, from: p.from === 1 ? '' : String(p.from), to: p.to === g.tossupsRead ? '' : String(p.to), points: pointsOf[p.name] || '', sat: false });
+    // Everyone back in their own box, so the rounds typed in after this one
+    // keep the same numbers: the boxes it was saved with, or for a round saved
+    // before boxes were kept, the order of the tournament's other rounds
+    // (boxOrder on the server). Whoever sat it has their box, ticked.
+    var listed = DATA.games.filter(function (x) { return x.id === id; })[0] || {};
+    var playing = {};
+    lineup.forEach(function (p) { playing[p.name] = p; });
+    var sat = (listed.sat || []).concat(g.bench || []);
+    var placed = {};
+    var box = function (name) {
+      var p = playing[name];
+      var b = blankBox();
+      if (!name || placed[name] || (!p && sat.indexOf(name) < 0)) return b;
+      placed[name] = true;
+      b.name = name;
+      b.points = pointsOf[name] || '';
+      b.sat = !p;
+      if (p) {
+        b.from = p.from === 1 ? '' : String(p.from);
+        b.to = p.to === g.tossupsRead ? '' : String(p.to);
+      }
+      return b;
+    };
+    PLAYERS = (listed.boxes || []).map(box);
+    // anyone the boxes leave out, the ones who played first
+    lineup.map(function (p) { return p.name; }).concat(g.bench || []).forEach(function (name) {
+      if (!placed[name]) PLAYERS.push(box(name));
     });
-    // and whoever was ticked as sitting it, after the ones who played
-    (g.bench || []).forEach(function (name) { PLAYERS.push({ name: name, from: '', to: '', points: '', sat: true }); });
-    while (PLAYERS.length < SLOTS) PLAYERS.push({ name: '', from: '', to: '', points: '', sat: false });
+    while (PLAYERS.length < SLOTS) PLAYERS.push(blankBox());
     var slotOf = function (name) {
       for (var j = 0; j < PLAYERS.length; j++) if (PLAYERS[j].name === name) return j + 1;
       return null;
@@ -1162,6 +1245,27 @@ function seasonGames () {
   });
 }
 
+// The season table's rows in the order its sorted column says. A player with
+// a dash in that column sits at the bottom either way, and ties go by points,
+// then name.
+function sortSeason (rows) {
+  var col = SEASON_COLS.filter(function (c) { return c.key === SEASON_SORT.key; })[0];
+  return rows.sort(function (a, b) {
+    var x = a[col.key];
+    var y = b[col.key];
+    if (col.text) {
+      var c = String(x).localeCompare(String(y));
+      if (c) return c * SEASON_SORT.dir;
+    } else if (x == null || y == null) {
+      if (x != null) return -1;
+      if (y != null) return 1;
+    } else if (x !== y) {
+      return (x < y ? -1 : 1) * SEASON_SORT.dir;
+    }
+    return b.points - a.points || a.name.localeCompare(b.name);
+  });
+}
+
 // the same columns as the paper season sheet, plus what the grid adds
 function renderSeason () {
   var list = seasonGames();
@@ -1195,31 +1299,51 @@ function renderSeason () {
       t.there++;
     });
   });
-  var rows = Object.keys(by).map(function (k) {
+  var rows = sortSeason(Object.keys(by).map(function (k) {
     var t = by[k];
     t.attended = Object.keys(t.tourneys).length;
     t.measured = Object.keys(t.scored).length;
+    // what the sortable columns sort by; null where the table shows a dash
+    t.played = t.there ? t.rounds : null;
+    t.perTournament = t.measured ? t.points / t.measured : null;
+    t.ppq = t.heard ? t.asked / t.heard : null;
     return t;
-  }).sort(function (a, b) { return b.points - a.points || a.name.localeCompare(b.name); });
+  }));
   var scoresOnly = list.some(function (g) { return g.scoresOnly && !g.wholeTournament; });
   var totals = list.some(function (g) { return g.wholeTournament; });
   $('season').innerHTML = '<div class="card"><div class="card-body p-0"><div class="table-responsive"><table class="table table-sm mb-0">' +
-    '<thead><tr><th>Player</th><th class="num">Tournaments</th>' +
-    '<th class="num" title="Rounds played, of the rounds at the tournaments they went to, playoffs included">Rounds</th><th class="num">Points</th>' +
-    '<th class="num">Per tournament</th><th class="num">Correct</th><th class="num">&minus;5s</th><th class="num">Points/question</th></tr></thead><tbody>' +
+    '<thead><tr>' + SEASON_COLS.map(function (c) {
+      var on = SEASON_SORT.key === c.key;
+      var dir = SEASON_SORT.dir < 0 ? 'descending' : 'ascending';
+      return '<th class="sortable' + (c.text ? '' : ' num') + (on ? ' sorted' : '') + '" data-ssort="' + c.key + '"' +
+        (on ? ' aria-sort="' + dir + '"' : '') + ' title="' + (c.tip || 'Sort by ' + c.label) + '">' + c.label +
+        '<span class="sortarrow">' + (on ? (SEASON_SORT.dir < 0 ? '&#9660;' : '&#9650;') : '') + '</span></th>';
+    }).join('') + '</tr></thead><tbody>' +
     rows.map(function (t) {
       return '<tr><td>' + esc(t.name) + '</td><td class="num">' + t.attended + '</td>' +
         '<td class="num">' + (t.there ? t.rounds + ' of ' + t.there : '-') + '</td>' +
-        '<td class="num fw-semibold">' + t.points + '</td><td class="num">' + (t.measured ? Math.round(t.points / t.measured) : '-') + '</td>' +
+        '<td class="num fw-semibold">' + t.points + '</td><td class="num">' + (t.measured ? Math.round(t.perTournament) : '-') + '</td>' +
         '<td class="num">' + t.correct + '</td><td class="num">' + t.negs + '</td>' +
-        '<td class="num">' + (t.heard ? (t.asked / t.heard).toFixed(2) : '-') + '</td></tr>';
+        '<td class="num">' + (t.heard ? t.ppq.toFixed(2) : '-') + '</td></tr>';
     }).join('') + '</tbody></table></div></div></div>' +
-    '<p class="note">Rounds: rounds played, of the rounds at the tournaments a player went to, playoffs included. ' +
-    'Who sat a round comes from who played the tournament&rsquo;s other rounds, so leave anyone who sat out of that round&rsquo;s lineup.' +
+    '<p class="note">Click a column to sort by it, and again to turn the order around. ' +
+    'Rounds: rounds played, of the rounds at the tournaments a player went to, playoffs included. ' +
+    'Who sat a round: everyone the tournament&rsquo;s rounds list for the team, playing or ticked sat, who did not play that one.' +
     (scoresOnly ? ' Rounds with only the final scores count in Tournaments and Rounds, and nowhere else.' : '') +
     (totals ? " A tournament with only each player's total adds to Tournaments, Points, and Per tournament, and not to Rounds, Correct, &minus;5s, or Points/question." : '') +
     '</p>';
 }
+
+// a header sorts by its column: a name A to Z, a number biggest first, and the
+// same header again the other way
+$('season').addEventListener('click', function (e) {
+  var th = e.target.closest('th[data-ssort]');
+  if (!th) return;
+  var key = th.getAttribute('data-ssort');
+  var col = SEASON_COLS.filter(function (c) { return c.key === key; })[0];
+  SEASON_SORT = SEASON_SORT.key === key ? { key: key, dir: -SEASON_SORT.dir } : { key: key, dir: col.text ? 1 : -1 };
+  renderSeason();
+});
 
 // a game's score, as far as the sheet has it: 220-180, 220-? and who won, or
 // just ours against a chair (its label and row already say so). A sheet with
