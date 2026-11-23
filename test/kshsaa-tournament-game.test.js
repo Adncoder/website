@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { opponentModeOf, playersInGame, resultOf } from '../server/kshsaa/game-stats.js';
 import { CATEGORY_BY_QUESTION } from '../server/kshsaa/round-shape.js';
-import { MAX_QUESTIONS, SUBJECT_ORDERS, SUBJECTS, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
+import { MAX_QUESTIONS, SUBJECT_ORDERS, SUBJECTS, boxOrder, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 
 const same = name => name;
 // Avery gets questions 1-3 and Blake loses 5 on 4 (25 for us); they get 5 and
@@ -316,4 +316,51 @@ test('a player ticked as sitting is on the bench, and was there all day', () => 
   assert.throws(() => roundOf('3', ['Avery', 'Blake'], { bench: ['Blake'] }), /Blake is marked as both playing and sitting/);
   // a sheet with only the final scores keeps who sat too
   assert.deepEqual(finalsOnly({ ourScore: 90, opponentScore: 80, players: [{ name: 'Avery' }], bench: ['Drew'] }).bench, ['Drew']);
+});
+
+test('a round keeps who was in each player box, sitters too', () => {
+  const g = roundOf('1', ['Avery', 'Blake', 'Drew'], { bench: ['Casey'], boxes: ['Avery', 'Blake', 'Casey', 'Drew', '', ''] });
+  assert.deepEqual(g.boxes, ['Avery', 'Blake', 'Casey', 'Drew']);
+  // a box naming nobody in the round is empty, a name in two boxes keeps the
+  // first, and anyone in no box goes after the last
+  const odd = roundOf('2', ['Avery', 'Blake', 'Drew'], { bench: ['Casey'], boxes: ['Avery', 'Zed', 'Avery', 'Casey'] });
+  assert.deepEqual(odd.boxes, ['Avery', '', '', 'Casey', 'Blake', 'Drew']);
+  // a page loaded before boxes were kept sends none
+  assert.equal(roundOf('3', ['Avery', 'Blake'], { bench: ['Casey'] }).boxes, null);
+  // a sheet with only the final scores keeps them too
+  const finals = finalsOnly({ ourScore: 90, opponentScore: 80, players: [{ name: 'Avery' }], bench: ['Drew'], boxes: ['Drew', 'Avery'] });
+  assert.deepEqual(finals.boxes, ['Drew', 'Avery']);
+});
+
+test('a round saved before boxes were kept takes the order most rounds list its players in', () => {
+  // The sheet numbers them Gus, Avery, Hal, Drew, Sam, Ben. Round 4 was typed
+  // in with Drew moved to the last box, as opening round 3 to edit used to
+  // leave him.
+  const r1 = roundOf('1', ['Gus', 'Avery', 'Hal', 'Drew', 'Sam'], { bench: ['Ben'] });
+  const r2 = roundOf('2', ['Gus', 'Avery', 'Drew', 'Sam', 'Ben'], { bench: ['Hal'] });
+  const r3 = roundOf('3', ['Gus', 'Avery', 'Hal', 'Sam', 'Ben'], { bench: ['Drew'] });
+  const r4 = roundOf('4', ['Gus', 'Hal', 'Sam', 'Ben', 'Drew'], { bench: ['Avery'] });
+  // a round saved with its boxes has them, then whoever else sat it
+  const r5 = roundOf('5', ['Gus', 'Avery', 'Hal', 'Drew', 'Sam'], { boxes: ['Gus', 'Avery', 'Hal', 'Drew', 'Sam'] });
+  const semi = roundOf('6', ['Avery', 'Hal', 'Sam', 'Ben', 'Gus'], { stage: 'semifinal', bench: ['Drew'], boxes: ['Avery', 'Hal', 'Drew', 'Sam', 'Ben', 'Gus'] });
+  // another of our squads at the same tournament has its own numbers
+  const other = roundOf('1', ['Zoe', 'Yan'], { team: 'JV Blue' });
+  const total = totalsOnly([{ name: 'Gus', points: 50 }]);
+  const boxes = boxOrder([semi, r4, r2, r1, r3, r5, other, total]);
+  const sheetOrder = ['Gus', 'Avery', 'Hal', 'Drew', 'Sam', 'Ben'];
+  for (const r of [r1, r2, r3, r4]) assert.deepEqual(boxes.get(r), sheetOrder);
+  assert.deepEqual(boxes.get(r5), sheetOrder);
+  assert.deepEqual(boxes.get(semi), ['Avery', 'Hal', 'Drew', 'Sam', 'Ben', 'Gus']);
+  assert.deepEqual(boxes.get(other), ['Zoe', 'Yan']);
+  assert.equal(boxes.has(total), false);
+});
+
+test('players who never played a round together keep the order they first came in', () => {
+  // Erin and Finn take turns: round 1 lists Erin first, whatever order the
+  // rounds were saved in
+  const r1 = roundOf('1', ['Avery', 'Erin']);
+  const r2 = roundOf('2', ['Avery', 'Finn']);
+  const boxes = boxOrder([r2, r1]);
+  assert.deepEqual(boxes.get(r1), ['Avery', 'Erin', 'Finn']);
+  assert.deepEqual(boxes.get(r2), ['Avery', 'Erin', 'Finn']);
 });

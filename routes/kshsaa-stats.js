@@ -364,8 +364,8 @@ router.post('/roster/update', requireAuth, async (req, res) => {
 
 /**
  * Renames a player inside every game they appear in: their buzzes, their team
- * lists, a tournament game's lineup, and the questions-heard counts keyed by
- * "team|player".
+ * lists, a tournament game's lineup, bench, and player boxes, and the
+ * questions-heard counts keyed by "team|player".
  * @param {string} from
  * @param {string} to
  * @returns {Promise<number>} how many games changed
@@ -387,6 +387,9 @@ async function renameInGames (from, to) {
     const playerTotals = (g.playerTotals || []).map(t => (t.name === from ? { ...t, name: to } : t));
     // who sat a tournament round, as ticked on the entry form
     const bench = [...new Set((g.bench || []).map(n => (n === from ? to : n)))];
+    // who was in each of its player boxes: a name that is now in two keeps
+    // the first, and the other box is left empty
+    const boxes = (g.boxes || []).map(n => (n === from ? to : n)).map((n, i, all) => (all.indexOf(n) === i ? n : ''));
     const heardByPlayer = {};
     for (const [key, heard] of Object.entries(g.heardByPlayer || {})) {
       const bar = key.indexOf('|');
@@ -403,7 +406,8 @@ async function renameInGames (from, to) {
         notes,
         ...(g.lineup ? { lineup } : {}),
         ...(g.playerTotals ? { playerTotals } : {}),
-        ...(g.bench ? { bench } : {})
+        ...(g.bench ? { bench } : {}),
+        ...(g.boxes ? { boxes } : {})
       }
     });
   }

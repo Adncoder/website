@@ -884,6 +884,11 @@ nobody types a bench.
   - The season table's Rounds column, which replaced Games, shows rounds
     played out of the rounds at the tournaments a player went to, playoffs
     included.
+- **Season table sort:** every column sorts on a click of its header
+  (`SEASON_COLS`, `sortSeason`), names A to Z and numbers biggest first, and
+  the same header again turns it around. It opens on Points. Rounds sorts by
+  rounds played, and a dash (nothing to divide by) stays at the bottom either
+  way.
 - **Ticked as sitting:** each player box has a "sat" checkbox, and "+ Add a
   player box" goes up to `SLOTS + 4`.
   - A ticked player keeps their box and number, and the ticks carry over to
@@ -892,6 +897,24 @@ nobody types a bench.
     not its lineup (`benchOf`). `bench` is in no stats.
   - `satOut` counts `bench` as there, so someone who sat every round still
     shows. Renames cover `bench`.
+- **Box numbers:** the same players keep the same numbers all tournament,
+  which is what makes typing sheets in quick.
+  - **Saved:** each round stores `boxes` (`boxesOf`): who was in each player
+    box by number, sitters included, '' for an empty box. A page that sends
+    none, loaded before boxes were kept, stores null. Renames cover `boxes`.
+  - **Reopened:** opening a round to edit puts everyone back in their own box,
+    ticked if they sat. The page gets each round's boxes from `boxOrder` (the
+    `boxes` in `/data`). Before boxes were kept, the form rebuilt a round as
+    "who played, then who sat", which moved a sitter to the last box, and the
+    rounds typed in after inherited the move.
+  - **Older rounds:** a round with no `boxes` takes its tournament's order.
+    Each pair of players goes the way most of the tournament's rounds list
+    them (a lineup is in box order), and players go by how many others they
+    come before, ties to whoever was listed first.
+  - **After a reload:** the boxes start empty. Once the tournament, level,
+    date, and team match saved rounds, they fill in from the last of them,
+    sat ticks too (`fillBoxes`). This happens on `change`, never over a typed
+    name.
 - **Editing lineups:** each answer in the grid belongs to a player box, the
   player's number on the sheet. Typing a different name into a box moves its
   answers to that name. Emptying a box that has answers would lose them, so

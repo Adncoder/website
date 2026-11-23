@@ -75,6 +75,13 @@ export const SUBJECT_ORDERS = [
 
 const text = (v, max) => String(v ?? '').trim().slice(0, max);
 const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
+const ours = g => (g.teams || []).find(t => !t.opponent);
+// a tournament and one of our teams at it: two of our squads at one
+// tournament each have their own bench and their own box numbers
+const keyOf = g => tournamentOf(g).key + '|' + String(ours(g).name || '').trim().toLowerCase();
+// where a round comes in its tournament: regular rounds by number, then the
+// playoffs in bracket order
+const roundRank = g => (g.stage ? Object.keys(STAGES).indexOf(g.stage) + 1 : 0) * 1000 + (Number.parseInt(g.round, 10) || 0);
 
 /**
  * Who sat each round. Teams rotate their players, so everyone who played any
@@ -88,10 +95,7 @@ const compare = (us, them) => (us > them ? 'win' : us < them ? 'loss' : 'tie');
  *   known, to the names who sat it, alphabetically
  */
 export function satOut (games) {
-  const ours = g => (g.teams || []).find(t => !t.opponent);
   const rounds = games.filter(g => g.kind === 'tournament' && !g.wholeTournament && ours(g)?.players?.length);
-  // two of our squads at one tournament each have their own bench
-  const keyOf = g => tournamentOf(g).key + '|' + String(ours(g).name || '').trim().toLowerCase();
   const roster = new Map();
   for (const g of rounds) {
     if (!roster.has(keyOf(g))) roster.set(keyOf(g), new Set());
@@ -100,6 +104,47 @@ export function satOut (games) {
   return new Map(rounds.map(g => {
     const played = new Set(ours(g).players);
     return [g, [...roster.get(keyOf(g))].filter(name => !played.has(name)).sort((a, b) => a.localeCompare(b))];
+  }));
+}
+
+/**
+ * Who goes in each player box, by number, when a tournament round is opened
+ * to edit, and when the next round is typed in after a reload, so that the
+ * same players keep the same numbers all tournament.
+ * - **Saved with its boxes:** the round has them, then anyone else who sat it
+ *   (satOut).
+ * - **Saved before boxes were kept:** the round has the tournament's order of
+ *   the team's players. A round lists who played in box order, so each pair
+ *   of players goes the way most of the rounds that have both put them, and
+ *   players go by how many others they come before. A tie goes to whoever
+ *   was listed first.
+ * @param {object[]} games - stored games, of any kind
+ * @returns {Map<object, string[]>} each tournament round whose lineup is
+ *   known (as satOut has them), to the names box by box, '' for an empty box
+ */
+export function boxOrder (games) {
+  const sat = satOut(games);
+  const rounds = [...sat.keys()].sort((a, b) => roundRank(a) - roundRank(b));
+  // each round's players in box order: its boxes, or else who played it
+  const listed = g => (g.boxes?.length ? g.boxes.filter(Boolean) : ours(g).players);
+  const orders = new Map();
+  for (const key of new Set(rounds.map(keyOf))) {
+    const own = rounds.filter(g => keyOf(g) === key);
+    const names = [...new Set(own.flatMap(g => listed(g).concat(sat.get(g))))];
+    // how many rounds put x before y
+    const before = (x, y) => own.filter(g => {
+      const list = listed(g);
+      return list.includes(x) && list.includes(y) && list.indexOf(x) < list.indexOf(y);
+    }).length;
+    // 1 for each player x comes before in most rounds, a half for a tie
+    const wins = x => names.reduce((s, y) => s + (y === x ? 0 : (Math.sign(before(x, y) - before(y, x)) + 1) / 2), 0);
+    const score = new Map(names.map(x => [x, wins(x)]));
+    orders.set(key, names.slice().sort((x, y) => score.get(y) - score.get(x) || names.indexOf(x) - names.indexOf(y)));
+  }
+  return new Map(rounds.map(g => {
+    const order = orders.get(keyOf(g));
+    if (!g.boxes?.length) return [g, order];
+    return [g, g.boxes.concat(order.filter(name => !g.boxes.includes(name)))];
   }));
 }
 
@@ -152,6 +197,30 @@ function benchOf (raw, fix, playing) {
   return bench;
 }
 
+/**
+ * Who was in each player box on the entry form, by number, which is the
+ * player's number on the sheet. The round keeps it so that editing it puts
+ * everyone back in their own box (boxOrder). A box that is empty, or names
+ * nobody playing or sitting the round, is ''. Anyone playing or sitting but
+ * in no box goes after the last one.
+ * @param {*} raw - names, box 1 first
+ * @param {function(string): string} fix - name canonicalizer
+ * @param {string[]} listed - everyone playing or sitting the round
+ * @returns {string[] | null} null from a page that sends no boxes, which was
+ *   loaded before boxes were kept: the round then takes its tournament's order
+ */
+function boxesOf (raw, fix, listed) {
+  if (!Array.isArray(raw)) return null;
+  const boxes = [];
+  for (const value of raw.slice(0, SLOTS + 4)) {
+    const name = fix(text(value, 60));
+    boxes.push(listed.includes(name) && !boxes.includes(name) ? name : '');
+  }
+  while (boxes.length && !boxes[boxes.length - 1]) boxes.pop();
+  for (const name of listed) if (!boxes.includes(name)) boxes.push(name);
+  return boxes;
+}
+
 // a final score as the sheet gives it, or null when it gives none
 function finalScore (value, what) {
   if (value == null || String(value).trim() === '') return null;
@@ -192,11 +261,13 @@ function scoresOnlyGame (body, fix, { tournament, playedAt, team, mode, opponent
     else throw new Error('a sheet with only final scores needs both of them, or else who won');
   }
   const round = text(body.round, 20);
-  const ours = { name: team, players: names, score: ourScore };
+  const ourTeam = { name: team, players: names, score: ourScore };
+  const bench = benchOf(body.bench, fix, name => names.includes(name));
   return {
     kind: 'tournament',
     scoresOnly: true,
-    bench: benchOf(body.bench, fix, name => names.includes(name)),
+    bench,
+    boxes: boxesOf(body.boxes, fix, names.concat(bench)),
     tournament,
     round,
     stage,
@@ -211,7 +282,7 @@ function scoresOnlyGame (body, fix, { tournament, playedAt, team, mode, opponent
     wordCounts: null,
     charCounts: null,
     lineup: [],
-    teams: chair ? [ours] : [ours, { name: opponent, players: [], score: theirScore, opponent: true }],
+    teams: chair ? [ourTeam] : [ourTeam, { name: opponent, players: [], score: theirScore, opponent: true }],
     heardByPlayer: {},
     buzzes: [],
     notes: []
@@ -269,6 +340,7 @@ function totalsGame (body, fix, { tournament, playedAt, team }) {
  * with a message for whoever is typing it in.
  * @param {object} body - { tournament, date, level, round, stage, team,
  *   opponent, opponentMode, opponentScore, result, players: [{name, from, to}],
+ *   bench: [name], boxes: [name] (who was in each player box, box 1 first),
  *   questions: [{category, us: {player, value} | null, them: 10 | -5 | null}],
  *   notes: [{questionNumber, player, text}] }. `them` counts only when the
  *   mode is 'recorded'; opponentScore and result only when it is 'unrecorded'.
@@ -367,7 +439,9 @@ export function tournamentGame (body, fix) {
   }
 
   const round = text(body.round, 20);
-  const ours = { name: team, players: lineup.map(p => p.name), score: ourScore };
+  const ourTeam = { name: team, players: lineup.map(p => p.name), score: ourScore };
+  // who was there and sat this round (benchOf): in no stats, only in who sat
+  const bench = benchOf(body.bench, fix, name => Boolean(span[name]));
   return {
     kind: 'tournament',
     tournament,
@@ -384,9 +458,10 @@ export function tournamentGame (body, fix) {
     wordCounts: null,
     charCounts: null,
     lineup,
-    // who was there and sat this round (benchOf): in no stats, only in who sat
-    bench: benchOf(body.bench, fix, name => Boolean(span[name])),
-    teams: mode === 'chair' ? [ours] : [ours, { name: opponent, players: [], score: theirScore, opponent: true }],
+    bench,
+    // each player's number on the sheet, sitters too, for editing the round
+    boxes: boxesOf(body.boxes, fix, ourTeam.players.concat(bench)),
+    teams: mode === 'chair' ? [ourTeam] : [ourTeam, { name: opponent, players: [], score: theirScore, opponent: true }],
     heardByPlayer: Object.fromEntries(lineup.map(p => [team + '|' + p.name, p.to - p.from + 1])),
     buzzes,
     notes: cleanNotes(body.notes, n => Boolean(span[n]), fix)
