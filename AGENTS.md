@@ -857,6 +857,15 @@ remove questions, and an added question's subject starts the round's own order
 over. The next game typed in keeps the last mode that was not a chair, and
 editing a game does not change it.
 
+The Round box fills itself (`nextRound`, keyed like `tournamentOf`):
+- **New tournament:** 1.
+- **Tournament already entered:** the round after its last numbered one.
+  A gap means a sheet nobody has, so it is not filled.
+- **When:** as the name, level, and date are typed, after every save, and
+  after an edit is stopped.
+- **Typed by hand:** a number typed into the box (`ROUND_TOUCHED`) stays
+  until the game is saved.
+
 Not every tournament reads its subjects in the regular order. A question's
 subject is one of `SUBJECTS` in `tournament-game.js`: the KSHSAA subjects plus
 `Other`, which sheets call Misc. An Other question counts in points, buzzes,
@@ -879,9 +888,13 @@ after the change moves up a row. Any row's subject can also be changed by hand.
   `withSubjects`). They change question by question as far as both rounds go,
   and their buzzes keep their points and follow their questions.
 
-Some sheets have nothing but the final scores, and the form's "only the final
-scores" box takes them (`scoresOnly`, built by `scoresOnlyGame`). Such a game
-stores both scores, or one and who won, plus who played if anyone knows.
+The form's "The sheet has" picker (`SHEET`) covers sheets that leave out more:
+every question (the grid), only each game's final score, or only each
+player's total for the tournament.
+
+Some sheets have nothing but the final scores (`scoresOnly`, built by
+`scoresOnlyGame`). Such a game stores both scores, or one and who won, plus
+who played if anyone knows.
 - **Not stored:** questions, subs' questions, buzzes, and notes.
 - **Player stats:** its players heard no questions, so `playersInGame` leaves
   them out of every player stat.
@@ -892,6 +905,20 @@ stores both scores, or one and who won, plus who played if anyone knows.
   Tournaments tab's season table it counts only in each player's Tournaments
   number, and Per tournament divides by the tournaments with buzzes.
 - **Subjects:** changing a tournament's subjects passes it by.
+
+Some sheets have only each player's points for the whole tournament: no
+games, opponents, or questions. `totalsGame` stores them as one entry for the
+tournament, `wholeTournament` with `playerTotals: [{ name, points }]`. It
+also sets `scoresOnly`, so the room model, Insights, and player stats skip it
+as above.
+- **Not a game:** it has no result, so the record and how far the team went
+  leave it out, and the Stats page's game list does not show it
+  (`wholeTournament` in `game-stats.js`).
+- **Season table:** it adds to each player's Tournaments and Points, and Per
+  tournament divides by it. Games, Correct, −5s, and Points/question leave it
+  out, since nothing says how many questions those points came on.
+- **One per tournament:** a second entry for the same tournament and team is
+  refused, and a rename carries `playerTotals`.
 
 A playoff game stores its `stage`, one of the `STAGES` keys: quarterfinal,
 semifinal, third, or final. A regular round stores null, and a chair is always

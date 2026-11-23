@@ -18,7 +18,7 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { CATEGORIES, CATEGORY_BY_QUESTION, LEVELS, poolSummary } from './kshsaa-round.js';
 import { NAME_AUTOCOMPLETE } from '../server/kshsaa/name-autocomplete.js';
-import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters, resultOf, scoresOnly } from '../server/kshsaa/game-stats.js';
+import { KINDS, celerityOf, cleanNotes, kindOf, monthKeyOf, monthLabel, playersInGame, readFilters, resultOf, scoresOnly, wholeTournament } from '../server/kshsaa/game-stats.js';
 import { reboundsIn } from '../server/kshsaa/rebounds.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from '../server/kshsaa/room-model.js';
@@ -383,6 +383,8 @@ async function renameInGames (from, to) {
     // the old name, editing the game would find answers by nobody it lists
     const lineup = (g.lineup || []).map(p => (p.name === from ? { ...p, name: to } : p))
       .filter((p, i, all) => all.findIndex(q => q.name === p.name) === i);
+    // each player's points, on a sheet that has only those for the tournament
+    const playerTotals = (g.playerTotals || []).map(t => (t.name === from ? { ...t, name: to } : t));
     const heardByPlayer = {};
     for (const [key, heard] of Object.entries(g.heardByPlayer || {})) {
       const bar = key.indexOf('|');
@@ -391,7 +393,9 @@ async function renameInGames (from, to) {
       const next = team + '|' + (player === from ? to : player);
       heardByPlayer[next] = Math.max(heardByPlayer[next] ?? 0, heard);
     }
-    await games.updateOne({ _id: g._id }, { $set: { buzzes, teams, heardByPlayer, notes, ...(g.lineup ? { lineup } : {}) } });
+    await games.updateOne({ _id: g._id }, {
+      $set: { buzzes, teams, heardByPlayer, notes, ...(g.lineup ? { lineup } : {}), ...(g.playerTotals ? { playerTotals } : {}) }
+    });
   }
   return hit.length;
 }
@@ -970,7 +974,8 @@ router.get('/data', requireAuth, async (req, res) => {
     // the 16 questions of a round by category, and how hard the Adjusted level plays
     roomWeights: WEIGHTS,
     roomDifficulty: at ? model.difficulty[at] : null,
-    games: shown.map(g => ({
+    // each player's total for a whole tournament is not a game
+    games: shown.filter(g => !wholeTournament(g)).map(g => ({
       id: String(g._id),
       label: g.label,
       kind: kindOf(g),
