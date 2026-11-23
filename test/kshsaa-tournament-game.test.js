@@ -120,6 +120,17 @@ test('a regular round has no stage, and an unknown one counts as regular', () =>
   assert.equal(tournamentGame(sheet({ stage: 'toString' }), same).stage, null);
 });
 
+test('an answer whose player name was cleared is refused, not dropped', () => {
+  const s = sheet();
+  s.questions[0].us = { player: '', value: 10 };
+  assert.throws(() => tournamentGame(s, same), /question 1 is credited to a player whose name was cleared/);
+  s.questions[0].us = { player: '   ', value: 10 };
+  assert.throws(() => tournamentGame(s, same), /name was cleared/);
+  // a question nobody got is still fine: Avery's 2 and 3, Blake's -5 on 4
+  s.questions[0].us = null;
+  assert.equal(tournamentGame(s, same).teams[0].score, 15);
+});
+
 test('a chair cannot be a playoff game', () => {
   assert.throws(() => tournamentGame(sheet({ opponentMode: 'chair', opponent: '', stage: 'final' }), same), /playoff game has an opponent/);
 });

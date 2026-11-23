@@ -303,7 +303,12 @@ export function tournamentGame (body, fix) {
   const categories = questions.map((q, i) => {
     const n = i + 1;
     const category = SUBJECTS.includes(q?.category) ? q.category : categoryFor(n);
-    const us = q?.us?.player ? { player: fix(text(q.us.player, 60)), value: Number(q.us.value) } : null;
+    // an answer whose player box was emptied after it was credited: dropping
+    // it would lose the points without anyone seeing
+    if (q?.us && !text(q.us.player, 60)) {
+      throw new Error('question ' + n + ' is credited to a player whose name was cleared: put the name back, or clear that question');
+    }
+    const us = q?.us ? { player: fix(text(q.us.player, 60)), value: Number(q.us.value) } : null;
     const them = mode !== 'recorded' || q?.them == null || q.them === '' ? null : Number(q.them);
     if (us) {
       if (!span[us.player]) throw new Error('question ' + n + ' is credited to ' + us.player + ', who is not listed as playing');

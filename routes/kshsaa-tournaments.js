@@ -742,15 +742,27 @@ function chip (n, k, value) {
     '" data-v="' + value + '" title="' + esc(name) + '"' + (inFor(k, n) ? '' : ' disabled') + '>' + k + '</button>';
 }
 
+// An answer credited to a player box that is now empty, or to someone the
+// lineup does not have. Each answer belongs to a box, the player's number on
+// the sheet, so emptying the box would lose its points on save.
+function orphaned (q) {
+  var p = q.us && q.us.k ? PLAYERS[q.us.k - 1] : null;
+  return Boolean(q.us) && !(p && p.name.trim());
+}
+
 function rowHtml (n) {
   var q = QUESTIONS[n - 1];
   var slots = filledSlots();
   var cats = DATA.subjects.map(function (c) {
     return '<option value="' + esc(c) + '"' + (c === q.category ? ' selected' : '') + '>' + esc(SUBJECT_WORDS[c] || c) + '</option>';
   }).join('');
+  var lost = orphaned(q)
+    ? ' <span class="small text-danger" title="Put the name back in its box, or press Delete on this row">' +
+      (q.us.value > 0 ? '+10' : '&minus;5') + ' by ' + (q.us.k ? 'player ' + q.us.k : 'someone not listed') + ', whose box is empty</span>'
+    : '';
   return '<td class="fw-semibold">' + n + '</td>' +
     '<td><select class="form-select form-select-sm qcat" data-n="' + n + '">' + cats + '</select></td>' +
-    '<td>' + (slots.length ? slots.map(function (k) { return chip(n, k, 10); }).join('') : '<span class="note">add players</span>') + '</td>' +
+    '<td>' + (slots.length ? slots.map(function (k) { return chip(n, k, 10); }).join('') : '<span class="note">add players</span>') + lost + '</td>' +
     '<td>' + slots.map(function (k) { return chip(n, k, -5); }).join('') + '</td>' +
     '<td>' + (MODE === 'recorded'
       ? '<button type="button" class="pk them' + (q.them === 10 ? ' yes' : '') + '" data-n="' + n + '" data-them="10" title="They got it">+10</button>' +
@@ -940,6 +952,18 @@ $('notes').addEventListener('click', function (e) {
 // ---------- saving and editing ----------
 
 $('save').onclick = function () {
+  // an answer whose player box was emptied: saving would lose its points, so
+  // say which question and save nothing
+  if (SHEET === 'questions') {
+    for (var i = 0; i < QUESTIONS.length; i++) {
+      if (!orphaned(QUESTIONS[i])) continue;
+      focusRow(i);
+      $('saveMsg').innerHTML = '<span class="text-danger">Question ' + (i + 1) + ' is credited to ' +
+        (QUESTIONS[i].us.k ? 'player ' + QUESTIONS[i].us.k + ', whose box is now empty' : 'someone not in the lineup') +
+        '. Put the name back, or press Delete on that row to clear it. Nothing was saved.</span>';
+      return;
+    }
+  }
   var body = {
     id: EDITING,
     tournament: $('fTourney').value,

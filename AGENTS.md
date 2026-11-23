@@ -884,6 +884,13 @@ nobody types a bench.
   - The season table's Rounds column, which replaced Games, shows rounds
     played out of the rounds at the tournaments a player went to, playoffs
     included.
+- **Editing lineups:** each answer in the grid belongs to a player box, the
+  player's number on the sheet. Typing a different name into a box moves its
+  answers to that name. Emptying a box that has answers would lose them, so
+  instead:
+  - The row says so ("+10 by player 3, whose box is empty"), and Save stops
+    at that question (`orphaned`).
+  - The server refuses an answer with no player rather than dropping it.
 
 Not every tournament reads its subjects in the regular order. A question's
 subject is one of `SUBJECTS` in `tournament-game.js`: the KSHSAA subjects plus
