@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 
 import { opponentModeOf, playersInGame, resultOf } from '../server/kshsaa/game-stats.js';
 import { CATEGORY_BY_QUESTION } from '../server/kshsaa/round-shape.js';
-import { MAX_QUESTIONS, SUBJECT_ORDERS, SUBJECTS, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
+import { MAX_QUESTIONS, SUBJECT_ORDERS, SUBJECTS, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
 
 const same = name => name;
 // Avery gets questions 1-3 and Blake loses 5 on 4 (25 for us); they get 5 and
@@ -118,6 +118,17 @@ test('a regular round has no stage, and an unknown one counts as regular', () =>
   assert.equal(tournamentGame(sheet({ stage: '' }), same).stage, null);
   assert.equal(tournamentGame(sheet({ stage: 'grand final' }), same).stage, null);
   assert.equal(tournamentGame(sheet({ stage: 'toString' }), same).stage, null);
+});
+
+test('an answer whose player name was cleared is refused, not dropped', () => {
+  const s = sheet();
+  s.questions[0].us = { player: '', value: 10 };
+  assert.throws(() => tournamentGame(s, same), /question 1 is credited to a player whose name was cleared/);
+  s.questions[0].us = { player: '   ', value: 10 };
+  assert.throws(() => tournamentGame(s, same), /name was cleared/);
+  // a question nobody got is still fine: Avery's 2 and 3, Blake's -5 on 4
+  s.questions[0].us = null;
+  assert.equal(tournamentGame(s, same).teams[0].score, 15);
 });
 
 test('a chair cannot be a playoff game', () => {
@@ -257,4 +268,35 @@ test('subjects change only as far as both rounds go', () => {
   assert.deepEqual(withSubjects(short, order('language-arts')).categories, order('language-arts').slice(0, 12));
   // a subject the site does not know leaves the question as it was
   assert.equal(withSubjects(g, ['Underwater Basketweaving']), null);
+});
+
+// a round of the Hays Invitational that these players played, nobody scoring
+const roundOf = (round, names, extra = {}) => tournamentGame(sheet({
+  round,
+  players: names.map(name => ({ name })),
+  questions: CATEGORY_BY_QUESTION.map(category => ({ category, us: null, them: null })),
+  ...extra
+}), same);
+
+test('who sat a round is the rest of the team that played the tournament', () => {
+  const r1 = roundOf('1', ['Avery', 'Blake', 'Casey', 'Drew']);
+  const r2 = roundOf('2', ['Avery', 'Erin', 'Casey', 'Finn']);
+  // the best players in the semifinal: the rest sat it
+  const semi = roundOf('3', ['Avery', 'Blake', 'Casey', 'Erin'], { stage: 'semifinal' });
+  // another of our squads at the same tournament has a bench of its own
+  const other = roundOf('1', ['Gus', 'Hal'], { team: 'JV Blue' });
+  // a final-scores sheet that says who played counts; one that does not can't say
+  const finals = finalsOnly({ round: '4', ourScore: 100, opponentScore: 90, players: [{ name: 'Blake' }, { name: 'Drew' }] });
+  const unknown = finalsOnly({ round: '5', ourScore: 100, opponentScore: 90, players: [] });
+  const total = totalsOnly([{ name: 'Avery', points: 50 }]);
+  const practice = { kind: 'practice', teams: [{ name: 'A', players: ['Avery'] }] };
+  const sat = satOut([r1, r2, semi, other, finals, unknown, total, practice]);
+  assert.deepEqual(sat.get(r1), ['Erin', 'Finn']);
+  assert.deepEqual(sat.get(r2), ['Blake', 'Drew']);
+  assert.deepEqual(sat.get(semi), ['Drew', 'Finn']);
+  assert.deepEqual(sat.get(other), []);
+  assert.deepEqual(sat.get(finals), ['Avery', 'Casey', 'Erin', 'Finn']);
+  assert.equal(sat.has(unknown), false);
+  assert.equal(sat.has(total), false);
+  assert.equal(sat.has(practice), false);
 });
