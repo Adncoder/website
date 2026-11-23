@@ -8,10 +8,10 @@
 // player held back is left out for them entirely: it does not count toward
 // their games, points, or habits.
 
-import { CATEGORIES } from './round-shape.js';
-import { celerityOf, monthKeyOf, playersInGame } from './game-stats.js';
+import { CATEGORIES, CATEGORY_BY_QUESTION } from './round-shape.js';
+import { celerityOf, kindOf, monthKeyOf, opponentModeOf, playersInGame, resultOf, scoresOnly } from './game-stats.js';
 import { reboundsIn } from './rebounds.js';
-import { PLAYER_PRIOR, WEIGHTS, fitRoomModel, heldBackIn, soloAnswers } from './room-model.js';
+import { PLAYER_PRIOR, WEIGHTS, fitRoomModel, heldBackIn, soloAnswers, tournamentOf } from './room-model.js';
 
 // category questions heard before calling someone strong or weak there
 const MIN_CATEGORY_HEARD = 6;
@@ -43,7 +43,7 @@ const round4 = x => +x.toPrecision(4);
  */
 export function computeInsights (allGames, filters, questionInfo, isVarsity) {
   const games = allGames.filter(g => filters.inMonth(monthKeyOf(g.playedAt)) && filters.inLevel(g.level || 'untagged'));
-  const model = fitRoomModel(games, isVarsity);
+  const model = fitRoomModel(games, isVarsity, { schoolOf });
   // month by month, under the level filter only, for each player's trend
   const history = fitRoomModel(allGames.filter(g => filters.inLevel(g.level || 'untagged')), isVarsity,
     { groupOf: g => monthKeyOf(g.playedAt) });
@@ -165,8 +165,112 @@ export function computeInsights (allGames, filters, questionInfo, isVarsity) {
     weights: WEIGHTS,
     teamCelerity,
     players: rows,
-    questions: questionDifficulty(games, questionInfo)
+    questions: questionDifficulty(games, questionInfo),
+    schools: schoolsPlayed(games, model),
+    losing: whereWeLose(games)
   };
+}
+
+/**
+ * Which school a tournament game was against, as the room model groups them:
+ * one school whatever spacing or capitals its name was typed with ("Spring
+ * Hill", "Springhill"), at one level in one school year, since a school's JV
+ * and varsity are different teams. Null for practice, a chair, or an
+ * opponent typed as Unknown.
+ * @param {object} g - a stored game
+ * @returns {?string}
+ */
+export function schoolOf (g) {
+  const name = String(g.opponent || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (kindOf(g) !== 'tournament' || !name || name === 'unknown') return null;
+  return [name, g.level || 'untagged', tournamentOf(g).season].join('|');
+}
+
+/**
+ * Each school we played at tournaments: our record and the average score
+ * against it, and how strong it is from the room model (model.schools). That
+ * is how many of a round's 16 it would answer with nobody else buzzing, at
+ * the typical tournament of its level, next to the same for the lineups we
+ * sent against it. The strongest come first.
+ * @param {object[]} games - the filtered games
+ * @param {object} model - fitRoomModel's result, fitted with schoolOf
+ */
+function schoolsPlayed (games, model) {
+  const rows = new Map();
+  for (const g of games) {
+    const key = schoolOf(g);
+    if (!key) continue;
+    const [, level, season] = key.split('|');
+    const row = rows.get(key) || { key, level, season, spellings: {}, games: 0, recorded: 0, win: 0, loss: 0, tie: 0, ours: [], theirs: [] };
+    const typed = g.opponent.trim();
+    row.spellings[typed] = (row.spellings[typed] || 0) + 1;
+    row.games++;
+    if (opponentModeOf(g) === 'recorded') row.recorded++;
+    const result = resultOf(g);
+    if (result) row[result]++;
+    const us = (g.teams || []).find(t => !t.opponent);
+    const them = (g.teams || []).find(t => t.opponent);
+    if (us?.score != null && them?.score != null) { row.ours.push(us.score); row.theirs.push(them.score); }
+    rows.set(key, row);
+  }
+  const fitted = new Map(model.schools.map(s => [s.key, s]));
+  const average = list => (list.length ? Math.round(list.reduce((a, b) => a + b, 0) / list.length) : null);
+  const alone = (strength, D) => +(16 * strength / (strength + D)).toFixed(1);
+  return [...rows.values()].map(row => {
+    const spellings = Object.keys(row.spellings).sort((a, b) => row.spellings[b] - row.spellings[a]);
+    const fit = fitted.get(row.key);
+    const D = model.typicalTournament[row.level];
+    return {
+      name: spellings[0],
+      // the other ways its name was typed, counted as the same school
+      alsoTyped: spellings.slice(1),
+      level: row.level,
+      season: row.season,
+      games: row.games,
+      win: row.win,
+      loss: row.loss,
+      tie: row.tie,
+      // average final scores, over the games with both written down
+      ours: average(row.ours),
+      theirs: average(row.theirs),
+      alone: fit && D ? alone(fit.strength, D) : null,
+      oursAlone: fit && D ? alone(fit.sent, D) : null,
+      // none of its sheets kept their side, so its strength is mostly the
+      // lineup we sent
+      guess: row.recorded === 0
+    };
+  }).sort((a, b) => a.level.localeCompare(b.level) || (b.alone ?? -1) - (a.alone ?? -1) || a.name.localeCompare(b.name));
+}
+
+/**
+ * At tournaments, by level and subject: how many questions we got, the other
+ * school got, and nobody got, and how many drew one of our -5s. Only sheets
+ * that kept the other team's side count: not a chair, and not one whose
+ * other side went unrecorded.
+ * @param {object[]} games - the filtered games
+ */
+function whereWeLose (games) {
+  const rows = new Map();
+  for (const g of games) {
+    if (kindOf(g) !== 'tournament' || scoresOnly(g) || opponentModeOf(g) !== 'recorded') continue;
+    const level = g.level || 'untagged';
+    const cats = g.categories && g.categories.length ? g.categories : CATEGORY_BY_QUESTION;
+    for (let n = 1; n <= (g.tossupsRead || 16); n++) {
+      const category = cats[n - 1];
+      if (!CATEGORIES.includes(category)) continue;
+      const buzzes = (g.buzzes || []).filter(b => b.questionNumber === n);
+      const right = buzzes.find(b => b.value > 0);
+      const key = level + '|' + category;
+      const row = rows.get(key) || { level, category, read: 0, us: 0, them: 0, nobody: 0, ourNegs: 0 };
+      row.read++;
+      if (!right) row.nobody++;
+      else if (right.player) row.us++;
+      else row.them++;
+      if (buzzes.some(b => b.player && b.value < 0)) row.ourNegs++;
+      rows.set(key, row);
+    }
+  }
+  return [...rows.values()].sort((a, b) => a.level.localeCompare(b.level) || CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category));
 }
 
 /**

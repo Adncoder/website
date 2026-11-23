@@ -16,7 +16,7 @@ import { Router } from 'express';
 import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { CATEGORY_BY_QUESTION, LEVELS } from './kshsaa-round.js';
-import { getSquads, nameCanonicalizer, requireAuth } from './kshsaa-stats.js';
+import { getSquads, nameCanonicalizer, pageCache, requireAuth } from './kshsaa-stats.js';
 import { kindOf, monthKeyOf, monthLabel, opponentModeOf, resultOf, seasonStartKey } from '../server/kshsaa/game-stats.js';
 import { tournamentOf } from '../server/kshsaa/room-model.js';
 import { MAX_QUESTIONS, SLOTS, STAGES, SUBJECT_ORDERS, SUBJECTS, boxOrder, satOut, tournamentGame, withSubjects } from '../server/kshsaa/tournament-game.js';
@@ -26,6 +26,8 @@ import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 const router = Router();
 const games = qbreader.collection('kshsaa_games');
 const roster = qbreader.collection('kshsaa_roster');
+// saving a game here is a change the other tabs need to see
+router.use(pageCache.noteChanges);
 
 const ours = g => (g.teams || []).find(t => !t.opponent) || { name: '', players: [], score: 0 };
 // a chair game has no other team, and an unrecorded sheet may not have their score
@@ -39,76 +41,81 @@ async function otherRounds (game, id) {
     .filter(g => String(g._id) !== String(id) && tournamentOf(g).key === key);
 }
 
+// kept until a game, the roster, or the squads change (pageCache)
 router.get('/data', requireAuth, async (req, res) => {
   try {
-    const [list, rosterList, squads] = await Promise.all([
-      games.find({ kind: 'tournament' }).sort({ playedAt: 1 }).toArray(),
-      roster.find({}).toArray(),
-      getSquads()
-    ]);
-    // who sat each round, from who played the tournament's other rounds, and
-    // who goes in each player box, so players keep their numbers all tournament
-    const bench = satOut(list);
-    const boxes = boxOrder(list);
-    res.json({
-      squads,
-      seasonStart: seasonStartKey(),
-      seasonLabel: monthLabel(seasonStartKey()),
-      levels: Object.keys(LEVELS).map(key => ({ key, label: LEVELS[key].label })),
-      // a question's subject, Other being a sheet's Misc, and the orders
-      // some tournaments read their rounds in
-      subjects: SUBJECTS,
-      order: CATEGORY_BY_QUESTION,
-      orders: SUBJECT_ORDERS,
-      // playoff rounds, in bracket order
-      stages: Object.entries(STAGES).map(([key, label]) => ({ key, label })),
-      roster: rosterList.filter(r => !r.coach).map(r => ({ name: r.name, squad: r.squad || null })),
-      games: list.map(g => ({
-        id: String(g._id),
-        tournament: g.tournament,
-        // which tournament it was (room-model.js), and its subjects, so the
-        // next round typed in starts with them
-        event: tournamentOf(g).key,
-        categories: g.categories || null,
-        // a sheet with only the final scores: its players went, and nothing
-        // more; one with only each player's total for the whole tournament
-        scoresOnly: Boolean(g.scoresOnly),
-        wholeTournament: Boolean(g.wholeTournament),
-        // who sat this round, or null when its lineup is not known
-        sat: bench.get(g) ?? null,
-        // the names in its player boxes by number, '' for an empty one
-        boxes: boxes.get(g) ?? null,
-        round: g.round || '',
-        stage: g.stage || null,
-        opponent: theirs(g).name,
-        team: ours(g).name,
-        level: g.level || null,
-        playedAt: g.playedAt,
-        month: monthKeyOf(g.playedAt),
-        score: ours(g).score,
-        opponentScore: theirs(g).score ?? null,
-        // how the other side was kept, and how the game came out (game-stats.js)
-        mode: opponentModeOf(g),
-        result: resultOf(g),
-        notes: (g.notes || []).length,
-        players: ours(g).players.map(name => {
-          const mine = (g.buzzes || []).filter(b => b.player === name);
-          // a sheet with only each player's total gives their points outright
-          const total = (g.playerTotals || []).find(t => t.name === name);
-          return {
-            name,
-            heard: g.heardByPlayer?.[ours(g).name + '|' + name] ?? g.tossupsRead,
-            correct: mine.filter(b => b.value > 0).length,
-            negs: mine.filter(b => b.value < 0).length,
-            points: total ? total.points : mine.reduce((s, b) => s + b.value, 0)
-          };
-        })
-      }))
-    });
+    res.json(await pageCache.get('tournaments', tournamentsData));
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
 });
+
+async function tournamentsData () {
+  const [list, rosterList, squads] = await Promise.all([
+    games.find({ kind: 'tournament' }).sort({ playedAt: 1 }).toArray(),
+    roster.find({}).toArray(),
+    getSquads()
+  ]);
+  // who sat each round, from who played the tournament's other rounds, and
+  // who goes in each player box, so players keep their numbers all tournament
+  const bench = satOut(list);
+  const boxes = boxOrder(list);
+  return {
+    squads,
+    seasonStart: seasonStartKey(),
+    seasonLabel: monthLabel(seasonStartKey()),
+    levels: Object.keys(LEVELS).map(key => ({ key, label: LEVELS[key].label })),
+    // a question's subject, Other being a sheet's Misc, and the orders
+    // some tournaments read their rounds in
+    subjects: SUBJECTS,
+    order: CATEGORY_BY_QUESTION,
+    orders: SUBJECT_ORDERS,
+    // playoff rounds, in bracket order
+    stages: Object.entries(STAGES).map(([key, label]) => ({ key, label })),
+    roster: rosterList.filter(r => !r.coach).map(r => ({ name: r.name, squad: r.squad || null })),
+    games: list.map(g => ({
+      id: String(g._id),
+      tournament: g.tournament,
+      // which tournament it was (room-model.js), and its subjects, so the
+      // next round typed in starts with them
+      event: tournamentOf(g).key,
+      categories: g.categories || null,
+      // a sheet with only the final scores: its players went, and nothing
+      // more; one with only each player's total for the whole tournament
+      scoresOnly: Boolean(g.scoresOnly),
+      wholeTournament: Boolean(g.wholeTournament),
+      // who sat this round, or null when its lineup is not known
+      sat: bench.get(g) ?? null,
+      // the names in its player boxes by number, '' for an empty one
+      boxes: boxes.get(g) ?? null,
+      round: g.round || '',
+      stage: g.stage || null,
+      opponent: theirs(g).name,
+      team: ours(g).name,
+      level: g.level || null,
+      playedAt: g.playedAt,
+      month: monthKeyOf(g.playedAt),
+      score: ours(g).score,
+      opponentScore: theirs(g).score ?? null,
+      // how the other side was kept, and how the game came out (game-stats.js)
+      mode: opponentModeOf(g),
+      result: resultOf(g),
+      notes: (g.notes || []).length,
+      players: ours(g).players.map(name => {
+        const mine = (g.buzzes || []).filter(b => b.player === name);
+        // a sheet with only each player's total gives their points outright
+        const total = (g.playerTotals || []).find(t => t.name === name);
+        return {
+          name,
+          heard: g.heardByPlayer?.[ours(g).name + '|' + name] ?? g.tossupsRead,
+          correct: mine.filter(b => b.value > 0).length,
+          negs: mine.filter(b => b.value < 0).length,
+          points: total ? total.points : mine.reduce((s, b) => s + b.value, 0)
+        };
+      })
+    }))
+  };
+}
 
 // what the page says once a game is saved, with the tournament's other rounds
 // whose subjects are not the same, which the page offers to change to match
@@ -445,18 +452,25 @@ function show (authed) {
     fetch('/kshsaa-stats/names').then(function (r) { return r.json(); }).then(function (d) { KNOWN_NAMES = d.names || []; });
   }
 }
+// The first data request goes out with the sign-in check, not after it: a
+// round trip sooner. load() takes it once the check passes.
+var EARLY = fetch('/kshsaa-tournaments/data');
 fetch('/kshsaa-stats/me').then(function (r) { return r.json(); }).then(function (d) { show(d.authed && d.role === 'stats'); });
 $('loginBtn').onclick = function () {
   postJson('/kshsaa-stats/login', { password: $('pw').value }).then(function (res) {
     if (!res.ok) { $('loginErr').textContent = res.d.error || 'failed'; return; }
     if (res.d.role !== 'stats') { $('loginErr').textContent = 'That is the reader password. Stats need the stats password.'; return; }
+    // the early request went out signed out
+    EARLY = null;
     show(true);
   });
 };
 $('pw').onkeydown = function (e) { if (e.key === 'Enter') $('loginBtn').click(); };
 
 function load (then) {
-  fetch('/kshsaa-tournaments/data').then(function (r) { return r.json(); }).then(function (d) {
+  var reply = EARLY || fetch('/kshsaa-tournaments/data');
+  EARLY = null;
+  reply.then(function (r) { return r.json(); }).then(function (d) {
     if (d.error) { $('games').innerHTML = '<p class="text-danger">' + esc(d.error) + '</p>'; return; }
     var first = !DATA;
     DATA = d;
