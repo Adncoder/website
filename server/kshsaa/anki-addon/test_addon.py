@@ -161,8 +161,16 @@ def load(code="ABCD-EFGH-JKLM", saved_server="https://old-address.example"):
     addon.threading = types.SimpleNamespace(Thread=Thread)
     # what the review log says, and what the sites do with it
     fake.counts = {"from": "2026-09-22", "days": [{"day": "2026-11-20", "reviews": 40}]}
-    addon.daily_counts = lambda db, cutoff, days: dict(fake.counts)
+    fake.windows = []
+
+    def daily_counts(db, cutoff, days):
+        fake.windows.append(days)
+        return dict(fake.counts)
+
+    addon.daily_counts = daily_counts
     fake.sent, fake.outcome = [], "ok"
+    # what the site answers; one older than 1.2's sends no season
+    fake.answer = {"ok": True, "week": {"reviews": 40, "rank": 2, "of": 9}}
 
     def send_counts(servers, code, payload):
         fake.sent.append({"servers": servers, "code": code, "payload": payload})
@@ -170,7 +178,7 @@ def load(code="ABCD-EFGH-JKLM", saved_server="https://old-address.example"):
             raise addon.SyncError("could not reach https://awake.example (timed out)", retry=True)
         if fake.outcome == "refused":
             raise addon.SyncError("that code is not on the leaderboard")
-        return {"ok": True, "week": {"reviews": 40, "rank": 2, "of": 9}}, servers[-1]
+        return dict(fake.answer), servers[-1]
 
     addon.send_counts = send_counts
     return addon
@@ -249,6 +257,31 @@ class Addon(unittest.TestCase):
         finish_sends()
         self.assertIn("did not take your counts: that code is not on the leaderboard", fake.shown[-1])
         self.assertIsNone(addon._timers["retry"].interval, "trying again would not help a refused code")
+
+    def test_a_send_covers_the_season_since_august_1(self):
+        load()
+        # noon UTC on Nov 21: the current Anki day began on Nov 20 in any time zone near the US
+        fake.mw.col.sched.day_cutoff = 1795262400
+        open_profile()
+        self.assertEqual(fake.windows, [112], "Aug 1 through Nov 20")
+
+    def test_send_now_says_where_you_stand_for_the_belt(self):
+        addon = load()
+        open_profile()
+        week = {"reviews": 40, "rank": 2, "of": 9}
+        holder = {"reviews": 1234, "rank": 1, "of": 9, "belt": True, "behind": 0}
+        chaser = {"reviews": 900, "rank": 3, "of": 9, "belt": False, "behind": 1250}
+        for season, said in [
+            (dict(holder, over=False), " You hold the Season Belt: 1,234 cards this season."),
+            (dict(chaser, over=False), " Season: #3 of 9, 1,250 behind the belt."),
+            (dict(chaser, reviews=0, rank=None, over=False), ""),
+            (dict(holder, over=True), " You won the Season Belt!"),
+            (dict(chaser, over=True), ""),
+        ]:
+            fake.answer = {"ok": True, "week": week, "season": season}
+            addon.send(manual=True)
+            finish_sends()
+            self.assertEqual(fake.tips[-1], "Scholars Bowl: 40 cards this week, #2 of 9." + said)
 
     def test_one_send_at_a_time(self):
         addon = load()

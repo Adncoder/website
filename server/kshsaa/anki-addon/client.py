@@ -13,7 +13,7 @@ import ssl
 import urllib.error
 import urllib.request
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 # seconds to wait on the first site, which is always awake, and on the rest,
 # which may need a minute to wake up

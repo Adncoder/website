@@ -6,7 +6,9 @@ Anki and of this add-on, and nothing else (no card text, no deck names). It
 sends when Anki opens, when you finish studying, after every sync, and every
 half hour while Anki stays open (only when something changed), so cards
 studied on a phone count once this computer's Anki syncs them. Each send
-covers the last 60 days, so a missed one fills itself in.
+covers every day since the season began on August 1 (and at least the last
+60), so a missed one fills itself in and cards studied before installing
+count toward the season.
 
 The counts go to the first site in config.json's "servers" that takes them.
 When none does, the add-on tries again a few minutes later on its own.
@@ -17,6 +19,7 @@ and enter your code.
 
 import json
 import threading
+from datetime import date
 
 from anki.buildinfo import version as anki_version
 from aqt import gui_hooks, mw
@@ -25,8 +28,9 @@ from aqt.qt import QAction, QMenu, QTimer, qconnect
 from aqt.utils import getText, openLink, showInfo, tooltip
 
 from .client import VERSION, SyncError, send_counts
-from .stats import daily_counts
+from .stats import DAY, daily_counts, season_days
 
+# the fewest days a send covers; it covers the whole season once that is longer
 DAYS = 60
 # how often an open Anki checks for new counts to send, in minutes
 EVERY = 30
@@ -71,7 +75,17 @@ def _summary(answer):
     text = "Scholars Bowl: {:,} cards this week".format(week.get("reviews", 0))
     if week.get("rank"):
         text += ", #{} of {}".format(week["rank"], week["of"])
-    return text + "."
+    text += "."
+    # the Season Belt, from a site new enough to send it
+    season = answer.get("season") or {}
+    if season.get("belt"):
+        if season.get("over"):
+            text += " You won the Season Belt!"
+        else:
+            text += " You hold the Season Belt: {:,} cards this season.".format(season.get("reviews", 0))
+    elif season.get("rank") and not season.get("over"):
+        text += " Season: #{} of {}, {:,} behind the belt.".format(season["rank"], season["of"], season.get("behind", 0))
+    return text
 
 
 def ask_code():
@@ -112,7 +126,7 @@ def _retry_later():
 def send(manual=False, say=False):
     """Send the counts if they changed since the leaderboard last took them.
     manual: someone asked, so send either way and say what happened. say:
-    show the week's standing after."""
+    show the week's and the season's standing after."""
     code = _config().get("code", "").strip()
     servers = _servers()
     if not code:
@@ -132,7 +146,8 @@ def send(manual=False, say=False):
     _state["busy"] = True
 
     def read(col):
-        counts = daily_counts(col.db, col.sched.day_cutoff, DAYS)
+        cutoff = col.sched.day_cutoff
+        counts = daily_counts(col.db, cutoff, season_days(date.fromtimestamp(cutoff - DAY), DAYS))
         counts.update(addon=VERSION, anki=anki_version)
         return counts
 

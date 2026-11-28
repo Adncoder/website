@@ -8,7 +8,7 @@ import sqlite3
 import unittest
 from datetime import date, datetime, timedelta
 
-from stats import daily_counts
+from stats import daily_counts, season_days
 
 DAY = 86400
 
@@ -89,6 +89,13 @@ class DailyCounts(unittest.TestCase):
     def test_nothing_studied(self):
         self.assertEqual(daily_counts(self.db, self.cutoff, 60), {"from": "2026-09-20", "days": []})
 
+    def test_a_season_send_starts_on_august_1(self):
+        self.db.answer(datetime(2026, 8, 1, 9), cid=1)  # the season's first day
+        self.db.answer(datetime(2026, 7, 31, 9), cid=2)  # the last day before it
+        result = daily_counts(self.db, self.cutoff, season_days(date(2026, 11, 18)))
+        self.assertEqual(result["from"], "2026-08-01")
+        self.assertEqual([d["day"] for d in result["days"]], ["2026-08-01"])
+
     def test_day_labels_across_a_clock_change(self):
         # US clocks fall back on Nov 1, 2026; days either side keep their dates
         for day in (31, 1, 2):
@@ -97,6 +104,19 @@ class DailyCounts(unittest.TestCase):
         labels = [d["day"] for d in daily_counts(self.db, self.cutoff, 60)["days"]]
         expected = [(date(2026, 10, 31) + timedelta(days=i)).isoformat() for i in range(3)]
         self.assertEqual(labels, expected)
+
+
+class SeasonDays(unittest.TestCase):
+    def test_a_send_covers_every_day_since_august_1(self):
+        self.assertEqual(season_days(date(2026, 11, 27)), 119)
+        self.assertEqual(season_days(date(2026, 9, 30)), 61)
+        self.assertEqual(season_days(date(2027, 5, 31)), 304)
+        self.assertEqual(season_days(date(2027, 7, 31)), 365, "June and July reach back to the August before")
+
+    def test_never_fewer_than_the_least(self):
+        self.assertEqual(season_days(date(2026, 8, 1)), 60)
+        self.assertEqual(season_days(date(2026, 9, 29)), 60)
+        self.assertEqual(season_days(date(2026, 8, 1), least=1), 1)
 
 
 if __name__ == "__main__":

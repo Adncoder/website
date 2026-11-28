@@ -160,8 +160,8 @@ redeploy.
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table. The checks on a typed-in sheet are `server/kshsaa/tournament-game.js` |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice, with physics as its own mode. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
-| `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
-| `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks and months, checking what an add-on sends, ranks and streaks, codes and their hashes |
+| `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board and the Season Belt, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
+| `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks, months, and seasons, checking what an add-on sends and which stored days it changes, ranks and streaks, the Season Belt, codes and their hashes |
 | `server/kshsaa/anki-addon/` | The Anki add-on, in Python: `stats.py` counts each day from Anki's review log, `client.py` sends the counts, `__init__.py` wires both into Anki. `test_stats.py` tests the counting and stays out of the download |
 | `server/kshsaa/zip.js` | Writes the zip the add-on downloads as (an `.ankiaddon` is a zip) |
 | `server/kshsaa/rebounds.js` | Which right answers came after every other team had missed, which celerity leaves out |
@@ -576,14 +576,16 @@ How a send goes (`client.py`):
 
 When no site takes them, `__init__.py` tries again after 2, 10, then 30
 minutes. While Anki stays open, it also checks every 30 minutes and sends only
-if the counts changed, which they do once a day as the 60-day window moves.
+if the counts changed.
 Sends run on a daemon thread, so Anki never waits for one when it closes. The
 add-on never syncs Anki itself: phone reviews count once the computer's Anki
 syncs, and the page tells players who leave Anki open to press Sync now and
 then.
 
 To release a change to the add-on:
-1. Bump `VERSION` in `client.py`, then merge and deploy.
+1. Bump `VERSION` in `client.py` and `ADDON_MOD` in `routes/kshsaa-anki.js`,
+   then merge and deploy. Deploy first: a site that refuses what the new
+   version sends answers 400, and the add-on stops at a 400.
 2. Download `/kshsaa-anki/addon` from the main site's address, so the main
    site is in its `servers` behind the always-awake one.
 3. Upload it to the AnkiWeb listing as a new version. That takes the AnkiWeb
@@ -601,14 +603,41 @@ gets one on the next restart, or through Tools > Add-ons > Check for Updates.
 
 The add-on counts each Anki day from the review log: a review is any
 answer, counted every time, which is what Anki shows as "studied N cards
-today", and rescheduling by hand is not one. It sends the last 60 days when
-Anki opens, after studying, after each sync, and on its half-hourly check, so
-a missed send fills itself in and phone reviews count once the computer's Anki
-syncs them. The server
-takes the days with reviews, deletes any other stored day in the window the
-add-on looked at (`from`), and ranks by reviews, ties sharing a rank. Weeks run
-Monday to Sunday and days are the player's own Anki days, labeled with the date
-they began.
+today", and rescheduling by hand is not one. It sends when Anki opens, after
+studying, after each sync, and on its half-hourly check, so a missed send fills
+itself in and phone reviews count once the computer's Anki syncs them. Since
+1.2 each send covers every day since the season began on August 1, and at least
+the last 60 (`season_days` in `stats.py`), so a player who installs in March
+still gets credit for October. Versions 1.0 and 1.1 send only the last 60 days.
+The server takes the days with reviews, deletes any other stored day in the
+window the add-on looked at (`from`), and ranks by reviews, ties sharing a
+rank. It writes only the days whose counts changed (`syncChanges`), since a
+send now holds up to a year of days, and it accepts days back `SYNC_DAYS_BACK`
+(400). Weeks run Monday to Sunday and days are the player's own Anki days,
+labeled with the date they began.
+
+**The Season Belt.** A season runs August 1 through May 31
+(`periodRange('season')`), and in June and July the board still shows the one
+that ended. Whoever has the most cards in the season holds the belt, and
+whoever holds it when May ends wins it.
+- **Worked out:** `seasonBelt` adds up each player's season a day at a time
+  from August 1, so it also knows since when the holder has had it and how
+  many days each player held it. Players tied for the most share it. A day
+  sent from a time zone ahead counts as today.
+- **Retroactive:** it is worked out from the stored days on every request,
+  never stored. A late install that brings in October, or phone reviews that
+  sync late, can change who held it and when.
+- **On the page:** a banner above every view shows the holder, since when,
+  and who is closest behind (to a signed-in player, how far behind they are).
+  The holder's name carries the belt in every table. The Season tab adds a
+  "Belt days" column, and ‹ shows past seasons and their winners.
+- **In the add-on:** since 1.2, its popup after a sync adds the season: "You
+  hold the Season Belt: N cards this season", or "Season: #3 of 9, 1,250
+  behind the belt".
+- **Older add-ons:** Manage shows each player's add-on version and flags any
+  older than the one this site hands out (`ADDON_VERSION`, read from
+  `client.py`). Until a player updates, their season holds only the 60 days
+  before their sends.
 
 Codes are 12 characters from an alphabet without 0, O, 1, or I, stored only as
 SHA-256 hashes: a lost code is replaced (the old one stops working, in the
