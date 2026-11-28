@@ -1,20 +1,22 @@
 // The Anki leaderboard (/kshsaa-anki): how many cards each player studies in
-// Anki, week by week, month by month, and over the season (August through
-// May), with whatever prizes the team puts up. Whoever has the most cards in
-// the season holds the Season Belt, and whoever holds it when May ends wins
-// it. Counts come from an Anki add-on (server/kshsaa/anki-addon/, downloaded
-// from /kshsaa-anki/addon) that sends each day's numbers with the player's
-// code; the numbers themselves are worked out in server/kshsaa/anki-board.js.
+// Anki, week by week, month by month, and over a season, with whatever prizes
+// the team puts up. The coach sets each season's dates; whoever in the race
+// has the most cards in the season holds the Season Belt, and whoever holds
+// it on the season's last day wins it. Counts come from an Anki add-on
+// (server/kshsaa/anki-addon/, downloaded from /kshsaa-anki/addon) that sends
+// each day's numbers with the player's code; the numbers themselves are
+// worked out in server/kshsaa/anki-board.js.
 //
 // A player signs in to the board with the same code their add-on uses, so
 // the board is not public; a stats or reader sign-in sees it too. The stats
-// password adds players, makes their codes, and sets the prizes. Codes are
-// stored only as hashes, so a lost code is replaced, never looked up.
+// password adds players, makes their codes, sets the prizes and the seasons,
+// and says who sits out the belt race. Codes are stored only as hashes, so a
+// lost code is replaced, never looked up.
 //
 // Collections: kshsaa_anki_players { name, nameKey, codeHash, createdAt,
-// lastSyncAt, anki, addon }, kshsaa_anki_days { _id: player id + '|' + day,
-// player, day, reviews, cards, newCards, seconds, updatedAt }, and
-// kshsaa_settings { _id: 'anki', prizes }.
+// lastSyncAt, anki, addon, sitsOut }, kshsaa_anki_days { _id: player id + '|'
+// + day, player, day, reviews, cards, newCards, seconds, updatedAt }, and
+// kshsaa_settings { _id: 'anki', prizes, seasons: [{ from, to }] }.
 
 import { Router } from 'express';
 import { readFileSync, readdirSync } from 'fs';
@@ -22,7 +24,8 @@ import { ObjectId } from 'mongodb';
 import { qbreader } from '../database/databases.js';
 import { requireAuth, roleOf } from './kshsaa-stats.js';
 import {
-  addDays, buildBoard, cleanSync, codeHash, newCode, normalizeCode, periodRange, seasonBelt, standingOf, syncChanges, syncServers, todayKey
+  addDays, buildBoard, cleanSync, codeHash, newCode, normalizeCode, periodRange, saveSeason, seasonAt, seasonBelt, standingOf, syncChanges,
+  syncServers, todayKey
 } from '../server/kshsaa/anki-board.js';
 import { KSHSAA_HEAD, kshsaaNav } from '../server/kshsaa/nav.js';
 import { zipFiles } from '../server/kshsaa/zip.js';
@@ -37,7 +40,7 @@ const ADDON_DIR = new URL('../server/kshsaa/anki-addon/', import.meta.url);
 // Anki compares this to decide whether a downloaded copy is newer
 const ADDON_MOD = 1795824000; // version 1.2
 // the add-on version this site hands out, from client.py; older ones send only
-// their last 60 days, so their season misses what came before
+// their last 60 days, so a season longer than that misses what came before
 const ADDON_VERSION = readFileSync(new URL('client.py', ADDON_DIR), 'utf8').match(/^VERSION = "(.+)"/m)?.[1] || null;
 // streaks look back at least this far, past the start of a season
 const STREAK_DAYS = 120;
@@ -105,17 +108,23 @@ async function loadFor (ranges, today) {
   return { list, stored };
 }
 
+/** The coach's seasons, oldest first. */
+async function seasonsSaved () {
+  return (await settings.findOne({ _id: 'anki' }))?.seasons || [];
+}
+
 /**
- * The belt as the page shows it: holders by name, who is closest behind, and
- * how far behind the viewer is.
+ * The belt as the page shows it: holders by name, who in the race is closest
+ * behind, and how far behind the viewer is.
  * @param {ReturnType<typeof seasonBelt>} belt
- * @param {{from: string, to: string, years: string}} season
- * @param {{_id: *, name: string}[]} list - every player
+ * @param {NonNullable<ReturnType<typeof seasonAt>>} season
+ * @param {{_id: *, name: string, sitsOut?: boolean}[]} list - every player
  * @param {?string} me - the signed-in player's id
- * @param {boolean} current - whether it is the season today is in
+ * @param {string} today
  */
-function beltView (belt, season, list, me, current) {
+function beltView (belt, season, list, me, today) {
   const nameOf = new Map(list.map(p => [String(p._id), p.name]));
+  const racing = new Set(list.filter(p => !p.sitsOut).map(p => String(p._id)));
   const holding = new Set(belt.holders);
   const holders = belt.holders.map(id => ({ name: nameOf.get(id), me: id === me })).sort((a, b) => a.name.localeCompare(b.name));
   const next = Object.entries(belt.totals)
@@ -125,13 +134,15 @@ function beltView (belt, season, list, me, current) {
     years: season.years,
     from: season.from,
     to: season.to,
+    upcoming: season.upcoming,
     over: belt.over,
-    current,
+    // once a season is over, when the next one starts, if it is set
+    nextFrom: belt.over && season.next && season.next.from > today ? season.next.from : null,
     holders,
     reviews: belt.reviews,
     since: holders.length === 1 ? belt.since[belt.holders[0]] : null,
     next: next ? { name: nameOf.get(next[0]), behind: belt.reviews - next[1] } : null,
-    you: me && holders.length && !holding.has(me) && nameOf.has(me) ? { behind: belt.reviews - (belt.totals[me] || 0) } : null
+    you: me && holders.length && !holding.has(me) && racing.has(me) ? { behind: belt.reviews - (belt.totals[me] || 0) } : null
   };
 }
 
@@ -167,18 +178,24 @@ router.post('/sync', async (req, res) => {
     }
     await players.updateOne({ _id: player._id }, { $set: { lastSyncAt: new Date(), anki: text(req.body?.anki, 20), addon: text(req.body?.addon, 20) } });
     const today = todayKey();
-    const [week, month, season] = ['week', 'month', 'season'].map(period => periodRange(period, 0, today));
-    const { list, stored: all } = await loadFor([week, month, season], today);
+    const season = seasonAt(await seasonsSaved(), 0, today);
+    const [week, month] = ['week', 'month'].map(period => periodRange(period, 0, today));
+    const { list, stored: all } = await loadFor([week, month, season].filter(Boolean), today);
     const standing = range => standingOf(buildBoard(list, all, range, today), id);
-    const belt = seasonBelt(list, all, season, today);
-    res.json({
-      ok: true,
-      name: player.name,
-      days: sent.days.length,
-      week: standing(week),
-      month: standing(month),
-      season: { ...standing(season), belt: belt.holders.includes(id), behind: belt.reviews - (belt.totals[id] || 0), over: belt.over }
-    });
+    let inSeason = null;
+    if (season) {
+      const belt = seasonBelt(list, all, season, today);
+      const out = Boolean(player.sitsOut);
+      inSeason = {
+        ...standing(season),
+        belt: belt.holders.includes(id),
+        behind: out ? null : belt.reviews - (belt.totals[id] || 0),
+        upcoming: season.upcoming,
+        over: belt.over,
+        out
+      };
+    }
+    res.json({ ok: true, name: player.name, days: sent.days.length, week: standing(week), month: standing(month), season: inSeason });
   } catch (e) {
     res.status(500).json({ error: String(e.message || e) });
   }
@@ -219,24 +236,30 @@ router.post('/signout', (req, res) => {
 router.get('/data', async (req, res) => {
   const viewer = await viewerOf(req);
   if (!viewer.player && !viewer.role) return res.status(401).json({ error: 'not signed in' });
-  const period = ['month', 'season'].includes(req.query.period) ? req.query.period : 'week';
-  const back = Math.min(period === 'season' ? 10 : 52, Math.max(0, parseInt(req.query.back, 10) || 0));
+  const asked = ['month', 'season'].includes(req.query.period) ? req.query.period : 'week';
+  const back = Math.min(52, Math.max(0, parseInt(req.query.back, 10) || 0));
   const today = todayKey();
-  const range = periodRange(period, back, today);
-  // the belt of the season on screen, or of this season beside a week or month
-  const season = period === 'season' ? range : periodRange('season', 0, today);
-  const [{ list, stored }, saved] = await Promise.all([loadFor([range, season], today), settings.findOne({ _id: 'anki' })]);
+  const saved = await settings.findOne({ _id: 'anki' });
+  // the season on screen, or the current one beside a week or a month
+  const season = seasonAt(saved?.seasons, asked === 'season' ? back : 0, today);
+  const period = asked === 'season' && !season ? 'week' : asked;
+  const range = period === 'season' ? season : periodRange(period, back, today);
+  const { list, stored } = await loadFor([range, season].filter(Boolean), today);
   const rows = buildBoard(list, stored, range, today);
-  const belt = seasonBelt(list, stored, season, today);
+  const belt = season && seasonBelt(list, stored, season, today);
+  const sitting = new Set(list.filter(p => p.sitsOut).map(p => String(p._id)));
   const me = viewer.player ? String(viewer.player._id) : null;
   res.set('Cache-Control', 'no-store');
   res.json({
     period,
     back,
-    ...range,
+    from: range.from,
+    to: range.to,
+    label: range.label,
+    earlier: period === 'season' ? season.earlier : back < 52,
     prizes: saved?.prizes || '',
     viewer: { name: viewer.player?.name || null, manage: viewer.role === 'stats' },
-    belt: beltView(belt, season, list, me, period !== 'season' || back === 0),
+    belt: season ? beltView(belt, season, list, me, today) : null,
     players: rows.map(r => ({
       name: r.name,
       rank: r.rank,
@@ -247,8 +270,9 @@ router.get('/data', async (req, res) => {
       best: r.best,
       streak: r.streak,
       lastSyncAt: r.lastSyncAt,
-      belt: belt.holders.includes(r.id),
+      belt: Boolean(belt && belt.holders.includes(r.id)),
       beltDays: period === 'season' ? belt.held[r.id] || 0 : undefined,
+      sitsOut: period === 'season' ? sitting.has(r.id) : undefined,
       me: r.id === me
     }))
   });
@@ -264,9 +288,17 @@ router.get('/players', requireAuth, async (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({
     players: list.sort((a, b) => a.name.localeCompare(b.name)).map(p => ({
-      id: String(p._id), name: p.name, createdAt: p.createdAt, lastSyncAt: p.lastSyncAt || null, anki: p.anki || null, addon: p.addon || null
+      id: String(p._id),
+      name: p.name,
+      createdAt: p.createdAt,
+      lastSyncAt: p.lastSyncAt || null,
+      anki: p.anki || null,
+      addon: p.addon || null,
+      sitsOut: Boolean(p.sitsOut)
     })),
     addon: ADDON_VERSION,
+    seasons: [...await seasonsSaved()].sort((a, b) => a.from.localeCompare(b.from)),
+    today: todayKey(),
     roster: names.map(r => r.name).sort()
   });
 });
@@ -300,10 +332,39 @@ router.post('/players/:id/delete', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// who is in the belt race: a player who sits out stays on every board
+router.post('/players/:id/race', requireAuth, async (req, res) => {
+  if (typeof req.body?.racing !== 'boolean') return res.status(400).json({ error: 'racing has to be true or false' });
+  const filter = byId(req.params.id);
+  const player = filter && await players.findOne(filter);
+  if (!player) return res.status(404).json({ error: 'no such player' });
+  await players.updateOne(filter, { $set: { sitsOut: !req.body.racing } });
+  res.json({ ok: true, name: player.name, sitsOut: !req.body.racing });
+});
+
 router.post('/prizes', requireAuth, async (req, res) => {
   const prizes = String(req.body?.prizes ?? '').trim().slice(0, 1000);
   await settings.updateOne({ _id: 'anki' }, { $set: { prizes, updatedAt: new Date() } }, { upsert: true });
   res.json({ ok: true, prizes });
+});
+
+// the latest season's dates, or the next season's once the latest has ended
+router.post('/season', requireAuth, async (req, res) => {
+  let seasons;
+  try {
+    seasons = saveSeason(await seasonsSaved(), req.body?.from, req.body?.to, todayKey());
+  } catch (e) {
+    return res.status(400).json({ error: String(e.message || e) });
+  }
+  await settings.updateOne({ _id: 'anki' }, { $set: { seasons, updatedAt: new Date() } }, { upsert: true });
+  res.json({ ok: true, seasons });
+});
+
+// takes off the latest season, for dates saved by mistake; the cards stay
+router.post('/season/remove', requireAuth, async (req, res) => {
+  const seasons = [...await seasonsSaved()].sort((a, b) => a.from.localeCompare(b.from)).slice(0, -1);
+  await settings.updateOne({ _id: 'anki' }, { $set: { seasons, updatedAt: new Date() } }, { upsert: true });
+  res.json({ ok: true, seasons });
 });
 
 // ---------- the page ----------
@@ -364,7 +425,7 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
     <div id="prizes" class="prizes" hidden></div>
     <div class="panel">
       <div class="periodbar">
-        <div class="btn-group" role="group" aria-label="Period">
+        <div class="btn-group" role="group" aria-label="Period" id="periodGroup">
           <button type="button" class="btn btn-outline-primary btn-sm" data-period="week">Week</button>
           <button type="button" class="btn btn-outline-primary btn-sm" data-period="month">Month</button>
           <button type="button" class="btn btn-outline-primary btn-sm" data-period="season">Season</button>
@@ -375,7 +436,7 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
         <span class="ms-auto muted" id="viewerNote"></span>
       </div>
       <div class="table-wrap"><table class="board" id="board"></table></div>
-      <p class="muted mt-3 mb-0">Days run from Anki's daily rollover (4 AM unless changed), and a season from August 1 through May 31. Streak counts days in a row with at least one card, through today or yesterday. A count updates when that player's Anki next sends; cards studied on a phone arrive once their computer's Anki syncs.</p>
+      <p class="muted mt-3 mb-0">Days run from Anki's daily rollover (4 AM unless changed). Streak counts days in a row with at least one card, through today or yesterday. A count updates when that player's Anki next sends; cards studied on a phone arrive once their computer's Anki syncs.</p>
     </div>
   </div>
 
@@ -386,7 +447,7 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
       <li>When Anki asks, paste the code your captain gave you. To change it later: Tools &rarr; Scholars Bowl leaderboard &rarr; Enter my code.
         <b>Study on more than one computer? Use the same code on each.</b> That menu shows the code a computer already has, so you can copy it from there.</li>
       <li>That's it. Your counts go out when Anki opens, when you finish studying, after you sync, and every half hour while Anki stays open. Studying on a phone counts once the computer's Anki syncs, so if you leave Anki open, press Sync now and then.
-        With add-on 1.2 or newer, each send covers every day since the season began on August 1, so cards you studied before installing count toward the season too.</li>
+        With add-on 1.2 or newer, each send covers every day since August 1, so cards you studied before installing still count.</li>
     </ol>
     <p class="muted mb-2">Anki can't reach AnkiWeb? <a href="/kshsaa-anki/addon" download>Download the add-on file</a> and use Tools &rarr; Add-ons &rarr; Install from file&hellip; instead.</p>
     <p class="muted mb-0">Only numbers leave Anki: cards answered, new cards, and minutes for each day. No card text, no deck names. It needs a recent Anki (2.1.50 or newer).</p>
@@ -407,8 +468,22 @@ ${kshsaaNav('/kshsaa-anki', 1000)}
       <p id="addonNote" class="muted mt-2 mb-0" hidden></p>
     </div>
     <div class="panel">
+      <div class="fw-semibold mb-1">Season Belt</div>
+      <p class="muted mb-2">Of the players in the race, whoever has the most cards between these dates holds the belt, and whoever holds it on the last day wins it. Untick &ldquo;In the race&rdquo; above for anyone who sits it out; they stay on every board.</p>
+      <form id="seasonForm" class="d-flex flex-wrap gap-2 align-items-center">
+        <label for="seasonFrom">From</label>
+        <input id="seasonFrom" type="date" class="form-control" style="width:auto">
+        <label for="seasonTo">through</label>
+        <input id="seasonTo" type="date" class="form-control" style="width:auto">
+        <button class="btn btn-outline-primary btn-sm" type="submit">Save season</button>
+        <button class="btn btn-outline-danger btn-sm" type="button" id="removeSeason" hidden>Remove this season</button>
+      </form>
+      <p id="seasonNote" class="muted mt-2 mb-0"></p>
+      <p id="seasonMsg" class="text-danger small mt-1 mb-0"></p>
+    </div>
+    <div class="panel">
       <label for="prizesText" class="fw-semibold mb-1">Prizes</label>
-      <p class="muted mb-2">Shown above the board. Say what the top spots win and when, for example &ldquo;Most cards in December: two hours of calculus tutoring from Andrew,&rdquo; or what the Season Belt winner gets in May.</p>
+      <p class="muted mb-2">Shown above the board. Say what the top spots win and when, for example &ldquo;Most cards in December: two hours of calculus tutoring from Andrew,&rdquo; or what the Season Belt winner gets.</p>
       <textarea id="prizesText" class="form-control" rows="3" maxlength="1000"></textarea>
       <button id="savePrizes" class="btn btn-outline-primary btn-sm mt-2" type="button">Save prizes</button>
       <span id="prizesMsg" class="muted ms-2"></span>
@@ -421,7 +496,9 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const fmt = n => Number(n || 0).toLocaleString('en-US');
 const dayLabel = key => new Date(key + 'T00:00:00Z').toLocaleString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+const longDay = key => new Date(key + 'T00:00:00Z').toLocaleString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' });
 const STATE = { period: 'week', back: 0, manage: false };
+const seasonButton = document.querySelector('[data-period="season"]');
 // the Season Belt: a strap with a gold plate in the middle and one each side
 const BELT = '<svg class="belt-icon" viewBox="0 0 64 28" aria-hidden="true">' +
   '<rect x="1" y="8" width="62" height="12" rx="4" fill="#2b2f38"/>' +
@@ -450,34 +527,46 @@ function ago (iso) {
   return Math.round(hours / 24) + ' days ago';
 }
 
-// The Season Belt above the board: who holds it, since when, and who is
-// closest behind; once the season is over, who won it.
+// The Season Belt above the board: when the race starts, then who holds it,
+// since when, and who is closest behind; once it is over, who won it. Hidden
+// until the coach sets a season.
 function drawBelt (b) {
+  $('belt').hidden = !b;
+  if (!b) return;
   const names = b.holders.map(h => '<b>' + esc(h.name) + '</b>' + (h.me ? ' (you)' : ''));
   const who = names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names[0];
   const shared = names.length > 1 ? ' share it with ' + fmt(b.reviews) + ' cards each.' : '';
+  const wins = 'Whoever holds it on ' + longDay(b.to) + ' wins it.';
   let line;
   let sub = '';
-  if (!names.length) {
-    line = b.over ? 'Nobody studied that season.' : 'Nobody holds it yet. The first cards of the season take it.';
+  if (b.upcoming) {
+    line = 'The race starts ' + longDay(b.from) + '.';
+    sub = 'Whoever has the most cards from ' + longDay(b.from) + ' through ' + longDay(b.to) + ' wins the belt.';
+  } else if (!names.length) {
+    line = b.over ? 'Nobody in the race studied that season.' : 'Nobody holds it yet. The first cards of the season take it.';
+    if (!b.over) sub = wins;
   } else if (b.over) {
     line = who + (shared || ' won it with ' + fmt(b.reviews) + ' cards.');
   } else {
     line = who + (shared || ' holds it with ' + fmt(b.reviews) + ' cards' + (b.since ? ', since ' + dayLabel(b.since) : '') + '.');
     if (b.you) sub = 'You are ' + fmt(b.you.behind) + ' behind. ';
     else if (b.next) sub = esc(b.next.name) + ' is ' + fmt(b.next.behind) + ' behind' + (b.holders.some(h => h.me) ? ' you' : '') + '. ';
+    sub += wins;
   }
-  if (!b.over) sub += 'Whoever holds it when May ends wins it.';
-  else if (b.current) sub = 'A new season starts August 1.';
+  if (b.over && b.nextFrom) sub = 'The next season starts ' + longDay(b.nextFrom) + '.';
   $('belt').innerHTML = BELT + '<div><div class="kicker">Anki Season Belt &middot; ' + esc(b.years) + '</div>' +
     '<div class="holder">' + line + '</div>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
-  $('belt').hidden = false;
 }
 
 function drawBoard (d) {
   const season = d.period === 'season';
+  STATE.period = d.period;
   $('periodLabel').textContent = d.label + (d.back || season ? '' : (d.period === 'week' ? ' (this week)' : ' (this month)'));
   $('later').disabled = d.back === 0;
+  $('earlier').disabled = !d.earlier;
+  // the Season tab only once the coach has set a season
+  if (d.belt) $('periodGroup').append(seasonButton);
+  else seasonButton.remove();
   document.querySelectorAll('[data-period]').forEach(b => b.classList.toggle('active', b.dataset.period === d.period));
   drawBelt(d.belt);
   $('prizes').hidden = !d.prizes;
@@ -487,7 +576,7 @@ function drawBoard (d) {
     $('board').innerHTML = '<tbody><tr><td class="muted">Nobody is on the leaderboard yet.' + (d.viewer.manage ? ' Add players below.' : '') + '</td></tr></tbody>';
     return;
   }
-  const beltTitle = d.belt.over ? 'Won the ' + d.belt.years + ' Season Belt' : 'Holds the Season Belt';
+  const beltTitle = d.belt && d.belt.over ? 'Won the ' + d.belt.years + ' Season Belt' : 'Holds the Season Belt';
   const head = '<thead><tr><th>#</th><th>Player</th><th class="num">Cards</th><th class="num">Minutes</th><th class="num hide-sm">Days</th>' +
     '<th class="num hide-sm">New</th><th class="num hide-sm">Best day</th>' + (season ? '<th class="num hide-sm">Belt days</th>' : '') +
     '<th class="num">Streak</th><th class="num hide-sm">Updated</th></tr></thead>';
@@ -495,13 +584,14 @@ function drawBoard (d) {
     '<td>' + (p.rank ? '<span class="rank r' + p.rank + '">' + p.rank + '</span>' : '') + '</td>' +
     '<td>' + esc(p.name) +
     (p.belt ? ' <span title="' + esc(beltTitle) + '">' + BELT + '<span class="visually-hidden"> (' + esc(beltTitle) + ')</span></span>' : '') +
-    (p.me ? ' <span class="muted">(you)</span>' : '') + '</td>' +
+    (p.me ? ' <span class="muted">(you)</span>' : '') +
+    (p.sitsOut ? ' <span class="muted">(sits out)</span>' : '') + '</td>' +
     '<td class="num cards">' + fmt(p.reviews) + '</td>' +
     '<td class="num">' + fmt(p.minutes) + '</td>' +
     '<td class="num hide-sm">' + p.days + '</td>' +
     '<td class="num hide-sm">' + fmt(p.newCards) + '</td>' +
     '<td class="num hide-sm">' + fmt(p.best) + '</td>' +
-    (season ? '<td class="num hide-sm">' + (p.beltDays || '') + '</td>' : '') +
+    (season ? '<td class="num hide-sm">' + (p.sitsOut ? '' : p.beltDays || '') + '</td>' : '') +
     '<td class="num">' + (p.streak ? p.streak + ' d' : '') + '</td>' +
     '<td class="num hide-sm muted">' + ago(p.lastSyncAt) + '</td></tr>').join('');
   $('board').innerHTML = head + '<tbody>' + rows + '</tbody>';
@@ -542,6 +632,21 @@ function showCode (name, code) {
   });
 }
 
+// The Season Belt panel: the latest season's dates while it lasts; once it
+// has ended, empty boxes for the next one.
+function drawSeasonForm (seasons, today) {
+  const latest = seasons[seasons.length - 1];
+  const open = Boolean(latest && latest.to >= today);
+  $('seasonFrom').value = open ? latest.from : '';
+  $('seasonTo').value = open ? latest.to : '';
+  $('removeSeason').hidden = !open;
+  $('seasonNote').textContent = !latest
+    ? 'No season yet. The Season tab and the belt show up once one is saved.'
+    : open
+      ? (latest.from > today ? 'Starts ' : 'Running since ') + longDay(latest.from) + '. Changing the dates changes this season.'
+      : 'The last season ended ' + longDay(latest.to) + '. Dates saved here start the next one, and the last one stays on the Season tab.';
+}
+
 async function loadPlayers () {
   try {
     const d = await api('/kshsaa-anki/players');
@@ -553,10 +658,13 @@ async function loadPlayers () {
       ? behind.map(p => p.name).join(', ') + (behind.length > 1 ? ' have' : ' has') + ' an older add-on, which sends only the last 60 days, so the season misses what they studied before that. ' +
         'In Anki: Tools → Add-ons → Check for Updates, then restart Anki.'
       : '';
+    drawSeasonForm(d.seasons, d.today);
     if (!d.players.length) { $('playerTable').innerHTML = ''; return; }
-    $('playerTable').innerHTML = '<thead><tr><th>Player</th><th>Last sent</th><th class="hide-sm">Anki</th><th class="hide-sm">Add-on</th><th></th></tr></thead><tbody>' +
+    $('playerTable').innerHTML = '<thead><tr><th>Player</th><th>Last sent</th><th class="hide-sm">Anki</th><th class="hide-sm">Add-on</th><th>In the race</th><th></th></tr></thead><tbody>' +
       d.players.map(p => '<tr><td>' + esc(p.name) + '</td><td class="muted">' + ago(p.lastSyncAt) + '</td><td class="muted hide-sm">' + esc(p.anki || '') + '</td>' +
         '<td class="muted hide-sm">' + esc(p.addon || '') + (older(p) ? ' <span class="badge text-bg-warning">update</span>' : '') + '</td>' +
+        '<td><input type="checkbox" class="form-check-input" data-race="' + p.id + '"' + (p.sitsOut ? '' : ' checked') +
+        ' aria-label="' + esc(p.name) + ' is in the belt race"></td>' +
         '<td class="text-end text-nowrap"><button type="button" class="btn btn-outline-secondary btn-sm" data-code="' + p.id + '" data-name="' + esc(p.name) + '">New code</button> ' +
         '<button type="button" class="btn btn-outline-danger btn-sm" data-remove="' + p.id + '" data-name="' + esc(p.name) + '">Remove</button></td></tr>').join('') + '</tbody>';
   } catch (e) {
@@ -602,6 +710,44 @@ $('playerTable').addEventListener('click', async e => {
     load();
   } catch (err) {
     $('manageMsg').textContent = err.message;
+  }
+});
+
+// ticking "In the race" saves at once
+$('playerTable').addEventListener('change', async e => {
+  const box = e.target.closest('[data-race]');
+  if (!box) return;
+  $('manageMsg').textContent = '';
+  try {
+    await api('/kshsaa-anki/players/' + box.dataset.race + '/race', { racing: box.checked });
+    load();
+  } catch (err) {
+    box.checked = !box.checked;
+    $('manageMsg').textContent = err.message;
+  }
+});
+
+$('seasonForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('seasonMsg').textContent = '';
+  try {
+    await api('/kshsaa-anki/season', { from: $('seasonFrom').value, to: $('seasonTo').value });
+    loadPlayers();
+    load();
+  } catch (err) {
+    $('seasonMsg').textContent = err.message;
+  }
+});
+
+$('removeSeason').addEventListener('click', async () => {
+  if (!confirm('Remove this season? Its belt goes with it. The cards stay on the boards.')) return;
+  $('seasonMsg').textContent = '';
+  try {
+    await api('/kshsaa-anki/season/remove', {});
+    loadPlayers();
+    load();
+  } catch (err) {
+    $('seasonMsg').textContent = err.message;
   }
 });
 

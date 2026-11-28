@@ -160,8 +160,8 @@ redeploy.
 | `routes/kshsaa-tournaments.js` | Tournaments: printable scoresheet, entry grid for typing a sheet in afterwards, season table. The checks on a typed-in sheet are `server/kshsaa/tournament-game.js` |
 | `routes/kshsaa-spanish.js` | Spanish practice |
 | `routes/kshsaa-math.js`, `client/kshsaa-math/` | Math practice (`/kshsaa-math/`): a static page like Spanish practice, with physics as its own mode. `skills.js` lists every drill (one file per topic in `drills/`), `exact.js` reads and marks typed answers, `formulas.js` is the formula sheet and its flashcards, `anzan.js` makes flash anzan runs, `progress.js` keeps progress in the browser |
-| `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board and the Season Belt, player codes and prizes for the stats password, the add-on's `/sync`, and the add-on download (`/kshsaa-anki/addon`) |
-| `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks, months, and seasons, checking what an add-on sends and which stored days it changes, ranks and streaks, the Season Belt, codes and their hashes |
+| `routes/kshsaa-anki.js` | The Anki leaderboard (`/kshsaa-anki`): the board and the Season Belt; player codes, prizes, season dates, and who sits out the race for the stats password; the add-on's `/sync`; and the add-on download (`/kshsaa-anki/addon`) |
+| `server/kshsaa/anki-board.js` | The leaderboard's numbers: weeks and months, the coach's seasons, checking what an add-on sends and which stored days it changes, ranks and streaks, the Season Belt, codes and their hashes |
 | `server/kshsaa/anki-addon/` | The Anki add-on, in Python: `stats.py` counts each day from Anki's review log, `client.py` sends the counts, `__init__.py` wires both into Anki. `test_stats.py` tests the counting and stays out of the download |
 | `server/kshsaa/zip.js` | Writes the zip the add-on downloads as (an `.ankiaddon` is a zip) |
 | `server/kshsaa/rebounds.js` | Which right answers came after every other team had missed, which celerity leaves out |
@@ -606,9 +606,10 @@ answer, counted every time, which is what Anki shows as "studied N cards
 today", and rescheduling by hand is not one. It sends when Anki opens, after
 studying, after each sync, and on its half-hourly check, so a missed send fills
 itself in and phone reviews count once the computer's Anki syncs them. Since
-1.2 each send covers every day since the season began on August 1, and at least
-the last 60 (`season_days` in `stats.py`), so a player who installs in March
-still gets credit for October. Versions 1.0 and 1.1 send only the last 60 days.
+1.2 each send covers every day since the school year began on August 1, and at
+least the last 60 (`season_days` in `stats.py`), so a player who installs in
+March still gets credit for December. Versions 1.0 and 1.1 send only the last
+60 days.
 The server takes the days with reviews, deletes any other stored day in the
 window the add-on looked at (`from`), and ranks by reviews, ties sharing a
 rank. It writes only the days whose counts changed (`syncChanges`), since a
@@ -616,28 +617,41 @@ send now holds up to a year of days, and it accepts days back `SYNC_DAYS_BACK`
 (400). Weeks run Monday to Sunday and days are the player's own Anki days,
 labeled with the date they began.
 
-**The Season Belt.** A season runs August 1 through May 31
-(`periodRange('season')`), and in June and July the board still shows the one
-that ended. Whoever has the most cards in the season holds the belt, and
-whoever holds it when May ends wins it.
-- **Worked out:** `seasonBelt` adds up each player's season a day at a time
-  from August 1, so it also knows since when the holder has had it and how
-  many days each player held it. Players tied for the most share it. A day
-  sent from a time zone ahead counts as today.
+**The Season Belt.** The coach sets each season's dates under Manage
+(`seasons` in `kshsaa_settings` `anki`). Of the players in the race, whoever
+has the most cards in the season holds the belt, and whoever holds it on the
+season's last day wins it. The first season, 2026-27, runs from December 1 to
+about May 10, before the seniors graduate May 11. It starts in December so the
+cards three seniors had studied since August don't count.
+- **Seasons:** `seasonAt` shows the latest season that has started, or the
+  first one if none has. A season that ended stays up, with its winner, until
+  the next one starts, and ‹ steps back through earlier ones.
+- **Saving dates:** `saveSeason` changes the latest season until it has
+  ended. After that, saved dates start the next season, and seasons never
+  overlap. With no season set, the page has no Season tab and no banner.
+- **Sitting out:** a player whose "In the race" box is unticked (`sitsOut`)
+  stays on every board but never holds the belt. The Season tab marks them
+  "(sits out)". It exists because the seniors studied several times what the
+  others did (about 170 cards a day against 25 in November 2026).
+- **Worked out:** `seasonBelt` adds up each racing player's season a day at
+  a time from its first day. That way it also knows since when the holder has
+  had it and how many days each player held it. Players tied for the most
+  share it. A day sent from a time zone ahead counts as today.
 - **Retroactive:** it is worked out from the stored days on every request,
-  never stored. A late install that brings in October, or phone reviews that
-  sync late, can change who held it and when.
-- **On the page:** a banner above every view shows the holder, since when,
-  and who is closest behind (to a signed-in player, how far behind they are).
-  The holder's name carries the belt in every table. The Season tab adds a
-  "Belt days" column, and ‹ shows past seasons and their winners.
+  never stored. A late install that brings in December, phone reviews that
+  sync late, or a change to who sits out can change who held it and when.
+- **On the page:** a banner above every view says when the race starts, then
+  shows the holder, since when, and who is closest behind (to a signed-in
+  racer, how far behind they are). The holder's name carries the belt in every
+  table, and the Season tab adds a "Belt days" column.
 - **In the add-on:** since 1.2, its popup after a sync adds the season: "You
   hold the Season Belt: N cards this season", or "Season: #3 of 9, 1,250
-  behind the belt".
+  behind the belt". It says nothing before the race starts or to a player who
+  sits out.
 - **Older add-ons:** Manage shows each player's add-on version and flags any
   older than the one this site hands out (`ADDON_VERSION`, read from
-  `client.py`). Until a player updates, their season holds only the 60 days
-  before their sends.
+  `client.py`). An older add-on sends only the last 60 days, so its player's
+  season misses anything older than that.
 
 Codes are 12 characters from an alphabet without 0, O, 1, or I, stored only as
 SHA-256 hashes: a lost code is replaced (the old one stops working, in the

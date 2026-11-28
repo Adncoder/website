@@ -1,7 +1,7 @@
-// The Anki leaderboard's numbers: which days a week, a month, or a season
-// covers, the days an add-on sends checked, players' codes, the board itself,
-// and the Season Belt. Nothing here touches the database, so npm test runs it
-// as is; routes/kshsaa-anki.js does the storing.
+// The Anki leaderboard's numbers: which days a week or a month covers, the
+// seasons the coach sets, the days an add-on sends checked, players' codes,
+// the board itself, and the Season Belt. Nothing here touches the database,
+// so npm test runs it as is; routes/kshsaa-anki.js does the storing.
 //
 // A "review" is one answer to one card, Again through Easy, counted every
 // time: the number Anki shows as "Studied N cards today". It is what the
@@ -15,7 +15,7 @@ const DAY_MS = 86400000;
 const DAY_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' });
 
 /**
- * How far back an add-on may send days: a whole season and then some, since
+ * How far back an add-on may send days: a school year and then some, since
  * add-on 1.2 sends every day since August 1 (in July, nearly a year).
  */
 export const SYNC_DAYS_BACK = 400;
@@ -39,23 +39,15 @@ export function isDayKey (key) {
 }
 
 /**
- * The days a board covers: a week from Monday through Sunday, a calendar
- * month, or a season from August 1 through May 31. In June and July the
- * season is still the one that just ended, so its belt stays up until the
- * next one starts.
- * @param {'week'|'month'|'season'} period
+ * The days a board covers: a week from Monday through Sunday, or a calendar
+ * month. Seasons are the dates the coach sets (seasonAt).
+ * @param {'week'|'month'} period
  * @param {number} back - 0 for the one today is in, 1 for the one before
  * @param {string} today - YYYY-MM-DD
- * @returns {{from: string, to: string, label: string, years?: string}} -
- *   a season also has its years, as 2026–27
+ * @returns {{from: string, to: string, label: string}}
  */
 export function periodRange (period, back, today) {
   const t = toDate(today);
-  if (period === 'season') {
-    const year = t.getUTCFullYear() - (t.getUTCMonth() < 7 ? 1 : 0) - back;
-    const years = year + '–' + String(year + 1).slice(2);
-    return { from: year + '-08-01', to: (year + 1) + '-05-31', label: years + ' season', years };
-  }
   if (period === 'month') {
     const first = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - back, 1));
     const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0));
@@ -67,6 +59,56 @@ export function periodRange (period, back, today) {
     to: addDays(monday, 6),
     label: 'Week of ' + toDate(monday).toLocaleString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' })
   };
+}
+
+/** The school year a day falls in, as 2026–27; it starts in August. */
+export function schoolYears (key) {
+  const t = toDate(key);
+  const year = t.getUTCFullYear() - (t.getUTCMonth() < 7 ? 1 : 0);
+  return year + '–' + String(year + 1).slice(2);
+}
+
+/**
+ * The season a board shows, from the coach's list: the latest one that has
+ * started (running, or over and showing who won it), or the first one if none
+ * has started yet; back steps to earlier ones.
+ * @param {{from: string, to: string}[]} seasons
+ * @param {number} back - 0 for the current one
+ * @param {string} today
+ * @returns {?{from: string, to: string, label: string, years: string, earlier: boolean,
+ *   upcoming: boolean, over: boolean, next: ?{from: string, to: string}}} - null when there is no season;
+ *   next is the season after it
+ */
+export function seasonAt (seasons, back, today) {
+  if (!seasons?.length) return null;
+  const list = [...seasons].sort((a, b) => a.from.localeCompare(b.from));
+  let at = 0;
+  list.forEach((s, i) => { if (s.from <= today) at = i; });
+  at = Math.max(0, at - back);
+  const { from, to } = list[at];
+  const years = schoolYears(from);
+  return { from, to, label: years + ' season', years, earlier: at > 0, upcoming: today < from, over: today > to, next: list[at + 1] || null };
+}
+
+/**
+ * The seasons after the coach saves dates. Until the latest season has ended,
+ * new dates change it; after that they start the next one, and the one that
+ * ended stays as it was. Throws with a message for the coach.
+ * @param {{from: string, to: string}[]} seasons
+ * @param {*} from
+ * @param {*} to
+ * @param {string} today
+ * @returns {{from: string, to: string}[]}
+ */
+export function saveSeason (seasons, from, to, today) {
+  if (!isDayKey(from) || !isDayKey(to)) throw new Error('pick both dates');
+  if (to < from) throw new Error('the season has to end on or after the day it starts');
+  if (to > addDays(from, 366)) throw new Error('a season can run a year at most');
+  const list = [...(seasons || [])].sort((a, b) => a.from.localeCompare(b.from));
+  if (list.length && list[list.length - 1].to >= today) list.pop();
+  const before = list[list.length - 1];
+  if (before && from <= before.to) throw new Error('it has to start after the last season ended on ' + before.to);
+  return [...list, { from, to }];
 }
 
 /**
@@ -177,25 +219,27 @@ export function standingOf (board, id) {
 }
 
 /**
- * The Season Belt. Whoever has studied the most cards since the season began
- * holds it, and whoever holds it when the season ends on May 31 wins it. It
- * is worked out a day at a time from the season's first day, so it also says
- * since when each holder has had it and how many days each player held it.
- * Players tied for the most share it, and nobody holds it before the
- * season's first card. A day sent from a time zone ahead counts as today.
- * @param {{_id: *}[]} players - a removed player's leftover days are skipped
+ * The Season Belt. Of the players in the race, whoever has studied the most
+ * cards since the season began holds it, and whoever holds it on the season's
+ * last day wins it. It is worked out a day at a time from the season's first
+ * day, so it also says since when each holder has had it and how many days
+ * each player held it. Players tied for the most share it, and nobody holds it
+ * before the season's first card. A day sent from a time zone ahead counts as
+ * today.
+ * @param {{_id: *, sitsOut?: boolean}[]} players - a player who sits out stays on the boards
+ *   but is not in the race; a removed player's leftover days are skipped
  * @param {{player: string, day: string, reviews: number}[]} days - stored days, the season's at least
- * @param {{from: string, to: string}} season - from periodRange('season', ...)
+ * @param {{from: string, to: string}} season - from seasonAt
  * @param {string} today
  * @returns {{over: boolean, holders: string[], reviews: number, since: Object<string, string>,
  *   held: Object<string, number>, totals: Object<string, number>}} - holders are player ids, reviews
  *   their season total; since is when each holder's current hold began, held the days each player
- *   has held it, totals each player's cards for the season so far
+ *   has held it, totals the season so far of each player in the race
  */
 export function seasonBelt (players, days, season, today) {
   const over = today > season.to;
   const last = over ? season.to : today;
-  const ids = new Set(players.map(p => String(p._id)));
+  const ids = new Set(players.filter(p => !p.sitsOut).map(p => String(p._id)));
   const added = new Map();
   for (const d of days) {
     const id = String(d.player);

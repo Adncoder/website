@@ -277,6 +277,8 @@ class Addon(unittest.TestCase):
             (dict(chaser, reviews=0, rank=None, over=False), ""),
             (dict(holder, over=True), " You won the Season Belt!"),
             (dict(chaser, over=True), ""),
+            (dict(chaser, reviews=0, rank=None, over=False, upcoming=True), ""),
+            (dict(chaser, over=False, out=True, behind=None), ""),
         ]:
             fake.answer = {"ok": True, "week": week, "season": season}
             addon.send(manual=True)

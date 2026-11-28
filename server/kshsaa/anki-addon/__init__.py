@@ -6,9 +6,9 @@ Anki and of this add-on, and nothing else (no card text, no deck names). It
 sends when Anki opens, when you finish studying, after every sync, and every
 half hour while Anki stays open (only when something changed), so cards
 studied on a phone count once this computer's Anki syncs them. Each send
-covers every day since the season began on August 1 (and at least the last
-60), so a missed one fills itself in and cards studied before installing
-count toward the season.
+covers every day since August 1 (and at least the last 60), so a missed one
+fills itself in and cards studied before installing still count toward a
+season on the board.
 
 The counts go to the first site in config.json's "servers" that takes them.
 When none does, the add-on tries again a few minutes later on its own.
@@ -30,7 +30,8 @@ from aqt.utils import getText, openLink, showInfo, tooltip
 from .client import VERSION, SyncError, send_counts
 from .stats import DAY, daily_counts, season_days
 
-# the fewest days a send covers; it covers the whole season once that is longer
+# the fewest days a send covers; it covers everything since August 1 once
+# that is longer
 DAYS = 60
 # how often an open Anki checks for new counts to send, in minutes
 EVERY = 30
@@ -76,8 +77,11 @@ def _summary(answer):
     if week.get("rank"):
         text += ", #{} of {}".format(week["rank"], week["of"])
     text += "."
-    # the Season Belt, from a site new enough to send it
+    # the Season Belt, from a site new enough to send it, once its race has
+    # started, for a player in the race
     season = answer.get("season") or {}
+    if season.get("upcoming") or season.get("out"):
+        return text
     if season.get("belt"):
         if season.get("over"):
             text += " You won the Season Belt!"
