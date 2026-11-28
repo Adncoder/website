@@ -9,6 +9,17 @@ from datetime import date
 DAY = 86400
 
 
+def season_days(today, least=60):
+    """How many Anki days a send covers: every day since the school year
+    began on the most recent August 1, today included, and never fewer than
+    `least`, so the first sends of a school year still fill in the weeks
+    before it. The leaderboard's seasons fall inside a school year, so this
+    covers any of them. `today` is the date the current Anki day began on; in
+    June and July it still reaches back to the August before."""
+    start = date(today.year if today.month >= 8 else today.year - 1, 8, 1)
+    return max(least, (today - start).days + 1)
+
+
 def daily_counts(db, day_cutoff, days):
     """Cards studied on each of the last `days` Anki days.
 

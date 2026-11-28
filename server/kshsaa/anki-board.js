@@ -1,7 +1,7 @@
 // The Anki leaderboard's numbers: which days a week or a month covers, the
-// days an add-on sends checked, players' codes, and the board itself. Nothing
-// here touches the database, so npm test runs it as is;
-// routes/kshsaa-anki.js does the storing.
+// seasons the coach sets, the days an add-on sends checked, players' codes,
+// the board itself, and the Season Belt. Nothing here touches the database,
+// so npm test runs it as is; routes/kshsaa-anki.js does the storing.
 //
 // A "review" is one answer to one card, Again through Easy, counted every
 // time: the number Anki shows as "Studied N cards today". It is what the
@@ -14,11 +14,15 @@ import { createHash, randomBytes } from 'crypto';
 const DAY_MS = 86400000;
 const DAY_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit' });
 
-/** How far back an add-on may send days. */
-export const SYNC_DAYS_BACK = 120;
+/**
+ * How far back an add-on may send days: a school year and then some, since
+ * add-on 1.2 sends every day since August 1 (in July, nearly a year).
+ */
+export const SYNC_DAYS_BACK = 400;
 
 // what one day can hold: more than anyone studies, less than nonsense
 const LIMITS = { reviews: 20000, cards: 20000, newCards: 10000, seconds: 86400 };
+const COUNTS = Object.keys(LIMITS);
 
 /** Today in Kansas, as YYYY-MM-DD. */
 export const todayKey = (date = new Date()) => DAY_FORMAT.format(date);
@@ -36,7 +40,7 @@ export function isDayKey (key) {
 
 /**
  * The days a board covers: a week from Monday through Sunday, or a calendar
- * month.
+ * month. Seasons are the dates the coach sets (seasonAt).
  * @param {'week'|'month'} period
  * @param {number} back - 0 for the one today is in, 1 for the one before
  * @param {string} today - YYYY-MM-DD
@@ -55,6 +59,56 @@ export function periodRange (period, back, today) {
     to: addDays(monday, 6),
     label: 'Week of ' + toDate(monday).toLocaleString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' })
   };
+}
+
+/** The school year a day falls in, as 2026–27; it starts in August. */
+export function schoolYears (key) {
+  const t = toDate(key);
+  const year = t.getUTCFullYear() - (t.getUTCMonth() < 7 ? 1 : 0);
+  return year + '–' + String(year + 1).slice(2);
+}
+
+/**
+ * The season a board shows, from the coach's list: the latest one that has
+ * started (running, or over and showing who won it), or the first one if none
+ * has started yet; back steps to earlier ones.
+ * @param {{from: string, to: string}[]} seasons
+ * @param {number} back - 0 for the current one
+ * @param {string} today
+ * @returns {?{from: string, to: string, label: string, years: string, earlier: boolean,
+ *   upcoming: boolean, over: boolean, next: ?{from: string, to: string}}} - null when there is no season;
+ *   next is the season after it
+ */
+export function seasonAt (seasons, back, today) {
+  if (!seasons?.length) return null;
+  const list = [...seasons].sort((a, b) => a.from.localeCompare(b.from));
+  let at = 0;
+  list.forEach((s, i) => { if (s.from <= today) at = i; });
+  at = Math.max(0, at - back);
+  const { from, to } = list[at];
+  const years = schoolYears(from);
+  return { from, to, label: years + ' season', years, earlier: at > 0, upcoming: today < from, over: today > to, next: list[at + 1] || null };
+}
+
+/**
+ * The seasons after the coach saves dates. Until the latest season has ended,
+ * new dates change it; after that they start the next one, and the one that
+ * ended stays as it was. Throws with a message for the coach.
+ * @param {{from: string, to: string}[]} seasons
+ * @param {*} from
+ * @param {*} to
+ * @param {string} today
+ * @returns {{from: string, to: string}[]}
+ */
+export function saveSeason (seasons, from, to, today) {
+  if (!isDayKey(from) || !isDayKey(to)) throw new Error('pick both dates');
+  if (to < from) throw new Error('the season has to end on or after the day it starts');
+  if (to > addDays(from, 366)) throw new Error('a season can run a year at most');
+  const list = [...(seasons || [])].sort((a, b) => a.from.localeCompare(b.from));
+  if (list.length && list[list.length - 1].to >= today) list.pop();
+  const before = list[list.length - 1];
+  if (before && from <= before.to) throw new Error('it has to start after the last season ended on ' + before.to);
+  return [...list, { from, to }];
 }
 
 /**
@@ -92,6 +146,25 @@ export function cleanSync (body, today) {
   if (from < earliest) from = earliest;
   if (days.some(d => d.day < from)) throw new Error('a day comes before from');
   return { from, days };
+}
+
+/**
+ * What a send changes in a player's stored days: the days to write, new or
+ * with other counts, and the stored days in the window it covered that it no
+ * longer lists, which have no reviews now. Days that did not change are left
+ * alone, so a send covering the whole season writes only the day or two that
+ * moved.
+ * @param {{day: string}[]} stored - the player's stored days from sent.from on
+ * @param {{from: string, days: {day: string}[]}} sent - from cleanSync
+ * @returns {{write: object[], remove: string[]}} - remove lists days
+ */
+export function syncChanges (stored, sent) {
+  const have = new Map(stored.map(d => [d.day, d]));
+  const listed = new Set(sent.days.map(d => d.day));
+  return {
+    write: sent.days.filter(d => !have.has(d.day) || COUNTS.some(k => (have.get(d.day)[k] || 0) !== d[k])),
+    remove: stored.filter(d => d.day >= sent.from && !listed.has(d.day)).map(d => d.day)
+  };
 }
 
 /**
@@ -143,6 +216,60 @@ export function buildBoard (players, days, range, today) {
 export function standingOf (board, id) {
   const row = board.find(r => r.id === String(id));
   return { reviews: row ? row.reviews : 0, rank: row ? row.rank : null, of: board.filter(r => r.rank).length };
+}
+
+/**
+ * The Season Belt. Of the players in the race, whoever has studied the most
+ * cards since the season began holds it, and whoever holds it on the season's
+ * last day wins it. It is worked out a day at a time from the season's first
+ * day, so it also says since when each holder has had it and how many days
+ * each player held it. Players tied for the most share it, and nobody holds it
+ * before the season's first card. A day sent from a time zone ahead counts as
+ * today.
+ * @param {{_id: *, sitsOut?: boolean}[]} players - a player who sits out stays on the boards
+ *   but is not in the race; a removed player's leftover days are skipped
+ * @param {{player: string, day: string, reviews: number}[]} days - stored days, the season's at least
+ * @param {{from: string, to: string}} season - from seasonAt
+ * @param {string} today
+ * @returns {{over: boolean, holders: string[], reviews: number, since: Object<string, string>,
+ *   held: Object<string, number>, totals: Object<string, number>}} - holders are player ids, reviews
+ *   their season total; since is when each holder's current hold began, held the days each player
+ *   has held it, totals the season so far of each player in the race
+ */
+export function seasonBelt (players, days, season, today) {
+  const over = today > season.to;
+  const last = over ? season.to : today;
+  const ids = new Set(players.filter(p => !p.sitsOut).map(p => String(p._id)));
+  const added = new Map();
+  for (const d of days) {
+    const id = String(d.player);
+    if (!ids.has(id) || !(d.reviews > 0) || d.day < season.from || d.day > season.to) continue;
+    const day = d.day > last ? last : d.day;
+    if (!added.has(day)) added.set(day, []);
+    added.get(day).push([id, d.reviews]);
+  }
+  const totals = new Map();
+  const held = new Map();
+  const since = new Map();
+  let holders = [];
+  for (let day = season.from; day <= last; day = addDays(day, 1)) {
+    for (const [id, n] of added.get(day) || []) totals.set(id, (totals.get(id) || 0) + n);
+    const top = Math.max(0, ...totals.values());
+    const now = top ? [...totals.keys()].filter(id => totals.get(id) === top) : [];
+    for (const id of now) {
+      held.set(id, (held.get(id) || 0) + 1);
+      if (!holders.includes(id)) since.set(id, day);
+    }
+    holders = now;
+  }
+  return {
+    over,
+    holders,
+    reviews: holders.length ? totals.get(holders[0]) : 0,
+    since: Object.fromEntries(holders.map(id => [id, since.get(id)])),
+    held: Object.fromEntries(held),
+    totals: Object.fromEntries(totals)
+  };
 }
 
 // no 0/O or 1/I, so a code read aloud or copied by hand comes out right

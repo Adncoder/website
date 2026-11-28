@@ -1,5 +1,5 @@
-// The Anki leaderboard: periods, what an add-on may send, the board, codes,
-// and the zip the add-on downloads as.
+// The Anki leaderboard: periods, what an add-on may send, the board, the
+// Season Belt, codes, and the zip the add-on downloads as.
 // Run with: npm test
 
 import { test } from 'node:test';
@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 import { inflateRawSync } from 'zlib';
 
 import {
-  SYNC_DAYS_BACK, addDays, buildBoard, cleanSync, codeHash, isDayKey, newCode, normalizeCode, periodRange, standingOf, syncServers
+  SYNC_DAYS_BACK, addDays, buildBoard, cleanSync, codeHash, isDayKey, newCode, normalizeCode, periodRange, saveSeason, schoolYears, seasonAt,
+  seasonBelt, standingOf, syncChanges, syncServers
 } from '../server/kshsaa/anki-board.js';
 import { crc32, zipFiles } from '../server/kshsaa/zip.js';
 
@@ -23,6 +24,42 @@ test('a week runs Monday through Sunday, and a month is a calendar month', () =>
   assert.deepEqual(periodRange('month', 11, TODAY).from, '2025-12-01');
   assert.equal(periodRange('month', 0, '2028-02-10').to, '2028-02-29', 'leap year');
   assert.equal(periodRange('week', 0, '2027-01-01').from, '2026-12-28', 'a week across New Year');
+});
+
+test('a season is the dates the coach sets: the latest that has started, or the first to come', () => {
+  assert.equal(seasonAt([], 0, TODAY), null);
+  assert.equal(seasonAt(undefined, 0, TODAY), null);
+  const seasons = [{ from: '2026-12-01', to: '2027-05-10' }];
+  assert.deepEqual(seasonAt(seasons, 0, TODAY), {
+    from: '2026-12-01', to: '2027-05-10', label: '2026–27 season', years: '2026–27', earlier: false, upcoming: true, over: false, next: null
+  }, 'before it starts');
+  assert.equal(seasonAt(seasons, 0, '2027-01-15').upcoming, false);
+  assert.equal(seasonAt(seasons, 0, '2027-05-10').over, false, 'its last day still counts');
+  assert.equal(seasonAt(seasons, 0, '2027-05-11').over, true);
+  // a year on, with the next one set: the one that ended stays up until the next starts
+  const two = [{ from: '2027-11-15', to: '2028-04-30' }, ...seasons];
+  const summer = seasonAt(two, 0, '2027-07-01');
+  assert.deepEqual([summer.from, summer.over, summer.next.from, summer.earlier], ['2026-12-01', true, '2027-11-15', false]);
+  const after = seasonAt(two, 0, '2027-12-01');
+  assert.deepEqual([after.from, after.earlier, after.label], ['2027-11-15', true, '2027–28 season']);
+  assert.equal(seasonAt(two, 1, '2027-12-01').from, '2026-12-01');
+  assert.equal(seasonAt(two, 5, '2027-12-01').from, '2026-12-01', 'back stops at the first season');
+  assert.deepEqual([schoolYears('2027-07-31'), schoolYears('2027-08-01'), schoolYears('2099-09-01')], ['2026–27', '2027–28', '2099–00']);
+});
+
+test('saving dates changes the latest season until it ends, then starts the next', () => {
+  const first = saveSeason([], '2026-12-01', '2027-05-10', TODAY);
+  assert.deepEqual(first, [{ from: '2026-12-01', to: '2027-05-10' }]);
+  assert.deepEqual(saveSeason(first, '2026-12-01', '2027-05-03', '2027-02-01'), [{ from: '2026-12-01', to: '2027-05-03' }], 'a running season takes new dates');
+  assert.deepEqual(saveSeason(first, '2027-11-15', '2028-04-30', '2027-06-01'), [...first, { from: '2027-11-15', to: '2028-04-30' }],
+    'once it has ended, new dates start the next one');
+  for (const [from, to, why] of [
+    ['', '2027-05-10', 'no start'],
+    ['2026-12-01', '2027-02-30', 'not a date'],
+    ['2027-05-10', '2026-12-01', 'ends before it starts'],
+    ['2026-12-01', '2028-01-01', 'longer than a year']
+  ]) assert.throws(() => saveSeason([], from, to, TODAY), why);
+  assert.throws(() => saveSeason(first, '2027-05-01', '2027-12-01', '2027-06-01'), /after the last season ended on 2027-05-10/, 'seasons do not overlap');
 });
 
 test('day keys are real dates', () => {
@@ -55,6 +92,76 @@ test('what an add-on sends is checked', () => {
     { days: Array.from({ length: SYNC_DAYS_BACK + 3 }, (_, i) => day(addDays(TODAY, -i), 1)) }
   ];
   for (const body of bad) assert.throws(() => cleanSync(body, TODAY), JSON.stringify(body).slice(0, 90));
+});
+
+test('an add-on may send every day since August 1, nearly a year by July', () => {
+  const since = (first, n) => Array.from({ length: n }, (_, i) => ({ day: addDays(first, i), reviews: 5 }));
+  const sent = cleanSync({ from: '2026-08-01', days: since('2026-08-01', 110) }, TODAY);
+  assert.equal(sent.from, '2026-08-01');
+  assert.equal(sent.days.length, 110);
+  assert.equal(sent.days.at(-1).day, TODAY);
+  assert.equal(cleanSync({ from: '2026-08-01', days: since('2026-08-01', 365) }, '2027-07-31').days.length, 365);
+});
+
+test('a send writes only the days that changed', () => {
+  const day = (d, reviews, seconds) => ({ day: d, reviews, cards: reviews, newCards: 0, seconds });
+  const stored = [day('2026-11-10', 40, 400), day('2026-11-12', 20, 200), day('2026-11-15', 9, 90)];
+  const { write, remove } = syncChanges(stored, {
+    from: '2026-11-01',
+    days: [day('2026-11-10', 40, 400), day('2026-11-15', 9, 95), day('2026-11-18', 12, 100)]
+  });
+  assert.deepEqual(write.map(d => d.day), ['2026-11-15', '2026-11-18'], 'the same counts are not written again; new seconds are');
+  assert.deepEqual(remove, ['2026-11-12'], 'a stored day the send no longer lists has no reviews now');
+  assert.deepEqual(syncChanges(stored, { from: '2026-11-11', days: [] }).remove, ['2026-11-12', '2026-11-15'], 'days before the window stay');
+  assert.deepEqual(syncChanges([], { from: '2026-11-01', days: [day('2026-11-02', 3, 30)] }), { write: [day('2026-11-02', 3, 30)], remove: [] });
+});
+
+test('the Season Belt goes to the most cards in the season, changes hands, and is won on its last day', () => {
+  const players = [{ _id: 'a', name: 'Ava' }, { _id: 'b', name: 'Ben' }, { _id: 'c', name: 'Cal' }];
+  const d = (player, day, reviews) => ({ player, day, reviews });
+  const season = { from: '2026-08-01', to: '2027-05-31' };
+  const days = [
+    d('a', '2026-07-30', 900), // before the season
+    d('a', '2026-09-01', 100),
+    d('b', '2026-09-03', 150), // Ben takes it
+    d('a', '2026-09-10', 60), // Ava takes it back, 160 to 150
+    d('c', '2026-11-18', 40),
+    d('zz', '2026-11-18', 999) // a removed player's leftovers
+  ];
+  const belt = seasonBelt(players, days, season, TODAY);
+  assert.equal(belt.over, false);
+  assert.deepEqual(belt.holders, ['a']);
+  assert.equal(belt.reviews, 160);
+  assert.deepEqual(belt.since, { a: '2026-09-10' });
+  assert.deepEqual(belt.totals, { a: 160, b: 150, c: 40 });
+  assert.deepEqual(belt.held, { a: 72, b: 7 }, 'Ava: Sep 1-2 and Sep 10 through today; Ben: Sep 3-9');
+  assert.equal(buildBoard(players, days, season, TODAY)[0].name, 'Ava', 'the season board agrees');
+
+  // a tie shares it, and a day sent from a time zone ahead counts as today
+  const tied = seasonBelt(players, [...days, d('b', '2026-11-19', 10)], season, TODAY);
+  assert.deepEqual(tied.holders.sort(), ['a', 'b']);
+  assert.equal(tied.reviews, 160);
+  assert.deepEqual(tied.since, { a: '2026-09-10', b: '2026-11-18' });
+
+  const empty = seasonBelt(players, [], season, TODAY);
+  assert.deepEqual([empty.holders, empty.reviews, empty.held], [[], 0, {}], 'nobody holds it before the first card');
+  assert.deepEqual(seasonBelt(players, days, { from: '2026-12-01', to: '2027-05-10' }, TODAY).holders, [], 'nor before the season starts');
+
+  // a player who sits out stays on the board, out of the race
+  const sitting = players.map(p => (p._id === 'a' ? { ...p, sitsOut: true } : p));
+  const without = seasonBelt(sitting, days, season, TODAY);
+  assert.deepEqual(without.holders, ['b']);
+  assert.deepEqual(without.since, { b: '2026-09-03' });
+  assert.deepEqual(without.totals, { b: 150, c: 40 });
+  assert.equal(buildBoard(sitting, days, season, TODAY)[0].name, 'Ava', 'she still tops the board');
+
+  // once the season is over, whoever held it on its last day has won it; later cards don't count
+  const won = seasonBelt(players, [...days, d('c', '2027-05-31', 500), d('b', '2027-06-02', 900)], season, '2027-06-15');
+  assert.equal(won.over, true);
+  assert.deepEqual(won.holders, ['c']);
+  assert.equal(won.reviews, 540);
+  assert.deepEqual(won.since, { c: '2027-05-31' });
+  assert.equal(won.totals.b, 150);
 });
 
 test('the board ranks by cards, shares tied ranks, and counts streaks', () => {
